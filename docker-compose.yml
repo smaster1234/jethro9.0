@@ -1,0 +1,95 @@
+# JETHRO 9.0 - Local Development Stack
+# =====================================
+# Includes PostgreSQL, Redis, Web server, and Worker
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose up -d web      # Start web only
+#   docker-compose logs -f web    # Follow web logs
+#   docker-compose down           # Stop all services
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: jethro9-postgres
+    environment:
+      POSTGRES_USER: jethro
+      POSTGRES_PASSWORD: jethro_dev_password
+      POSTGRES_DB: jethro9
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jethro -d jethro9"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis Queue
+  redis:
+    image: redis:7-alpine
+    container_name: jethro9-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Web Server (FastAPI)
+  web:
+    build: .
+    container_name: jethro9-web
+    environment:
+      - DATABASE_URL=postgresql://jethro:jethro_dev_password@postgres:5432/jethro9
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=local
+      - STORAGE_PATH=/app/storage
+      - LLM_MODE=${LLM_MODE:-none}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - PORT=8000
+      - BACKEND_LITE_ROLE=web
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./backend_lite:/app/backend_lite:ro  # Mount for development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Background Worker (RQ)
+  worker:
+    build: .
+    container_name: jethro9-worker
+    environment:
+      - DATABASE_URL=postgresql://jethro:jethro_dev_password@postgres:5432/jethro9
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_BACKEND=local
+      - STORAGE_PATH=/app/storage
+      - LLM_MODE=${LLM_MODE:-none}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - BACKEND_LITE_ROLE=worker
+    volumes:
+      - ./storage:/app/storage
+      - ./backend_lite:/app/backend_lite:ro  # Mount for development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
