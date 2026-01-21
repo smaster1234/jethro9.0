@@ -1,0 +1,2142 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מצב התיק - ליטיגטור | JETHRO</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--gray-100);
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: white;
+            border-bottom: 1px solid var(--gray-200);
+            padding: 16px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .case-info h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: var(--gray-900);
+        }
+        .case-info .case-id {
+            color: var(--gray-500);
+            font-size: 0.875rem;
+            margin-top: 2px;
+        }
+        .header-actions {
+            display: flex;
+            gap: 12px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+        .btn-outline {
+            background: white;
+            border: 1px solid var(--gray-300);
+            color: var(--gray-700);
+        }
+        .btn-outline:hover {
+            background: var(--gray-50);
+        }
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #b91c1c;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Main Content */
+        .main-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 1000px) {
+            .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .kpi-grid { grid-template-columns: 1fr; }
+        }
+        .kpi-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .kpi-label {
+            color: var(--gray-500);
+            font-size: 0.875rem;
+            margin-bottom: 4px;
+        }
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--gray-900);
+        }
+        .kpi-card.danger .kpi-value { color: var(--danger); }
+        .kpi-card.warning .kpi-value { color: var(--warning); }
+        .kpi-card.success .kpi-value { color: var(--success); }
+        .kpi-subtitle {
+            color: var(--gray-400);
+            font-size: 0.75rem;
+            margin-top: 4px;
+        }
+
+        /* CTA Buttons */
+        .cta-section {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .cta-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 24px;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .cta-btn.red {
+            background: #fef2f2;
+            color: #991b1b;
+            border-color: #fecaca;
+        }
+        .cta-btn.red:hover {
+            background: #fee2e2;
+            border-color: #f87171;
+        }
+        .cta-btn.blue {
+            background: #eff6ff;
+            color: #1e40af;
+            border-color: #bfdbfe;
+        }
+        .cta-btn.blue:hover {
+            background: #dbeafe;
+            border-color: #60a5fa;
+        }
+        .cta-btn.purple {
+            background: #f5f3ff;
+            color: #5b21b6;
+            border-color: #ddd6fe;
+        }
+        .cta-btn.purple:hover {
+            background: #ede9fe;
+            border-color: #a78bfa;
+        }
+        .cta-icon {
+            font-size: 1.25rem;
+        }
+
+        /* Bucket Buttons (Attribution Layer) */
+        .bucket-section {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .bucket-section-label {
+            font-size: 13px;
+            color: var(--gray-600);
+            font-weight: 600;
+        }
+        .bucket-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .bucket-btn.theirs {
+            background: #fef2f2;
+            color: #991b1b;
+            border-color: #fecaca;
+        }
+        .bucket-btn.theirs:hover, .bucket-btn.theirs.active {
+            background: #fee2e2;
+            border-color: #f87171;
+        }
+        .bucket-btn.ours {
+            background: #fef3c7;
+            color: #92400e;
+            border-color: #fcd34d;
+        }
+        .bucket-btn.ours:hover, .bucket-btn.ours.active {
+            background: #fde68a;
+            border-color: #f59e0b;
+        }
+        .bucket-btn.disputes {
+            background: #f5f3ff;
+            color: #5b21b6;
+            border-color: #ddd6fe;
+        }
+        .bucket-btn.disputes:hover, .bucket-btn.disputes.active {
+            background: #ede9fe;
+            border-color: #a78bfa;
+        }
+        .bucket-count {
+            background: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .bucket-btn.active {
+            box-shadow: 0 0 0 2px rgba(0,0,0,0.1);
+        }
+
+        /* Attribution Banner */
+        .attribution-banner {
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .attribution-banner-icon {
+            font-size: 1.5rem;
+        }
+        .attribution-banner-text {
+            flex: 1;
+            font-size: 14px;
+            color: #92400e;
+        }
+        .attribution-banner-action {
+            padding: 6px 12px;
+            background: #f59e0b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .attribution-banner-action:hover {
+            background: #d97706;
+        }
+        .attribution-banner.hidden {
+            display: none;
+        }
+
+        /* Tabs */
+        .tabs-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .tabs-header {
+            display: flex;
+            border-bottom: 1px solid var(--gray-200);
+            padding: 0 16px;
+        }
+        .tab-btn {
+            padding: 16px 24px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--gray-500);
+            background: none;
+            border: none;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            transition: all 0.2s;
+        }
+        .tab-btn:hover {
+            color: var(--gray-700);
+        }
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        .tab-badge {
+            background: var(--danger);
+            color: white;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-right: 6px;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Filters */
+        .filters-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .filter-label {
+            font-size: 13px;
+            color: var(--gray-600);
+        }
+        select {
+            padding: 8px 12px;
+            border: 1px solid var(--gray-300);
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
+            cursor: pointer;
+        }
+        select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--gray-100);
+            padding: 8px 16px;
+            border-radius: 8px;
+        }
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+        }
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--gray-300);
+            border-radius: 24px;
+            transition: 0.3s;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            right: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+        .toggle input:checked + .toggle-slider {
+            background: var(--primary);
+        }
+        .toggle input:checked + .toggle-slider:before {
+            transform: translateX(-20px);
+        }
+
+        /* Contradiction Cards */
+        .contradictions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .contradiction-card {
+            background: var(--gray-50);
+            border-radius: 10px;
+            padding: 16px;
+            border-right: 4px solid var(--danger);
+            transition: all 0.2s;
+        }
+        .contradiction-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .contradiction-card.high { border-right-color: var(--danger); }
+        .contradiction-card.medium { border-right-color: var(--warning); }
+        .contradiction-card.low { border-right-color: #fbbf24; }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .card-badges {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-verified { background: #dcfce7; color: #166534; }
+        .badge-likely { background: #fef3c7; color: #92400e; }
+        .badge-suspicious { background: #f3f4f6; color: #4b5563; }
+        .badge-temporal { background: #dbeafe; color: #1e40af; }
+        .badge-quant { background: #dcfce7; color: #166534; }
+        .badge-presence { background: #f3e8ff; color: #6b21a8; }
+        .badge-actor { background: #fef3c7; color: #92400e; }
+        .badge-document { background: #fce7f3; color: #9d174d; }
+        .badge-identity { background: #ccfbf1; color: #115e59; }
+        .badge-severity-high { background: #fee2e2; color: #991b1b; }
+        .badge-severity-medium { background: #fef3c7; color: #92400e; }
+        .badge-severity-low { background: #fef9c3; color: #854d0e; }
+
+        .card-confidence {
+            font-size: 12px;
+            color: var(--gray-500);
+        }
+
+        .card-reason {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--gray-800);
+            margin-bottom: 12px;
+        }
+
+        .quotes-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        @media (max-width: 800px) {
+            .quotes-container { grid-template-columns: 1fr; }
+        }
+        .quote-box {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--gray-200);
+        }
+        .quote-label {
+            font-size: 11px;
+            color: var(--gray-500);
+            margin-bottom: 6px;
+        }
+        .quote-text {
+            font-size: 13px;
+            color: var(--gray-700);
+            line-height: 1.5;
+        }
+        .quote-source {
+            font-size: 11px;
+            color: var(--primary);
+            margin-top: 8px;
+            cursor: pointer;
+        }
+        .quote-source:hover {
+            text-decoration: underline;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--gray-200);
+        }
+        .card-action-btn {
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .card-action-btn.primary {
+            background: var(--primary);
+            color: white;
+            border: none;
+        }
+        .card-action-btn.primary:hover {
+            background: var(--primary-dark);
+        }
+        .card-action-btn.secondary {
+            background: white;
+            color: var(--gray-700);
+            border: 1px solid var(--gray-300);
+        }
+        .card-action-btn.secondary:hover {
+            background: var(--gray-50);
+        }
+
+        /* Claims Table */
+        .claims-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .claims-table th {
+            background: var(--gray-800);
+            color: white;
+            padding: 12px 16px;
+            text-align: right;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .claims-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--gray-200);
+            font-size: 13px;
+            vertical-align: top;
+        }
+        .claims-table tr:hover {
+            background: var(--gray-50);
+            cursor: pointer;
+        }
+        .claims-table tr.selected {
+            background: #eff6ff;
+        }
+        .claim-text-cell {
+            max-width: 350px;
+        }
+        .claim-text-preview {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        /* Side Panel */
+        .side-panel {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 450px;
+            height: 100vh;
+            background: white;
+            box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+            z-index: 200;
+            overflow-y: auto;
+        }
+        .side-panel.open {
+            transform: translateX(0);
+        }
+        .side-panel-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.3);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+            z-index: 199;
+        }
+        .side-panel-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .side-panel-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 1;
+        }
+        .side-panel-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--gray-500);
+            padding: 4px;
+        }
+        .close-btn:hover {
+            color: var(--gray-700);
+        }
+        .side-panel-content {
+            padding: 20px;
+        }
+
+        /* Cross-Exam Tracks */
+        .track-card {
+            background: var(--gray-50);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 16px;
+            border-right: 4px solid var(--primary);
+        }
+        .track-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .track-title {
+            font-weight: 600;
+            font-size: 15px;
+            color: var(--gray-800);
+        }
+        .track-goal {
+            font-size: 13px;
+            color: var(--gray-600);
+            margin-bottom: 16px;
+            padding: 10px;
+            background: #fef3c7;
+            border-radius: 6px;
+        }
+        .style-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        .style-tab {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid var(--gray-300);
+            background: white;
+            transition: all 0.2s;
+        }
+        .style-tab.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .style-tab:hover:not(.active) {
+            background: var(--gray-100);
+        }
+        .track-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .track-step {
+            background: white;
+            padding: 14px;
+            border-radius: 8px;
+            border: 1px solid var(--gray-200);
+        }
+        .step-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+        .step-question {
+            font-size: 14px;
+            color: var(--gray-800);
+            margin-bottom: 6px;
+        }
+        .step-expected {
+            font-size: 12px;
+            color: var(--gray-500);
+        }
+        .track-evidence {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--gray-200);
+        }
+        .evidence-label {
+            font-size: 12px;
+            color: var(--gray-500);
+            margin-bottom: 8px;
+        }
+        .evidence-item {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        .evidence-doc {
+            font-weight: 600;
+            color: var(--gray-700);
+        }
+        .evidence-quote {
+            color: var(--gray-600);
+            margin-top: 4px;
+            font-style: italic;
+        }
+
+        /* Versions Tab */
+        .version-selector {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .version-select {
+            flex: 1;
+        }
+        .version-select label {
+            display: block;
+            font-size: 13px;
+            color: var(--gray-600);
+            margin-bottom: 6px;
+        }
+        .diff-container {
+            background: var(--gray-50);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .diff-section {
+            margin-bottom: 16px;
+        }
+        .diff-section-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-700);
+            margin-bottom: 8px;
+        }
+        .diff-line {
+            padding: 6px 10px;
+            font-size: 13px;
+            border-radius: 4px;
+            margin-bottom: 4px;
+        }
+        .diff-added {
+            background: #dcfce7;
+            color: #166534;
+        }
+        .diff-removed {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        /* Input Section (collapsed by default) */
+        .input-section {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+        .input-header {
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            border-bottom: 1px solid var(--gray-200);
+        }
+        .input-header:hover {
+            background: var(--gray-50);
+        }
+        .input-header h3 {
+            margin: 0;
+            font-size: 1rem;
+            color: var(--gray-700);
+        }
+        .input-toggle-icon {
+            font-size: 1.25rem;
+            color: var(--gray-400);
+            transition: transform 0.2s;
+        }
+        .input-section.expanded .input-toggle-icon {
+            transform: rotate(180deg);
+        }
+        .input-body {
+            display: none;
+            padding: 20px;
+        }
+        .input-section.expanded .input-body {
+            display: block;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            border: 1px solid var(--gray-300);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 14px;
+            resize: vertical;
+            direction: rtl;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        /* Loading & Empty States */
+        .loading-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-500);
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--gray-200);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-500);
+        }
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* Export Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 300;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s;
+        }
+        .modal-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            padding: 24px;
+            transform: scale(0.95);
+            transition: transform 0.2s;
+        }
+        .modal-overlay.visible .modal {
+            transform: scale(1);
+        }
+        .modal h3 {
+            margin: 0 0 16px;
+        }
+        .export-options {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .export-option {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            border: 2px solid var(--gray-200);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .export-option:hover {
+            border-color: var(--primary);
+            background: var(--gray-50);
+        }
+        .export-option.selected {
+            border-color: var(--primary);
+            background: #eff6ff;
+        }
+        .export-option-icon {
+            font-size: 1.5rem;
+        }
+        .export-option-info h4 {
+            margin: 0 0 4px;
+            font-size: 14px;
+        }
+        .export-option-info p {
+            margin: 0;
+            font-size: 12px;
+            color: var(--gray-500);
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        /* Source Mode Highlight */
+        .source-highlight {
+            background: #fef08a;
+            padding: 2px 4px;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="case-info">
+                <h1 id="caseName">מצב התיק - ליטיגטור</h1>
+                <div class="case-id" id="caseId">JETHRO | זיהוי סתירות</div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-outline" onclick="toggleInputSection()">
+                    העלה מסמך
+                </button>
+                <button class="btn btn-primary" id="analyzeBtn" onclick="runAnalysis()">
+                    נתח סתירות
+                </button>
+                <button class="btn btn-outline" onclick="showExportModal()">
+                    ייצא
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Input Section (Collapsible) -->
+        <div class="input-section expanded" id="inputSection">
+            <div class="input-header" onclick="toggleInputSection()">
+                <h3>הזנת טקסט לניתוח</h3>
+                <span class="input-toggle-icon">&#9660;</span>
+            </div>
+            <div class="input-body">
+                <textarea id="inputText" placeholder="הדבק כאן את הטקסט המשפטי לניתוח...
+
+לדוגמה:
+1. החוזה נחתם ביום 15.3.2020 במשרדי החברה בתל אביב.
+2. התובע טוען שהחוזה נחתם ביום 20.5.2021 בירושלים.
+3. סכום העסקה היה 500,000 ש&quot;ח.
+4. סכום העסקה היה 350,000 שקלים בלבד."></textarea>
+                <div style="margin-top: 12px;">
+                    <input type="text" id="apiUrl" placeholder="API URL" style="width: 100%; padding: 10px; border: 1px solid var(--gray-300); border-radius: 6px;">
+                </div>
+            </div>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="kpi-grid" id="kpiGrid">
+            <div class="kpi-card">
+                <div class="kpi-label">טענות נבדקו</div>
+                <div class="kpi-value" id="kpiClaimsTotal">0</div>
+            </div>
+            <div class="kpi-card danger">
+                <div class="kpi-label">סתירות מהותיות</div>
+                <div class="kpi-value" id="kpiVerifiedContradictions">0</div>
+                <div class="kpi-subtitle">verified + high/medium</div>
+            </div>
+            <div class="kpi-card warning">
+                <div class="kpi-label">נקודות תקיפה</div>
+                <div class="kpi-value" id="kpiAttackPoints">0</div>
+                <div class="kpi-subtitle">בקרוב</div>
+            </div>
+            <div class="kpi-card success">
+                <div class="kpi-label">מוכן לדיון</div>
+                <div class="kpi-value" id="kpiReadyMinutes">~0</div>
+                <div class="kpi-subtitle">דקות</div>
+            </div>
+        </div>
+
+        <!-- CTA Buttons -->
+        <div class="cta-section">
+            <button class="cta-btn red" onclick="filterUsableContradictions()">
+                <span class="cta-icon">&#128308;</span>
+                סתירות שאפשר לעמת היום
+            </button>
+            <button class="cta-btn blue" onclick="switchToTracksTab()">
+                <span class="cta-icon">&#127919;</span>
+                חקירה נגדית מוכנה
+            </button>
+            <button class="cta-btn purple" onclick="toggleSourceMode()">
+                <span class="cta-icon">&#128206;</span>
+                קפיצה למקור במסמך
+            </button>
+        </div>
+
+        <!-- Attribution Layer Banner -->
+        <div class="attribution-banner hidden" id="attributionBanner">
+            <span class="attribution-banner-icon">&#9888;</span>
+            <span class="attribution-banner-text">
+                חלק מהמסמכים לא סומנו לצד (שלנו/שלהם). יש לסמן מסמכים לקבלת ניתוח מלא.
+            </span>
+            <button class="attribution-banner-action" onclick="openDocumentSettings()">
+                סמן מסמכים
+            </button>
+        </div>
+
+        <!-- Bucket Buttons (Attribution Layer) -->
+        <div class="bucket-section">
+            <span class="bucket-section-label">סנן לפי שיוך:</span>
+            <button class="bucket-btn theirs" id="bucketTheirs" onclick="filterByBucket('theirs')">
+                <span>&#128308;</span>
+                סתירות שלהם
+                <span class="bucket-count" id="bucketTheirsCount">0</span>
+            </button>
+            <button class="bucket-btn ours" id="bucketOurs" onclick="filterByBucket('ours')">
+                <span>&#128993;</span>
+                סתירות שלנו
+                <span class="bucket-count" id="bucketOursCount">0</span>
+            </button>
+            <button class="bucket-btn disputes" id="bucketDisputes" onclick="filterByBucket('disputes')">
+                <span>&#128995;</span>
+                פלוגתאות
+                <span class="bucket-count" id="bucketDisputesCount">0</span>
+            </button>
+            <button class="btn btn-outline" onclick="clearBucketFilter()" style="margin-right: auto;">
+                נקה סינון
+            </button>
+        </div>
+
+        <!-- Tabs Container -->
+        <div class="tabs-container">
+            <div class="tabs-header">
+                <button class="tab-btn active" data-tab="contradictions" onclick="switchTab('contradictions')">
+                    <span class="tab-badge" id="contradictionsCount">0</span>
+                    סתירות
+                </button>
+                <button class="tab-btn" data-tab="claims" onclick="switchTab('claims')">
+                    טענות
+                </button>
+                <button class="tab-btn" data-tab="crossexam" onclick="switchTab('crossexam')">
+                    חקירה נגדית
+                </button>
+                <button class="tab-btn" data-tab="versions" onclick="switchTab('versions')">
+                    גרסאות
+                </button>
+            </div>
+
+            <!-- Contradictions Tab -->
+            <div class="tab-content active" id="tab-contradictions">
+                <div class="filters-bar">
+                    <div class="filter-group">
+                        <span class="filter-label">סטטוס:</span>
+                        <select id="filterStatus" onchange="applyFilters()">
+                            <option value="all">הכל</option>
+                            <option value="verified">מאומת</option>
+                            <option value="likely">סביר</option>
+                            <option value="suspicious">חשוד</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">חומרה:</span>
+                        <select id="filterSeverity" onchange="applyFilters()">
+                            <option value="all">הכל</option>
+                            <option value="high">גבוהה</option>
+                            <option value="medium">בינונית</option>
+                            <option value="low">נמוכה</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">סוג:</span>
+                        <select id="filterType" onchange="applyFilters()">
+                            <option value="all">הכל</option>
+                            <option value="temporal">זמן</option>
+                            <option value="quant">סכום</option>
+                            <option value="presence">נוכחות</option>
+                            <option value="actor">ייחוס</option>
+                            <option value="document">מסמך</option>
+                            <option value="identity">זהות</option>
+                        </select>
+                    </div>
+                    <div class="toggle-container">
+                        <span class="filter-label">רק מה שאפשר להשתמש</span>
+                        <label class="toggle">
+                            <input type="checkbox" id="filterUsable" onchange="applyFilters()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="contradictions-list" id="contradictionsList">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128269;</div>
+                        <div>נתח טקסט כדי לראות סתירות</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Claims Tab -->
+            <div class="tab-content" id="tab-claims">
+                <table class="claims-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>מקור</th>
+                            <th>טקסט</th>
+                            <th>סטטוס</th>
+                            <th>סתירות</th>
+                            <th>חומרה</th>
+                            <th>סוגים</th>
+                        </tr>
+                    </thead>
+                    <tbody id="claimsTableBody">
+                        <tr>
+                            <td colspan="7" style="text-align: center; padding: 40px; color: var(--gray-500);">
+                                נתח טקסט כדי לראות טענות
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Cross-Exam Tab -->
+            <div class="tab-content" id="tab-crossexam">
+                <div id="tracksList">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#127919;</div>
+                        <div>נתח טקסט כדי ליצור מסלולי חקירה נגדית</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Versions Tab -->
+            <div class="tab-content" id="tab-versions">
+                <div class="version-selector">
+                    <div class="version-select">
+                        <label>גרסה 1:</label>
+                        <select id="version1Select">
+                            <option value="">בחר מסמך...</option>
+                        </select>
+                    </div>
+                    <div class="version-select">
+                        <label>גרסה 2:</label>
+                        <select id="version2Select">
+                            <option value="">בחר מסמך...</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="compareVersions()">השווה</button>
+                </div>
+                <div class="diff-container" id="diffContainer">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128196;</div>
+                        <div>בחר שני מסמכים להשוואה</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Side Panel -->
+    <div class="side-panel-overlay" id="sidePanelOverlay" onclick="closeSidePanel()"></div>
+    <div class="side-panel" id="sidePanel">
+        <div class="side-panel-header">
+            <h3 id="sidePanelTitle">פרטי טענה</h3>
+            <button class="close-btn" onclick="closeSidePanel()">&times;</button>
+        </div>
+        <div class="side-panel-content" id="sidePanelContent">
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div class="modal-overlay" id="exportModal">
+        <div class="modal">
+            <h3>ייצוא חקירה נגדית</h3>
+            <div class="export-options">
+                <div class="export-option selected" data-format="pdf" onclick="selectExportOption(this)">
+                    <span class="export-option-icon">&#128196;</span>
+                    <div class="export-option-info">
+                        <h4>PDF מלא</h4>
+                        <p>כולל ראיות, ציטוטים ושאלות</p>
+                    </div>
+                </div>
+                <div class="export-option" data-format="word" onclick="selectExportOption(this)">
+                    <span class="export-option-icon">&#128203;</span>
+                    <div class="export-option-info">
+                        <h4>Word - שאלות בלבד</h4>
+                        <p>לצורך הדבקה לכתב הכנה</p>
+                    </div>
+                </div>
+                <div class="export-option" data-format="json" onclick="selectExportOption(this)">
+                    <span class="export-option-icon">&#128190;</span>
+                    <div class="export-option-info">
+                        <h4>JSON</h4>
+                        <p>נתונים גולמיים לעיבוד</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-outline" onclick="hideExportModal()">ביטול</button>
+                <button class="btn btn-primary" onclick="doExport()">ייצא</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===========================================
+        // State Management
+        // ===========================================
+        let currentData = null;
+        let crossExamTracks = [];
+        let selectedClaimId = null;
+        let sourceMode = false;
+        let selectedExportFormat = 'pdf';
+        let activeBucket = null;  // Attribution layer bucket filter
+
+        // Auto-detect API URL
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('apiUrl').value = window.location.origin;
+        });
+
+        // ===========================================
+        // Analysis
+        // ===========================================
+        async function runAnalysis() {
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+            const text = document.getElementById('inputText').value.trim();
+            const btn = document.getElementById('analyzeBtn');
+
+            if (!text) {
+                alert('נא להזין טקסט לניתוח');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'מנתח...';
+
+            // Show loading state
+            document.getElementById('contradictionsList').innerHTML = `
+                <div class="loading-state">
+                    <div class="spinner"></div>
+                    <div>מנתח את הטקסט...</div>
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`${apiUrl}/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, source_name: 'מסמך' })
+                });
+
+                currentData = await response.json();
+
+                // Collapse input section
+                document.getElementById('inputSection').classList.remove('expanded');
+
+                // Update UI
+                updateKPIs();
+                generateCrossExamTracks();
+                renderContradictions();
+                renderClaimsTable();
+                renderTracks();
+                updateBucketCounts();
+                updateAttributionBanner();
+
+            } catch (error) {
+                document.getElementById('contradictionsList').innerHTML = `
+                    <div class="empty-state" style="color: var(--danger);">
+                        <div class="empty-state-icon">&#9888;</div>
+                        <div>שגיאה: ${error.message}</div>
+                    </div>
+                `;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'נתח סתירות';
+        }
+
+        // ===========================================
+        // KPI Calculations
+        // ===========================================
+        function updateKPIs() {
+            if (!currentData) return;
+
+            const metadata = currentData.metadata || {};
+            const contradictions = currentData.contradictions || [];
+            const claimResults = currentData.claim_results || [];
+
+            // Claims total
+            const claimsTotal = metadata.claims_total || currentData.claims?.length || 0;
+            document.getElementById('kpiClaimsTotal').textContent = claimsTotal;
+
+            // Verified contradictions (high/medium severity)
+            const verifiedHigh = contradictions.filter(c =>
+                c.status === 'verified' && (c.severity === 'high' || c.severity === 'medium')
+            ).length;
+            const verifiedMedium = contradictions.filter(c =>
+                c.status === 'verified' && c.severity === 'medium'
+            ).length;
+            const materialContradictions = verifiedHigh;
+            document.getElementById('kpiVerifiedContradictions').textContent = materialContradictions;
+
+            // Attack points (future feature)
+            document.getElementById('kpiAttackPoints').textContent = '0';
+
+            // Ready for hearing calculation
+            const verifiedHighCount = contradictions.filter(c => c.status === 'verified' && c.severity === 'high').length;
+            const verifiedMediumCount = contradictions.filter(c => c.status === 'verified' && c.severity === 'medium').length;
+            const readyMinutes = Math.min(15, 3 + 2 * verifiedHighCount + 1 * verifiedMediumCount);
+            document.getElementById('kpiReadyMinutes').textContent = `~${readyMinutes}`;
+
+            // Update contradiction count badge
+            document.getElementById('contradictionsCount').textContent = contradictions.length;
+        }
+
+        // ===========================================
+        // Cross-Exam Track Generation
+        // ===========================================
+        function generateCrossExamTracks() {
+            if (!currentData) return;
+
+            crossExamTracks = [];
+            const contradictions = currentData.contradictions || [];
+
+            for (const contr of contradictions) {
+                // Only generate tracks for verified/likely contradictions
+                if (contr.status !== 'verified' && contr.status !== 'likely') continue;
+
+                const track = {
+                    track_id: `track_${contr.id}`,
+                    contradiction_id: contr.id,
+                    type: getContradictionTypeKey(contr.type),
+                    status: contr.status,
+                    severity: contr.severity,
+                    confidence: contr.confidence,
+                    goal: generateGoal(contr),
+                    style_variants: {
+                        calm: generateQuestions(contr, 'calm'),
+                        aggressive: generateQuestions(contr, 'aggressive'),
+                        judicial: generateQuestions(contr, 'judicial')
+                    },
+                    evidence: {
+                        claim1: {
+                            claim_id: contr.claim1_id || contr.claim1?.claim_id,
+                            doc_name: contr.claim1?.doc_id || 'מסמך',
+                            locator: contr.claim1?.locator || {},
+                            quote: truncateText(contr.quote1 || contr.claim1?.quote || '', 200)
+                        },
+                        claim2: {
+                            claim_id: contr.claim2_id || contr.claim2?.claim_id,
+                            doc_name: contr.claim2?.doc_id || 'מסמך',
+                            locator: contr.claim2?.locator || {},
+                            quote: truncateText(contr.quote2 || contr.claim2?.quote || '', 200)
+                        }
+                    }
+                };
+
+                crossExamTracks.push(track);
+            }
+        }
+
+        function generateGoal(contr) {
+            const typeKey = getContradictionTypeKey(contr.type);
+            const goals = {
+                temporal: 'להראות שינוי גרסה בנוגע לתאריכים',
+                quant: 'להראות פער בין הסכומים שנטענו',
+                presence: 'להוכיח סתירה בנוגע לנוכחות',
+                actor: 'להראות אי-התאמה בייחוס הפעולה',
+                document: 'להציג סתירה בנוגע לקיום המסמך',
+                identity: 'להוכיח אי-התאמה בזיהוי'
+            };
+            return goals[typeKey] || 'להראות סתירה בין הטענות';
+        }
+
+        function generateQuestions(contr, style) {
+            const quote1 = truncateText(contr.quote1 || '', 100);
+            const quote2 = truncateText(contr.quote2 || '', 100);
+
+            const styleModifiers = {
+                calm: { prefix: 'האם נכון ש', suffix: '?' },
+                aggressive: { prefix: 'איך תסביר ש', suffix: '?' },
+                judicial: { prefix: 'לצורך התיק, אשר ש', suffix: '' }
+            };
+
+            const mod = styleModifiers[style];
+
+            return [
+                {
+                    step: 'pin_fact_a',
+                    question: truncateText(`${mod.prefix}${quote1}${mod.suffix}`, 160),
+                    expected_answer: 'כן'
+                },
+                {
+                    step: 'pin_fact_b',
+                    question: truncateText(`${mod.prefix}${quote2}${mod.suffix}`, 160),
+                    expected_answer: 'כן'
+                },
+                {
+                    step: 'confront',
+                    question: truncateText(style === 'calm'
+                        ? `אתה מסכים שיש סתירה בין שתי הטענות?`
+                        : style === 'aggressive'
+                        ? `אז איזו טענה נכונה - הראשונה או השנייה?`
+                        : `לתיק: האם הטענות עולות בקנה אחד?`, 160),
+                    expected_answer: 'הימנעות/התחמקות'
+                },
+                {
+                    step: 'close_gap',
+                    question: truncateText(style === 'calm'
+                        ? `איך מיישבים את הפער בין הגרסאות?`
+                        : style === 'aggressive'
+                        ? `למה שינית את הגרסה?`
+                        : `מבקש להבהיר את הסתירה לפרוטוקול`, 160),
+                    expected_answer: 'הסבר/שתיקה'
+                }
+            ];
+        }
+
+        // ===========================================
+        // Rendering Functions
+        // ===========================================
+        function renderContradictions() {
+            if (!currentData) return;
+
+            const list = document.getElementById('contradictionsList');
+            let contradictions = [...(currentData.contradictions || [])];
+
+            // Apply filters
+            const statusFilter = document.getElementById('filterStatus').value;
+            const severityFilter = document.getElementById('filterSeverity').value;
+            const typeFilter = document.getElementById('filterType').value;
+            const usableOnly = document.getElementById('filterUsable').checked;
+
+            if (statusFilter !== 'all') {
+                contradictions = contradictions.filter(c => c.status === statusFilter);
+            }
+            if (severityFilter !== 'all') {
+                contradictions = contradictions.filter(c => c.severity === severityFilter);
+            }
+            if (typeFilter !== 'all') {
+                contradictions = contradictions.filter(c => getContradictionTypeKey(c.type) === typeFilter);
+            }
+            if (usableOnly) {
+                contradictions = contradictions.filter(c =>
+                    c.status === 'verified' &&
+                    (c.severity === 'high' || c.severity === 'medium') &&
+                    c.quote1 && c.quote2
+                );
+            }
+
+            // Apply bucket filter (Attribution Layer)
+            if (activeBucket) {
+                if (activeBucket === 'theirs') {
+                    contradictions = contradictions.filter(c =>
+                        c.bucket === 'internal_contradiction' && c.claim1_party === 'theirs'
+                    );
+                } else if (activeBucket === 'ours') {
+                    contradictions = contradictions.filter(c =>
+                        c.bucket === 'internal_contradiction' && c.claim1_party === 'ours'
+                    );
+                } else if (activeBucket === 'disputes') {
+                    contradictions = contradictions.filter(c =>
+                        c.bucket === 'dispute'
+                    );
+                }
+            }
+
+            // Sort: verified > likely > suspicious, then by severity, then by confidence
+            contradictions.sort((a, b) => {
+                const statusOrder = { verified: 0, likely: 1, suspicious: 2 };
+                const severityOrder = { high: 0, medium: 1, low: 2 };
+
+                if (statusOrder[a.status] !== statusOrder[b.status]) {
+                    return statusOrder[a.status] - statusOrder[b.status];
+                }
+                if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+                    return severityOrder[a.severity] - severityOrder[b.severity];
+                }
+                return (b.confidence || 0) - (a.confidence || 0);
+            });
+
+            if (contradictions.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128269;</div>
+                        <div>${currentData.contradictions?.length ? 'אין סתירות תואמות לפילטר' : 'לא נמצאו סתירות'}</div>
+                    </div>
+                `;
+                return;
+            }
+
+            list.innerHTML = contradictions.map(c => renderContradictionCard(c)).join('');
+        }
+
+        function renderContradictionCard(c) {
+            const typeKey = getContradictionTypeKey(c.type);
+            const typeLabel = getTypeLabel(c.type);
+            const statusLabel = { verified: 'מאומת', likely: 'סביר', suspicious: 'חשוד' }[c.status] || c.status;
+
+            // Bucket/party badge
+            let bucketBadge = '';
+            if (c.bucket === 'dispute') {
+                bucketBadge = '<span class="badge" style="background: #f5f3ff; color: #5b21b6;">פלוגתא</span>';
+            } else if (c.bucket === 'internal_contradiction') {
+                const partyLabel = c.claim1_party === 'theirs' ? 'סתירה שלהם' :
+                                   c.claim1_party === 'ours' ? 'סתירה שלנו' : 'סתירה פנימית';
+                const partyStyle = c.claim1_party === 'theirs' ? 'background: #fef2f2; color: #991b1b;' :
+                                   c.claim1_party === 'ours' ? 'background: #fef3c7; color: #92400e;' :
+                                   'background: var(--gray-100); color: var(--gray-600);';
+                bucketBadge = `<span class="badge" style="${partyStyle}">${partyLabel}</span>`;
+            }
+
+            // Party labels for quote boxes
+            const party1Label = c.claim1_party ?
+                (c.claim1_party === 'theirs' ? ' (שלהם)' : c.claim1_party === 'ours' ? ' (שלנו)' : '') : '';
+            const party2Label = c.claim2_party ?
+                (c.claim2_party === 'theirs' ? ' (שלהם)' : c.claim2_party === 'ours' ? ' (שלנו)' : '') : '';
+
+            return `
+                <div class="contradiction-card ${c.severity}">
+                    <div class="card-header">
+                        <div class="card-badges">
+                            <span class="badge badge-${c.status}">${statusLabel}</span>
+                            <span class="badge badge-${typeKey}">${typeLabel}</span>
+                            <span class="badge badge-severity-${c.severity}">${c.severity}</span>
+                            ${bucketBadge}
+                        </div>
+                        <div class="card-confidence">${Math.round((c.confidence || 0) * 100)}% ביטחון</div>
+                    </div>
+                    <div class="card-reason">${c.explanation || 'סתירה זוהתה'}</div>
+                    <div class="quotes-container">
+                        <div class="quote-box">
+                            <div class="quote-label">טענה 1${party1Label}</div>
+                            <div class="quote-text">${escapeHtml(truncateText(c.quote1 || c.claim1?.quote || '', 200))}</div>
+                            <div class="quote-source" onclick="openSource('${c.claim1_id || c.claim1?.claim_id || ''}')">
+                                פתח מקור &#8592;
+                            </div>
+                        </div>
+                        <div class="quote-box">
+                            <div class="quote-label">טענה 2${party2Label}</div>
+                            <div class="quote-text">${escapeHtml(truncateText(c.quote2 || c.claim2?.quote || '', 200))}</div>
+                            <div class="quote-source" onclick="openSource('${c.claim2_id || c.claim2?.claim_id || ''}')">
+                                פתח מקור &#8592;
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-actions">
+                        <button class="card-action-btn primary" onclick="openTrack('${c.id}')">
+                            פתח Track חקירה
+                        </button>
+                        <button class="card-action-btn secondary" onclick="exportSingleContradiction('${c.id}')">
+                            ייצא
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderClaimsTable() {
+            if (!currentData) return;
+
+            const tbody = document.getElementById('claimsTableBody');
+            const claims = currentData.claims || [];
+            const claimResults = currentData.claim_results || [];
+
+            // Build lookup
+            const resultLookup = {};
+            for (const cr of claimResults) {
+                resultLookup[cr.claim_id] = cr;
+            }
+
+            if (claims.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="7" style="text-align: center; padding: 40px; color: var(--gray-500);">
+                            לא נמצאו טענות
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = claims.map(claim => {
+                const result = resultLookup[claim.id] || {
+                    status: 'no_issues',
+                    contradiction_count: 0,
+                    max_severity: null,
+                    types: []
+                };
+
+                const statusLabels = {
+                    no_issues: 'תקין',
+                    potential_contradiction: 'סתירה אפשרית',
+                    verified_contradiction: 'סתירה מאומתת',
+                    needs_review: 'דורש בדיקה'
+                };
+
+                const typeBadges = (result.types || []).map(t => {
+                    const typeKey = getContradictionTypeKey(t);
+                    return `<span class="badge badge-${typeKey}">${getTypeLabel(t)}</span>`;
+                }).join(' ');
+
+                return `
+                    <tr onclick="selectClaim('${claim.id}')" class="${selectedClaimId === claim.id ? 'selected' : ''}">
+                        <td>${claim.id}</td>
+                        <td>${claim.doc_name || '-'}</td>
+                        <td class="claim-text-cell">
+                            <div class="claim-text-preview">${escapeHtml(claim.text)}</div>
+                        </td>
+                        <td><span class="badge badge-${result.status === 'no_issues' ? 'verified' : result.status === 'verified_contradiction' ? 'likely' : 'suspicious'}">${statusLabels[result.status] || result.status}</span></td>
+                        <td>${result.contradiction_count}</td>
+                        <td>${result.max_severity ? `<span class="badge badge-severity-${result.max_severity}">${result.max_severity}</span>` : '-'}</td>
+                        <td>${typeBadges || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderTracks() {
+            const container = document.getElementById('tracksList');
+
+            if (crossExamTracks.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#127919;</div>
+                        <div>אין מסלולי חקירה נגדית (נדרשות סתירות verified/likely)</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = crossExamTracks.map((track, idx) => renderTrackCard(track, idx)).join('');
+        }
+
+        function renderTrackCard(track, idx) {
+            const typeLabel = getTypeLabel(track.type);
+            const statusLabel = { verified: 'מאומת', likely: 'סביר', suspicious: 'חשוד' }[track.status] || track.status;
+
+            return `
+                <div class="track-card" id="track-${track.track_id}">
+                    <div class="track-header">
+                        <div>
+                            <div class="track-title">סתירה: ${typeLabel}</div>
+                            <div class="card-badges" style="margin-top: 8px;">
+                                <span class="badge badge-${track.status}">${statusLabel}</span>
+                                <span class="badge badge-severity-${track.severity}">${track.severity}</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline" onclick="exportTrack('${track.track_id}')">ייצא Track</button>
+                    </div>
+                    <div class="track-goal">&#127919; מטרה: ${track.goal}</div>
+                    <div class="style-tabs">
+                        <button class="style-tab active" data-style="calm" onclick="switchTrackStyle('${track.track_id}', 'calm', this)">רגוע</button>
+                        <button class="style-tab" data-style="aggressive" onclick="switchTrackStyle('${track.track_id}', 'aggressive', this)">אגרסיבי</button>
+                        <button class="style-tab" data-style="judicial" onclick="switchTrackStyle('${track.track_id}', 'judicial', this)">שיפוטי</button>
+                    </div>
+                    <div class="track-steps" id="steps-${track.track_id}">
+                        ${renderTrackSteps(track.style_variants.calm)}
+                    </div>
+                    <div class="track-evidence">
+                        <div class="evidence-label">ראיות:</div>
+                        <div class="evidence-item">
+                            <div class="evidence-doc">${track.evidence.claim1.doc_name}</div>
+                            <div class="evidence-quote">"${track.evidence.claim1.quote}"</div>
+                        </div>
+                        <div class="evidence-item">
+                            <div class="evidence-doc">${track.evidence.claim2.doc_name}</div>
+                            <div class="evidence-quote">"${track.evidence.claim2.quote}"</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTrackSteps(steps) {
+            const stepLabels = {
+                pin_fact_a: 'נעץ עובדה א',
+                pin_fact_b: 'נעץ עובדה ב',
+                confront: 'עימות',
+                close_gap: 'סגור פער'
+            };
+
+            return steps.map(step => `
+                <div class="track-step">
+                    <div class="step-label">${stepLabels[step.step] || step.step}</div>
+                    <div class="step-question">${escapeHtml(step.question)}</div>
+                    <div class="step-expected">תשובה צפויה: ${step.expected_answer}</div>
+                </div>
+            `).join('');
+        }
+
+        function switchTrackStyle(trackId, style, btn) {
+            const track = crossExamTracks.find(t => t.track_id === trackId);
+            if (!track) return;
+
+            // Update active tab
+            const tabs = btn.parentElement.querySelectorAll('.style-tab');
+            tabs.forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+
+            // Update steps
+            const stepsContainer = document.getElementById(`steps-${trackId}`);
+            stepsContainer.innerHTML = renderTrackSteps(track.style_variants[style]);
+        }
+
+        // ===========================================
+        // UI Interactions
+        // ===========================================
+        function toggleInputSection() {
+            document.getElementById('inputSection').classList.toggle('expanded');
+        }
+
+        function switchTab(tabId) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tabId);
+            });
+
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.toggle('active', content.id === `tab-${tabId}`);
+            });
+        }
+
+        function applyFilters() {
+            renderContradictions();
+        }
+
+        // ===========================================
+        // Attribution Layer - Bucket Filtering
+        // ===========================================
+        function updateBucketCounts() {
+            if (!currentData) return;
+
+            const summary = currentData.attribution_summary || {};
+            const contradictions = currentData.contradictions || [];
+
+            // Count by bucket
+            let theirsCount = summary.internal_theirs || 0;
+            let oursCount = summary.internal_ours || 0;
+            let disputesCount = summary.disputes || 0;
+
+            // Fallback: count from contradictions if summary not available
+            if (!currentData.attribution_summary) {
+                theirsCount = contradictions.filter(c =>
+                    c.bucket === 'internal_contradiction' && c.claim1_party === 'theirs'
+                ).length;
+                oursCount = contradictions.filter(c =>
+                    c.bucket === 'internal_contradiction' && c.claim1_party === 'ours'
+                ).length;
+                disputesCount = contradictions.filter(c =>
+                    c.bucket === 'dispute'
+                ).length;
+            }
+
+            document.getElementById('bucketTheirsCount').textContent = theirsCount;
+            document.getElementById('bucketOursCount').textContent = oursCount;
+            document.getElementById('bucketDisputesCount').textContent = disputesCount;
+        }
+
+        function updateAttributionBanner() {
+            if (!currentData) return;
+
+            const banner = document.getElementById('attributionBanner');
+            const summary = currentData.attribution_summary || {};
+
+            // Show banner if party attribution is missing
+            if (!summary.has_party_attribution && summary.needs_classification > 0) {
+                banner.classList.remove('hidden');
+            } else {
+                banner.classList.add('hidden');
+            }
+        }
+
+        function filterByBucket(bucket) {
+            // Toggle bucket filter
+            if (activeBucket === bucket) {
+                activeBucket = null;
+            } else {
+                activeBucket = bucket;
+            }
+
+            // Update button states
+            document.querySelectorAll('.bucket-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            if (activeBucket) {
+                const btnId = {
+                    'theirs': 'bucketTheirs',
+                    'ours': 'bucketOurs',
+                    'disputes': 'bucketDisputes'
+                }[activeBucket];
+                if (btnId) {
+                    document.getElementById(btnId).classList.add('active');
+                }
+            }
+
+            // Re-render contradictions with bucket filter
+            switchTab('contradictions');
+            renderContradictions();
+        }
+
+        function clearBucketFilter() {
+            activeBucket = null;
+            document.querySelectorAll('.bucket-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            renderContradictions();
+        }
+
+        function openDocumentSettings() {
+            // TODO: Open document settings modal to assign party attribution
+            alert('פונקציית סימון מסמכים תתווסף בקרוב. בינתיים, ניתן להוסיף מסמכים עם שיוך צד דרך ה-API.');
+        }
+
+        function filterUsableContradictions() {
+            document.getElementById('filterUsable').checked = true;
+            switchTab('contradictions');
+            applyFilters();
+        }
+
+        function switchToTracksTab() {
+            switchTab('crossexam');
+        }
+
+        function toggleSourceMode() {
+            sourceMode = !sourceMode;
+            if (sourceMode) {
+                alert('מצב מקור מופעל: לחץ על "פתח מקור" בכל סתירה');
+            }
+        }
+
+        function selectClaim(claimId) {
+            selectedClaimId = claimId;
+            renderClaimsTable();
+            openClaimPanel(claimId);
+        }
+
+        function openClaimPanel(claimId) {
+            const claim = currentData.claims?.find(c => c.id === claimId);
+            if (!claim) return;
+
+            const relatedContradictions = (currentData.contradictions || []).filter(c =>
+                c.claim1_id === claimId || c.claim2_id === claimId ||
+                c.claim1?.claim_id === claimId || c.claim2?.claim_id === claimId
+            );
+
+            let html = `
+                <div style="margin-bottom: 16px;">
+                    <div style="font-size: 11px; color: var(--gray-500); margin-bottom: 6px;">טקסט הטענה:</div>
+                    <div style="background: var(--gray-100); padding: 12px; border-radius: 8px; font-size: 14px;">
+                        ${escapeHtml(claim.text)}
+                    </div>
+                </div>
+            `;
+
+            if (claim.locator) {
+                html += `
+                    <div style="font-size: 12px; color: var(--gray-500); margin-bottom: 16px;">
+                        מיקום: ${claim.locator.doc_id || ''}
+                        ${claim.locator.paragraph ? `פסקה ${claim.locator.paragraph}` : ''}
+                    </div>
+                `;
+            }
+
+            if (relatedContradictions.length > 0) {
+                html += `<h4 style="margin: 0 0 12px;">סתירות קשורות (${relatedContradictions.length})</h4>`;
+                html += relatedContradictions.map(c => `
+                    <div style="background: var(--gray-50); padding: 12px; border-radius: 8px; margin-bottom: 12px; border-right: 3px solid var(--danger);">
+                        <div class="card-badges" style="margin-bottom: 8px;">
+                            <span class="badge badge-${c.status}">${c.status}</span>
+                            <span class="badge badge-${getContradictionTypeKey(c.type)}">${getTypeLabel(c.type)}</span>
+                        </div>
+                        <div style="font-size: 13px;">${c.explanation || ''}</div>
+                    </div>
+                `).join('');
+            } else {
+                html += `<div style="text-align: center; color: var(--gray-500); padding: 20px;">אין סתירות קשורות</div>`;
+            }
+
+            document.getElementById('sidePanelTitle').textContent = `פרטי טענה: ${claimId}`;
+            document.getElementById('sidePanelContent').innerHTML = html;
+            document.getElementById('sidePanel').classList.add('open');
+            document.getElementById('sidePanelOverlay').classList.add('visible');
+        }
+
+        function closeSidePanel() {
+            document.getElementById('sidePanel').classList.remove('open');
+            document.getElementById('sidePanelOverlay').classList.remove('visible');
+        }
+
+        function openSource(claimId) {
+            if (!claimId) return;
+            selectClaim(claimId);
+            switchTab('claims');
+        }
+
+        function openTrack(contradictionId) {
+            switchTab('crossexam');
+            const trackEl = document.getElementById(`track-track_${contradictionId}`);
+            if (trackEl) {
+                trackEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                trackEl.style.boxShadow = '0 0 0 3px rgba(37, 99, 235, 0.3)';
+                setTimeout(() => trackEl.style.boxShadow = '', 2000);
+            }
+        }
+
+        // ===========================================
+        // Export Functions
+        // ===========================================
+        function showExportModal() {
+            document.getElementById('exportModal').classList.add('visible');
+        }
+
+        function hideExportModal() {
+            document.getElementById('exportModal').classList.remove('visible');
+        }
+
+        function selectExportOption(el) {
+            document.querySelectorAll('.export-option').forEach(opt => opt.classList.remove('selected'));
+            el.classList.add('selected');
+            selectedExportFormat = el.dataset.format;
+        }
+
+        function doExport() {
+            if (!currentData) {
+                alert('אין נתונים לייצוא');
+                return;
+            }
+
+            const exportData = {
+                metadata: currentData.metadata,
+                contradictions: currentData.contradictions,
+                cross_exam_tracks: crossExamTracks
+            };
+
+            if (selectedExportFormat === 'json') {
+                downloadJSON(exportData, 'cross_exam_export.json');
+            } else if (selectedExportFormat === 'pdf') {
+                generatePDFExport(exportData);
+            } else if (selectedExportFormat === 'word') {
+                generateWordExport(exportData);
+            }
+
+            hideExportModal();
+        }
+
+        function exportTrack(trackId) {
+            const track = crossExamTracks.find(t => t.track_id === trackId);
+            if (!track) return;
+            downloadJSON(track, `track_${trackId}.json`);
+        }
+
+        function exportSingleContradiction(contradictionId) {
+            const contr = currentData.contradictions?.find(c => c.id === contradictionId);
+            const track = crossExamTracks.find(t => t.contradiction_id === contradictionId);
+            if (!contr) return;
+            downloadJSON({ contradiction: contr, track }, `contradiction_${contradictionId}.json`);
+        }
+
+        function downloadJSON(data, filename) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function generatePDFExport(data) {
+            // For now, generate HTML that can be printed as PDF
+            const html = `
+                <!DOCTYPE html>
+                <html dir="rtl" lang="he">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>חקירה נגדית לפי סתירות</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
+                        h1 { text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; }
+                        .summary { background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0; }
+                        .contradiction { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 8px; page-break-inside: avoid; }
+                        .contradiction h3 { margin-top: 0; color: #c00; }
+                        .quote { background: #f9f9f9; padding: 10px; margin: 10px 0; border-right: 3px solid #666; }
+                        .track-step { background: #e3f2fd; padding: 12px; margin: 8px 0; border-radius: 4px; }
+                        .step-label { font-weight: bold; color: #1565c0; }
+                        @media print { .no-print { display: none; } }
+                    </style>
+                </head>
+                <body>
+                    <h1>חקירה נגדית לפי סתירות</h1>
+                    <div class="summary">
+                        <strong>סיכום:</strong> ${data.contradictions?.length || 0} סתירות,
+                        ${data.cross_exam_tracks?.length || 0} מסלולי חקירה
+                    </div>
+                    ${(data.cross_exam_tracks || []).map(track => `
+                        <div class="contradiction">
+                            <h3>סתירה (${getTypeLabel(track.type)}) — חומרה: ${track.severity} — סטטוס: ${track.status}</h3>
+                            <p><strong>מטרה:</strong> ${track.goal}</p>
+                            <h4>מקורות:</h4>
+                            <div class="quote">${track.evidence.claim1.doc_name}: "${track.evidence.claim1.quote}"</div>
+                            <div class="quote">${track.evidence.claim2.doc_name}: "${track.evidence.claim2.quote}"</div>
+                            <h4>שאלות (סגנון רגוע):</h4>
+                            ${track.style_variants.calm.map(step => `
+                                <div class="track-step">
+                                    <div class="step-label">${step.step}:</div>
+                                    ${step.question}
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('')}
+                    <button class="no-print" onclick="window.print()" style="padding: 10px 20px; font-size: 16px;">הדפס PDF</button>
+                </body>
+                </html>
+            `;
+
+            const win = window.open('', '_blank');
+            win.document.write(html);
+            win.document.close();
+        }
+
+        function generateWordExport(data) {
+            // Generate plain text format for Word
+            let text = 'שאלות לחקירה נגדית\n';
+            text += '='.repeat(30) + '\n\n';
+
+            for (const track of (data.cross_exam_tracks || [])) {
+                text += `סתירה: ${getTypeLabel(track.type)}\n`;
+                text += '-'.repeat(20) + '\n';
+                text += `מטרה: ${track.goal}\n\n`;
+
+                for (const step of track.style_variants.calm) {
+                    text += `[${step.step}] ${step.question}\n`;
+                }
+                text += '\n\n';
+            }
+
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'cross_exam_questions.txt';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ===========================================
+        // Utility Functions
+        // ===========================================
+        function getContradictionTypeKey(type) {
+            if (!type) return 'unknown';
+            const typeStr = type.toLowerCase();
+            if (typeStr.includes('temporal') || typeStr.includes('date')) return 'temporal';
+            if (typeStr.includes('quant') || typeStr.includes('amount')) return 'quant';
+            if (typeStr.includes('presence') || typeStr.includes('particip')) return 'presence';
+            if (typeStr.includes('actor') || typeStr.includes('attrib')) return 'actor';
+            if (typeStr.includes('document') || typeStr.includes('doc')) return 'document';
+            if (typeStr.includes('identity')) return 'identity';
+            return 'unknown';
+        }
+
+        function getTypeLabel(type) {
+            const typeKey = getContradictionTypeKey(type);
+            return {
+                temporal: 'זמן',
+                quant: 'סכום',
+                presence: 'נוכחות',
+                actor: 'ייחוס',
+                document: 'מסמך',
+                identity: 'זהות'
+            }[typeKey] || type;
+        }
+
+        function truncateText(text, maxLen) {
+            if (!text) return '';
+            // Remove system markers
+            text = text.replace(/תוצאות הניתוח|מטא-דאטה|טבלת טענות|LLM_|claim_|contr_/gi, '').trim();
+            return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function compareVersions() {
+            // MVP placeholder
+            const container = document.getElementById('diffContainer');
+            container.innerHTML = `
+                <div class="diff-section">
+                    <div class="diff-section-title">שינויים שזוהו:</div>
+                    <div class="diff-line diff-added">+ פונקציונליות זו תתווסף בגרסה הבאה</div>
+                    <div class="diff-line diff-removed">- בחר שני מסמכים מאותו תיק להשוואה</div>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>

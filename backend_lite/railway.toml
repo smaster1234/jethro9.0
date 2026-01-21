@@ -1,0 +1,16 @@
+# Railway Configuration for backend_lite
+# Standalone contradiction detection service
+# IMPORTANT: Set Root Directory to "backend_lite" in Railway dashboard
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Both Web and Worker use start.sh
+# Set SERVICE_TYPE=worker in Worker service's environment variables
+startCommand = "/app/backend_lite/start.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

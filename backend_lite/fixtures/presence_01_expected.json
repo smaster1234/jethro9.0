@@ -1,0 +1,6 @@
+{
+  "min_contradictions": 1,
+  "expected_types": ["presence_participation_conflict"],
+  "expected_buckets": ["dispute"],
+  "should_not_contain": []
+}

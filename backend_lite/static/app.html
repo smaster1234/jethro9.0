@@ -1,0 +1,2218 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JETHRO - מערכת ניהול תיקים משפטיים</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #64748b;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --border: #e2e8f0;
+            --text: #1e293b;
+            --text-muted: #64748b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .app-container { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: 260px;
+            background: var(--text);
+            color: white;
+            padding: 20px 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .main-content {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        /* Sidebar */
+        .logo {
+            padding: 0 20px 20px;
+            font-size: 24px;
+            font-weight: bold;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 20px;
+        }
+        .nav-section {
+            padding: 10px 20px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 1px;
+        }
+        .nav-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: background 0.2s;
+        }
+        .nav-item:hover { background: rgba(255,255,255,0.1); }
+        .nav-item.active { background: var(--primary); }
+        .nav-item svg { width: 20px; height: 20px; }
+
+        .user-info {
+            margin-top: auto;
+            padding: 20px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .user-name { font-weight: 600; margin-bottom: 4px; }
+        .user-role { font-size: 12px; color: rgba(255,255,255,0.6); }
+
+        /* Cards */
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .card-title { font-size: 18px; font-weight: 600; }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: var(--border); color: var(--text); }
+        .btn-secondary:hover { background: #cbd5e1; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+        /* Tables */
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 12px;
+            text-align: right;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: var(--bg);
+            font-weight: 600;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        tr:hover td { background: var(--bg); }
+
+        /* Forms */
+        .form-group { margin-bottom: 16px; }
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+        .form-input, .form-select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+        }
+
+        /* Badges */
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .badge-success { background: #dcfce7; color: #166534; }
+        .badge-warning { background: #fef3c7; color: #92400e; }
+        .badge-info { background: #dbeafe; color: #1e40af; }
+        .badge-danger { background: #fee2e2; color: #991b1b; }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .stat-value { font-size: 32px; font-weight: 700; color: var(--primary); }
+        .stat-label { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        .modal-overlay.active { opacity: 1; visibility: visible; }
+        .modal {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            transform: translateY(20px);
+            transition: transform 0.3s;
+        }
+        .modal-overlay.active .modal { transform: translateY(0); }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .modal-title { font-size: 20px; font-weight: 600; }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        /* Upload Zone */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--primary);
+            background: rgba(37,99,235,0.05);
+        }
+        .upload-zone svg {
+            width: 48px;
+            height: 48px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+        .upload-zone p { color: var(--text-muted); }
+
+        /* Folder Tree */
+        .folder-tree { font-size: 14px; }
+        .folder-item {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+        .folder-item:hover { background: var(--bg); }
+        .folder-item.selected { background: #dbeafe; }
+        .folder-children { padding-right: 20px; }
+
+        /* Page sections */
+        .page { display: none; }
+        .page.active { display: block; }
+
+        /* Login Screen */
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+        }
+        .login-card {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .login-logo {
+            font-size: 32px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 8px;
+            color: var(--primary);
+        }
+        .login-subtitle {
+            text-align: center;
+            color: var(--text-muted);
+            margin-bottom: 32px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--bg);
+            padding: 4px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .tab:hover { background: rgba(0,0,0,0.05); }
+        .tab.active { background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000;
+        }
+        .toast {
+            padding: 12px 24px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            animation: slideIn 0.3s ease;
+        }
+        .toast-success { background: var(--success); color: white; }
+        .toast-error { background: var(--danger); color: white; }
+        @keyframes slideIn {
+            from { transform: translateY(-20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        /* Grid layouts */
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) {
+            .grid-2, .grid-3 { grid-template-columns: 1fr; }
+            .sidebar { display: none; }
+        }
+
+        /* Actions */
+        .actions { display: flex; gap: 8px; }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* Analysis Results Panel */
+        .analysis-panel {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1001;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .analysis-panel.active { display: flex; }
+        .analysis-content {
+            background: white;
+            width: 95%;
+            max-width: 1200px;
+            max-height: 90vh;
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .analysis-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg);
+        }
+        .analysis-header h2 { font-size: 20px; font-weight: 600; }
+        .analysis-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+        .analysis-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .analysis-stat {
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        .analysis-stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--primary);
+        }
+        .analysis-stat-label {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Contradiction Cards */
+        .contradictions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .contradiction-card {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .contradiction-header {
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg);
+            cursor: pointer;
+        }
+        .contradiction-header:hover { background: #e2e8f0; }
+        .contradiction-severity {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .severity-critical { background: #fee2e2; color: #991b1b; }
+        .severity-high { background: #fed7aa; color: #9a3412; }
+        .severity-medium { background: #fef3c7; color: #92400e; }
+        .severity-low { background: #dbeafe; color: #1e40af; }
+        .contradiction-type {
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .contradiction-body {
+            padding: 16px;
+            display: none;
+            border-top: 1px solid var(--border);
+        }
+        .contradiction-card.expanded .contradiction-body { display: block; }
+        .contradiction-description {
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+        .contradiction-claims {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .claim-box {
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 8px;
+        }
+        .claim-box-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .claim-text {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .claim-source {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* Cross Exam Questions */
+        .cross-exam-section {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .cross-exam-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+        .cross-exam-question {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+        }
+        .cross-exam-question::before {
+            content: "❓ ";
+        }
+
+        /* Progress bar */
+        .analysis-progress {
+            margin: 24px 0;
+        }
+        .progress-bar {
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: var(--primary);
+            transition: width 0.3s;
+        }
+        .progress-text {
+            text-align: center;
+            margin-top: 8px;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        /* Document Viewer in Analysis */
+        .doc-viewer-btn {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--primary);
+            cursor: pointer;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Analysis Results Panel -->
+    <div id="analysisPanel" class="analysis-panel" onclick="if(event.target === this) closeAnalysisPanel()">
+        <div class="analysis-content">
+            <div class="analysis-header">
+                <h2>תוצאות ניתוח סתירות</h2>
+                <button class="modal-close" onclick="closeAnalysisPanel()">&times;</button>
+            </div>
+            <div class="analysis-body" id="analysisBody">
+                <!-- Progress state -->
+                <div id="analysisProgress" class="analysis-progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">מנתח מסמכים...</div>
+                </div>
+
+                <!-- Results state (hidden initially) -->
+                <div id="analysisResults" style="display: none;">
+                    <!-- Stats -->
+                    <div class="analysis-stats">
+                        <div class="analysis-stat">
+                            <div class="analysis-stat-value" id="statClaims">0</div>
+                            <div class="analysis-stat-label">טענות שזוהו</div>
+                        </div>
+                        <div class="analysis-stat">
+                            <div class="analysis-stat-value" id="statContradictions">0</div>
+                            <div class="analysis-stat-label">סתירות שנמצאו</div>
+                        </div>
+                        <div class="analysis-stat">
+                            <div class="analysis-stat-value" id="statCritical">0</div>
+                            <div class="analysis-stat-label">סתירות קריטיות</div>
+                        </div>
+                        <div class="analysis-stat">
+                            <div class="analysis-stat-value" id="statDuration">0</div>
+                            <div class="analysis-stat-label">זמן ניתוח (שניות)</div>
+                        </div>
+                    </div>
+
+                    <!-- Contradictions List -->
+                    <h3 style="margin-bottom: 16px; font-size: 16px;">סתירות שנמצאו</h3>
+                    <div class="contradictions-list" id="contradictionsList">
+                        <!-- Contradiction cards will be inserted here -->
+                    </div>
+
+                    <!-- Cross Exam Section -->
+                    <div class="cross-exam-section" id="crossExamSection" style="display: none;">
+                        <h3 class="cross-exam-title">שאלות לחקירה נגדית</h3>
+                        <div id="crossExamQuestions">
+                            <!-- Questions will be inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="loginScreen" class="login-container">
+        <div class="login-card">
+            <div class="login-logo">JETHRO</div>
+            <div class="login-subtitle">מערכת ניהול תיקים משפטיים</div>
+
+            <div class="form-group">
+                <label class="form-label">אימייל</label>
+                <input type="email" id="loginEmail" class="form-input" placeholder="email@firm.co.il">
+            </div>
+            <div class="form-group">
+                <label class="form-label">סיסמה</label>
+                <input type="password" id="loginPassword" class="form-input" placeholder="********">
+            </div>
+            <button class="btn btn-primary" style="width:100%; margin-top: 16px;" onclick="handleLogin()">
+                התחברות
+            </button>
+
+            <div style="margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border); text-align: center;">
+                <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">משתמשי דמו לבדיקה:</p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+                    <button class="btn btn-secondary btn-sm" onclick="demoLogin('super_admin')">Super Admin</button>
+                    <button class="btn btn-secondary btn-sm" onclick="demoLogin('admin')">Admin</button>
+                    <button class="btn btn-secondary btn-sm" onclick="demoLogin('member')">Member</button>
+                    <button class="btn btn-secondary btn-sm" onclick="demoLogin('viewer')">Viewer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="mainApp" class="app-container" style="display: none;">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">JETHRO</div>
+
+            <div class="nav-section">ראשי</div>
+            <div class="nav-item active" onclick="showPage('dashboard')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                דשבורד
+            </div>
+            <div class="nav-item" onclick="showPage('cases')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+                תיקים
+            </div>
+            <div class="nav-item" onclick="showPage('upload')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                העלאת מסמכים
+            </div>
+
+            <div class="nav-section" id="adminSection" style="display:none;">ניהול</div>
+            <div class="nav-item" id="usersNav" style="display:none;" onclick="showPage('users')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                משתמשים
+            </div>
+            <div class="nav-item" id="teamsNav" style="display:none;" onclick="showPage('teams')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                צוותים
+            </div>
+            <div class="nav-item" id="firmsNav" style="display:none;" onclick="showPage('firms')">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                משרדות
+            </div>
+
+            <div class="user-info">
+                <div class="user-name" id="userName">-</div>
+                <div class="user-role" id="userRole">-</div>
+                <button class="btn btn-secondary btn-sm" style="width:100%; margin-top: 12px;" onclick="handleLogout()">
+                    התנתק
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Page -->
+            <div id="page-dashboard" class="page active">
+                <h1 style="margin-bottom: 24px;">דשבורד</h1>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="statCases">0</div>
+                        <div class="stat-label">תיקים פעילים</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statDocs">0</div>
+                        <div class="stat-label">מסמכים</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statContradictions">0</div>
+                        <div class="stat-label">סתירות שנמצאו</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="statTeams">0</div>
+                        <div class="stat-label">צוותים</div>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">תיקים אחרונים</span>
+                            <button class="btn btn-primary btn-sm" onclick="showPage('cases')">צפה בכל</button>
+                        </div>
+                        <div id="recentCases">
+                            <div class="empty-state">
+                                <p>אין תיקים עדיין</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">פעילות אחרונה</span>
+                        </div>
+                        <div id="recentActivity">
+                            <div class="empty-state">
+                                <p>אין פעילות עדיין</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cases Page -->
+            <div id="page-cases" class="page">
+                <div class="card-header" style="margin-bottom: 24px;">
+                    <h1>תיקים</h1>
+                    <button class="btn btn-primary" onclick="openModal('newCase')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        תיק חדש
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>שם התיק</th>
+                                    <th>מספר תיק</th>
+                                    <th>סטטוס</th>
+                                    <th>מסמכים</th>
+                                    <th>עודכן</th>
+                                    <th>פעולות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="casesTable">
+                                <tr>
+                                    <td colspan="6" class="empty-state">טוען...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Page -->
+            <div id="page-upload" class="page">
+                <h1 style="margin-bottom: 24px;">העלאת מסמכים</h1>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title" style="margin-bottom: 16px;">בחר תיק</div>
+                        <select id="uploadCaseSelect" class="form-select" onchange="loadFolders()">
+                            <option value="">בחר תיק...</option>
+                        </select>
+
+                        <div id="folderSection" style="margin-top: 20px; display: none;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                <span class="card-title">תיקיות</span>
+                                <button class="btn btn-secondary btn-sm" onclick="openModal('newFolder')">+ תיקיה חדשה</button>
+                            </div>
+                            <div class="folder-tree" id="folderTree">
+                                <div class="folder-item selected" data-folder-id="">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                                    שורש
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title" style="margin-bottom: 16px;">העלאת קבצים</div>
+
+                        <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                            <p><strong>גרור קבצים לכאן</strong></p>
+                            <p>או לחץ לבחירה</p>
+                            <p style="font-size: 12px; margin-top: 8px;">PDF, DOCX, TXT, תמונות או ZIP</p>
+                        </div>
+                        <input type="file" id="fileInput" style="display:none;" multiple accept=".pdf,.docx,.doc,.txt,.png,.jpg,.jpeg,.zip" onchange="handleFileSelect(event)">
+
+                        <div id="uploadProgress" style="margin-top: 20px; display: none;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                                <span id="uploadFileName">-</span>
+                                <span id="uploadStatus">-</span>
+                            </div>
+                            <div style="background: var(--bg); border-radius: 4px; height: 8px; overflow: hidden;">
+                                <div id="uploadBar" style="background: var(--primary); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-top: 20px;">
+                            <label class="form-label">צד במשפט</label>
+                            <select id="uploadParty" class="form-select">
+                                <option value="">לא צוין</option>
+                                <option value="plaintiff">תובע</option>
+                                <option value="defendant">נתבע</option>
+                                <option value="third_party">צד ג'</option>
+                                <option value="court">בית המשפט</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <span class="card-title">מסמכים בתיקיה</span>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span id="selectedCount" style="font-size: 13px; color: var(--text-muted);"></span>
+                            <button class="btn btn-secondary btn-sm" id="selectAllBtn" onclick="toggleSelectAll()" style="display: none;">
+                                בחר הכל
+                            </button>
+                            <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeCase()" disabled>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                                <span id="analyzeBtnText">נתח סתירות</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px; text-align: center;">
+                                        <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" title="בחר/בטל הכל">
+                                    </th>
+                                    <th>שם קובץ</th>
+                                    <th>סוג</th>
+                                    <th>צד</th>
+                                    <th>סטטוס</th>
+                                    <th>הועלה</th>
+                                    <th>פעולות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="documentsTable">
+                                <tr>
+                                    <td colspan="7" class="empty-state">בחר תיק כדי לראות מסמכים</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Users Page -->
+            <div id="page-users" class="page">
+                <div class="card-header" style="margin-bottom: 24px;">
+                    <h1>משתמשים</h1>
+                    <button class="btn btn-primary" onclick="openModal('newUser')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        משתמש חדש
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>שם</th>
+                                    <th>אימייל</th>
+                                    <th>תפקיד מערכת</th>
+                                    <th>תפקיד מקצועי</th>
+                                    <th>סטטוס</th>
+                                    <th>פעולות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersTable">
+                                <tr>
+                                    <td colspan="6" class="empty-state">טוען...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Teams Page -->
+            <div id="page-teams" class="page">
+                <div class="card-header" style="margin-bottom: 24px;">
+                    <h1>צוותים</h1>
+                    <button class="btn btn-primary" onclick="openModal('newTeam')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        צוות חדש
+                    </button>
+                </div>
+
+                <div id="teamsContainer" class="grid-3">
+                    <!-- Team cards will be inserted here -->
+                </div>
+            </div>
+
+            <!-- Firms Page (Super Admin only) -->
+            <div id="page-firms" class="page">
+                <div class="card-header" style="margin-bottom: 24px;">
+                    <h1>משרדות</h1>
+                    <button class="btn btn-primary" onclick="openModal('newFirm')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        משרד חדש
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>שם המשרד</th>
+                                    <th>דומיין</th>
+                                    <th>משתמשים</th>
+                                    <th>צוותים</th>
+                                    <th>נוצר</th>
+                                    <th>פעולות</th>
+                                </tr>
+                            </thead>
+                            <tbody id="firmsTable">
+                                <tr>
+                                    <td colspan="6" class="empty-state">טוען...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div class="modal-overlay" id="modal-newCase">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">תיק חדש</span>
+                <button class="modal-close" onclick="closeModal('newCase')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">שם התיק</label>
+                <input type="text" id="newCaseName" class="form-input" placeholder="לדוגמה: תביעת כהן נ' לוי">
+            </div>
+            <div class="form-group">
+                <label class="form-label">מספר תיק (אופציונלי)</label>
+                <input type="text" id="newCaseNumber" class="form-input" placeholder="לדוגמה: 12345-01-23">
+            </div>
+            <div class="form-group">
+                <label class="form-label">תיאור</label>
+                <textarea id="newCaseDesc" class="form-input" rows="3" placeholder="תיאור קצר של התיק..."></textarea>
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="createCase()">צור תיק</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-newFolder">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">תיקיה חדשה</span>
+                <button class="modal-close" onclick="closeModal('newFolder')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">שם התיקיה</label>
+                <input type="text" id="newFolderName" class="form-input" placeholder="לדוגמה: ראיות תובע">
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="createFolder()">צור תיקיה</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-newUser">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">משתמש חדש</span>
+                <button class="modal-close" onclick="closeModal('newUser')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">שם מלא</label>
+                <input type="text" id="newUserName" class="form-input" placeholder="ישראל ישראלי">
+            </div>
+            <div class="form-group">
+                <label class="form-label">אימייל</label>
+                <input type="email" id="newUserEmail" class="form-input" placeholder="israel@firm.co.il">
+            </div>
+            <div class="form-group">
+                <label class="form-label">תפקיד מערכת</label>
+                <select id="newUserRole" class="form-select">
+                    <option value="member">Member - משתמש רגיל</option>
+                    <option value="admin">Admin - מנהל</option>
+                    <option value="viewer">Viewer - צופה בלבד</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">תפקיד מקצועי</label>
+                <input type="text" id="newUserProfRole" class="form-input" placeholder="עו״ד / מתמחה / שותף">
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="createUser()">צור משתמש</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-newTeam">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">צוות חדש</span>
+                <button class="modal-close" onclick="closeModal('newTeam')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">שם הצוות</label>
+                <input type="text" id="newTeamName" class="form-input" placeholder="לדוגמה: צוות ליטיגציה">
+            </div>
+            <div class="form-group">
+                <label class="form-label">תיאור</label>
+                <textarea id="newTeamDesc" class="form-input" rows="3" placeholder="תיאור קצר..."></textarea>
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="createTeam()">צור צוות</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-newFirm">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">משרד חדש</span>
+                <button class="modal-close" onclick="closeModal('newFirm')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">שם המשרד</label>
+                <input type="text" id="newFirmName" class="form-input" placeholder="משרד עו״ד כהן ושות'">
+            </div>
+            <div class="form-group">
+                <label class="form-label">דומיין</label>
+                <input type="text" id="newFirmDomain" class="form-input" placeholder="cohen-law.co.il">
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="createFirm()">צור משרד</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modal-teamMembers">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">חברי צוות</span>
+                <button class="modal-close" onclick="closeModal('teamMembers')">&times;</button>
+            </div>
+            <div id="teamMembersList"></div>
+            <hr style="margin: 20px 0; border: none; border-top: 1px solid var(--border);">
+            <div class="form-group">
+                <label class="form-label">הוסף חבר</label>
+                <select id="addMemberSelect" class="form-select">
+                    <option value="">בחר משתמש...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">תפקיד בצוות</label>
+                <select id="addMemberRole" class="form-select">
+                    <option value="team_member">חבר צוות</option>
+                    <option value="team_leader">מוביל צוות</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="addTeamMember()">הוסף לצוות</button>
+        </div>
+    </div>
+
+    <script>
+        // ===========================================
+        // STATE
+        // ===========================================
+        let currentUser = null;
+        let currentFirmId = null;
+        let selectedCaseId = null;
+        let selectedFolderId = '';
+        let currentTeamId = null;
+
+        const API = '';  // Same origin
+
+        // Role translations
+        const roleLabels = {
+            'super_admin': 'Super Admin',
+            'admin': 'Admin',
+            'member': 'Member',
+            'viewer': 'Viewer'
+        };
+
+        const teamRoleLabels = {
+            'team_leader': 'מוביל צוות',
+            'team_member': 'חבר צוות'
+        };
+
+        const statusLabels = {
+            'active': 'פעיל',
+            'on_hold': 'מושהה',
+            'archived': 'בארכיון',
+            'closed': 'סגור'
+        };
+
+        // ===========================================
+        // AUTH
+        // ===========================================
+        function handleLogin() {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            // In production, this would validate against a real auth endpoint
+            // For now, we'll use a demo login flow
+            toast('מתחבר...', 'info');
+
+            // Simulate finding user by email
+            fetch(`${API}/users?email=${encodeURIComponent(email)}`, {
+                headers: { 'X-User-Id': 'system' }
+            })
+            .then(r => r.json())
+            .then(users => {
+                if (users && users.length > 0) {
+                    loginAs(users[0]);
+                } else {
+                    toast('משתמש לא נמצא', 'error');
+                }
+            })
+            .catch(() => {
+                toast('שגיאת התחברות', 'error');
+            });
+        }
+
+        async function demoLogin(role) {
+            // Demo user emails
+            const demoEmails = {
+                'super_admin': 'david@demo.com',
+                'admin': 'sarah@demo.com',
+                'member': 'moshe@demo.com',
+                'viewer': 'rachel@demo.com'
+            };
+
+            const email = demoEmails[role];
+            toast('מתחבר...', 'info');
+
+            try {
+                // Fetch user by email using the /users/by-email endpoint or search
+                const res = await fetch(`${API}/users/by-email?email=${encodeURIComponent(email)}`);
+
+                if (res.ok) {
+                    const user = await res.json();
+                    loginAs(user);
+                } else {
+                    // Fallback: use local demo data (server will create demo users on startup)
+                    const demoUsers = {
+                        'super_admin': { id: 'demo-super', name: 'דוד כהן (Super Admin)', email: 'david@demo.com', system_role: 'super_admin', firm_id: 'demo-firm' },
+                        'admin': { id: 'demo-admin', name: 'שרה לוי (Admin)', email: 'sarah@demo.com', system_role: 'admin', firm_id: 'demo-firm' },
+                        'member': { id: 'demo-member', name: 'משה ישראלי (Member)', email: 'moshe@demo.com', system_role: 'member', firm_id: 'demo-firm' },
+                        'viewer': { id: 'demo-viewer', name: 'רחל אברהם (Viewer)', email: 'rachel@demo.com', system_role: 'viewer', firm_id: 'demo-firm' }
+                    };
+                    toast('שימוש במשתמש דמו מקומי', 'warning');
+                    loginAs(demoUsers[role]);
+                }
+            } catch (err) {
+                toast('שגיאת התחברות: ' + err.message, 'error');
+            }
+        }
+
+        function loginAs(user) {
+            currentUser = user;
+            currentFirmId = user.firm_id;
+
+            // Store in session
+            sessionStorage.setItem('user', JSON.stringify(user));
+
+            // Update UI
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'flex';
+            document.getElementById('userName').textContent = user.name;
+            document.getElementById('userRole').textContent = roleLabels[user.system_role] || user.system_role;
+
+            // Show admin sections based on role
+            const isAdmin = ['super_admin', 'admin'].includes(user.system_role);
+            const isSuperAdmin = user.system_role === 'super_admin';
+
+            document.getElementById('adminSection').style.display = isAdmin ? 'block' : 'none';
+            document.getElementById('usersNav').style.display = isAdmin ? 'flex' : 'none';
+            document.getElementById('teamsNav').style.display = isAdmin ? 'flex' : 'none';
+            document.getElementById('firmsNav').style.display = isSuperAdmin ? 'flex' : 'none';
+
+            // Load initial data
+            loadDashboard();
+            loadCases();
+
+            toast(`שלום ${user.name}!`, 'success');
+        }
+
+        function handleLogout() {
+            currentUser = null;
+            currentFirmId = null;
+            sessionStorage.removeItem('user');
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('mainApp').style.display = 'none';
+        }
+
+        // Check for existing session
+        (function() {
+            const savedUser = sessionStorage.getItem('user');
+            if (savedUser) {
+                loginAs(JSON.parse(savedUser));
+            }
+        })();
+
+        // ===========================================
+        // API HELPERS
+        // ===========================================
+        function apiHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'X-User-Id': currentUser?.id || 'anonymous',
+                'X-Firm-Id': currentFirmId || ''
+            };
+        }
+
+        async function apiGet(endpoint) {
+            const res = await fetch(`${API}${endpoint}`, { headers: apiHeaders() });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        }
+
+        async function apiPost(endpoint, data) {
+            const res = await fetch(`${API}${endpoint}`, {
+                method: 'POST',
+                headers: apiHeaders(),
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        }
+
+        async function apiDelete(endpoint) {
+            const res = await fetch(`${API}${endpoint}`, {
+                method: 'DELETE',
+                headers: apiHeaders()
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        }
+
+        // ===========================================
+        // NAVIGATION
+        // ===========================================
+        function showPage(page) {
+            // Update nav
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            event?.target?.closest('.nav-item')?.classList.add('active');
+
+            // Update pages
+            document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+            document.getElementById(`page-${page}`).classList.add('active');
+
+            // Load page data
+            switch(page) {
+                case 'dashboard': loadDashboard(); break;
+                case 'cases': loadCases(); break;
+                case 'upload': loadCasesForUpload(); break;
+                case 'users': loadUsers(); break;
+                case 'teams': loadTeams(); break;
+                case 'firms': loadFirms(); break;
+            }
+        }
+
+        // ===========================================
+        // MODALS
+        // ===========================================
+        function openModal(name) {
+            document.getElementById(`modal-${name}`).classList.add('active');
+        }
+
+        function closeModal(name) {
+            document.getElementById(`modal-${name}`).classList.remove('active');
+        }
+
+        // Close modal on overlay click
+        document.querySelectorAll('.modal-overlay').forEach(overlay => {
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    overlay.classList.remove('active');
+                }
+            });
+        });
+
+        // ===========================================
+        // TOAST
+        // ===========================================
+        function toast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // ===========================================
+        // DASHBOARD
+        // ===========================================
+        async function loadDashboard() {
+            try {
+                // Load stats
+                const cases = await apiGet('/cases').catch(() => []);
+                document.getElementById('statCases').textContent = cases.length || 0;
+
+                const teams = await apiGet('/teams').catch(() => []);
+                document.getElementById('statTeams').textContent = teams.length || 0;
+
+                // Recent cases
+                const recentHtml = cases.slice(0, 5).map(c => `
+                    <div style="padding: 12px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
+                        <span>${c.name}</span>
+                        <span class="badge badge-${c.status === 'active' ? 'success' : 'warning'}">${statusLabels[c.status] || c.status}</span>
+                    </div>
+                `).join('') || '<div class="empty-state"><p>אין תיקים עדיין</p></div>';
+                document.getElementById('recentCases').innerHTML = recentHtml;
+
+            } catch (err) {
+                console.error('Dashboard error:', err);
+            }
+        }
+
+        // ===========================================
+        // CASES
+        // ===========================================
+        async function loadCases() {
+            try {
+                const cases = await apiGet('/cases');
+
+                if (cases.length === 0) {
+                    document.getElementById('casesTable').innerHTML = `
+                        <tr><td colspan="6" class="empty-state">
+                            <p>אין תיקים עדיין</p>
+                            <button class="btn btn-primary" style="margin-top: 12px;" onclick="openModal('newCase')">צור תיק ראשון</button>
+                        </td></tr>`;
+                    return;
+                }
+
+                document.getElementById('casesTable').innerHTML = cases.map(c => `
+                    <tr>
+                        <td><strong>${c.name}</strong></td>
+                        <td>${c.case_number || '-'}</td>
+                        <td><span class="badge badge-${c.status === 'active' ? 'success' : 'warning'}">${statusLabels[c.status] || c.status}</span></td>
+                        <td>${c.document_count || 0}</td>
+                        <td>${new Date(c.updated_at || c.created_at).toLocaleDateString('he-IL')}</td>
+                        <td class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="openCase('${c.id}')">פתח</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                document.getElementById('casesTable').innerHTML = `<tr><td colspan="6" class="empty-state">שגיאה בטעינת תיקים</td></tr>`;
+            }
+        }
+
+        async function createCase() {
+            const name = document.getElementById('newCaseName').value;
+            const caseNumber = document.getElementById('newCaseNumber').value;
+            const description = document.getElementById('newCaseDesc').value;
+
+            if (!name) {
+                toast('נא להזין שם תיק', 'error');
+                return;
+            }
+
+            try {
+                await apiPost('/cases', { name, case_number: caseNumber, description });
+                toast('התיק נוצר בהצלחה');
+                closeModal('newCase');
+                loadCases();
+
+                // Clear form
+                document.getElementById('newCaseName').value = '';
+                document.getElementById('newCaseNumber').value = '';
+                document.getElementById('newCaseDesc').value = '';
+            } catch (err) {
+                toast('שגיאה ביצירת תיק: ' + err.message, 'error');
+            }
+        }
+
+        function openCase(caseId) {
+            selectedCaseId = caseId;
+            document.getElementById('uploadCaseSelect').value = caseId;
+            showPage('upload');
+            loadFolders();
+        }
+
+        // ===========================================
+        // UPLOAD
+        // ===========================================
+        async function loadCasesForUpload() {
+            try {
+                const cases = await apiGet('/cases');
+                const select = document.getElementById('uploadCaseSelect');
+                select.innerHTML = '<option value="">בחר תיק...</option>' +
+                    cases.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
+                if (selectedCaseId) {
+                    select.value = selectedCaseId;
+                    loadFolders();
+                }
+            } catch (err) {
+                console.error('Error loading cases for upload:', err);
+            }
+        }
+
+        async function loadFolders() {
+            const caseId = document.getElementById('uploadCaseSelect').value;
+            selectedCaseId = caseId;
+
+            if (!caseId) {
+                document.getElementById('folderSection').style.display = 'none';
+                document.getElementById('documentsTable').innerHTML = `<tr><td colspan="7" class="empty-state">בחר תיק כדי לראות מסמכים</td></tr>`;
+                document.getElementById('analyzeBtn').disabled = true;
+                return;
+            }
+
+            document.getElementById('folderSection').style.display = 'block';
+            document.getElementById('analyzeBtn').disabled = false;
+
+            try {
+                const tree = await apiGet(`/api/v1/cases/${caseId}/folders/tree`);
+                renderFolderTree(tree);
+            } catch (err) {
+                // Folder API might not be available, show root only
+                document.getElementById('folderTree').innerHTML = `
+                    <div class="folder-item selected" data-folder-id="" onclick="selectFolder('')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                        שורש
+                    </div>`;
+            }
+
+            loadDocuments();
+        }
+
+        function renderFolderTree(folders, container = null) {
+            if (!container) {
+                container = document.getElementById('folderTree');
+                container.innerHTML = `
+                    <div class="folder-item selected" data-folder-id="" onclick="selectFolder('')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                        שורש
+                    </div>`;
+            }
+
+            folders.forEach(f => {
+                const item = document.createElement('div');
+                item.className = 'folder-item';
+                item.dataset.folderId = f.id;
+                item.onclick = () => selectFolder(f.id);
+                item.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                    ${f.name} ${f.document_count ? `(${f.document_count})` : ''}`;
+                container.appendChild(item);
+
+                if (f.children && f.children.length) {
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'folder-children';
+                    container.appendChild(childContainer);
+                    renderFolderTree(f.children, childContainer);
+                }
+            });
+        }
+
+        function selectFolder(folderId) {
+            selectedFolderId = folderId;
+            document.querySelectorAll('.folder-item').forEach(el => el.classList.remove('selected'));
+            document.querySelector(`.folder-item[data-folder-id="${folderId}"]`)?.classList.add('selected');
+            loadDocuments();
+        }
+
+        async function loadDocuments() {
+            if (!selectedCaseId) return;
+
+            try {
+                // Upload API (canonical)
+                const endpoint = selectedFolderId
+                    ? `/api/v1/folders/${selectedFolderId}/documents`
+                    : `/api/v1/cases/${selectedCaseId}/documents`;
+                const docs = await apiGet(endpoint);
+
+                if (!docs.length) {
+                    document.getElementById('documentsTable').innerHTML = `
+                        <tr><td colspan="7" class="empty-state">אין מסמכים בתיקיה זו</td></tr>`;
+                    document.getElementById('selectAllBtn').style.display = 'none';
+                    return;
+                }
+
+                // Store docs globally for selection
+                window.currentDocuments = docs;
+                window.selectedDocIds = new Set();
+
+                document.getElementById('selectAllBtn').style.display = 'inline-flex';
+                document.getElementById('selectAllCheckbox').checked = false;
+
+                document.getElementById('documentsTable').innerHTML = docs.map(d => `
+                    <tr>
+                        <td style="text-align: center;">
+                            <input type="checkbox" class="doc-checkbox" data-doc-id="${d.id}" onchange="updateDocSelection()">
+                        </td>
+                        <td>${d.doc_name || d.filename || d.name || '-'}</td>
+                        <td>${d.mime_type || d.content_type || d.type || '-'}</td>
+                        <td>${d.party || '-'}</td>
+                        <td><span class="badge badge-${
+                            (d.status === 'ready' || d.status === 'processed' || d.status === 'done' || d.status === 'completed') ? 'success' :
+                            (d.status === 'failed' || d.status === 'error') ? 'danger' :
+                            'info'
+                        }">${d.status || 'uploaded'}</span></td>
+                        <td>${new Date(d.created_at || d.uploaded_at).toLocaleDateString('he-IL')}</td>
+                        <td class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="viewDocument('${d.id}')">צפה</button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                updateDocSelection();
+            } catch (err) {
+                console.error('Error loading documents:', err);
+                document.getElementById('documentsTable').innerHTML = `
+                    <tr><td colspan="7" class="empty-state">שגיאה בטעינת מסמכים</td></tr>`;
+            }
+        }
+
+        async function viewDocument(docId) {
+            if (!selectedCaseId || !docId) {
+                toast('נא לבחור מסמך', 'error');
+                return;
+            }
+
+            try {
+                const doc = await apiGet(`/api/v1/documents/${docId}`);
+
+                // Create modal content
+                const modalHtml = `
+                    <div class="modal-backdrop" onclick="closeDocumentViewer()"></div>
+                    <div class="modal-content document-viewer">
+                        <div class="modal-header">
+                            <h3>${doc.filename || doc.name || 'מסמך'}</h3>
+                            <button class="close-btn" onclick="closeDocumentViewer()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="doc-meta">
+                                <span><strong>סוג:</strong> ${doc.content_type || '-'}</span>
+                                <span><strong>צד:</strong> ${doc.party || '-'}</span>
+                                <span><strong>סטטוס:</strong> ${doc.status || '-'}</span>
+                            </div>
+                            <div class="doc-text">
+                                <pre>${doc.extracted_text || doc.text || 'אין טקסט זמין'}</pre>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Create or update document viewer container
+                let viewer = document.getElementById('documentViewer');
+                if (!viewer) {
+                    viewer = document.createElement('div');
+                    viewer.id = 'documentViewer';
+                    viewer.className = 'modal';
+                    document.body.appendChild(viewer);
+                }
+                viewer.innerHTML = modalHtml;
+                viewer.classList.add('active');
+            } catch (err) {
+                console.error('Error viewing document:', err);
+                toast('שגיאה בטעינת המסמך: ' + err.message, 'error');
+            }
+        }
+
+        function closeDocumentViewer() {
+            const viewer = document.getElementById('documentViewer');
+            if (viewer) {
+                viewer.classList.remove('active');
+            }
+        }
+
+        async function createFolder() {
+            const name = document.getElementById('newFolderName').value;
+            if (!name || !selectedCaseId) {
+                toast('נא להזין שם תיקיה ולבחור תיק', 'error');
+                return;
+            }
+
+            try {
+                await apiPost(`/api/v1/cases/${selectedCaseId}/folders`, {
+                    name,
+                    parent_id: selectedFolderId || null
+                });
+                toast('התיקיה נוצרה');
+                closeModal('newFolder');
+                loadFolders();
+                document.getElementById('newFolderName').value = '';
+            } catch (err) {
+                toast('שגיאה ביצירת תיקיה: ' + err.message, 'error');
+            }
+        }
+
+        // Drag & Drop
+        const uploadZone = document.getElementById('uploadZone');
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        function handleFileSelect(event) {
+            handleFiles(event.target.files);
+        }
+
+        async function handleFiles(files) {
+            if (!selectedCaseId) {
+                toast('נא לבחור תיק קודם', 'error');
+                return;
+            }
+
+            const progressDiv = document.getElementById('uploadProgress');
+            progressDiv.style.display = 'block';
+
+            for (const file of files) {
+                document.getElementById('uploadFileName').textContent = file.name;
+                document.getElementById('uploadStatus').textContent = 'מעלה...';
+                document.getElementById('uploadBar').style.width = '30%';
+
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    if (selectedFolderId) formData.append('folder_id', selectedFolderId);
+
+                    const party = document.getElementById('uploadParty').value;
+                    if (party) formData.append('party', party);
+
+                    const endpoint = file.name.endsWith('.zip')
+                        ? `/api/v1/cases/${selectedCaseId}/documents/zip`
+                        : `/api/v1/cases/${selectedCaseId}/documents`;
+
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'X-User-Id': currentUser?.id || 'anonymous',
+                            'X-Firm-Id': currentFirmId || ''
+                        },
+                        body: formData
+                    });
+
+                    document.getElementById('uploadBar').style.width = '100%';
+
+                    if (res.ok) {
+                        document.getElementById('uploadStatus').textContent = 'הושלם!';
+                        toast(`${file.name} הועלה בהצלחה`);
+                    } else {
+                        throw new Error(await res.text());
+                    }
+                } catch (err) {
+                    document.getElementById('uploadStatus').textContent = 'שגיאה';
+                    toast(`שגיאה בהעלאת ${file.name}: ${err.message}`, 'error');
+                }
+            }
+
+            // Reload documents
+            setTimeout(() => {
+                loadDocuments();
+                progressDiv.style.display = 'none';
+                document.getElementById('uploadBar').style.width = '0%';
+            }, 1000);
+        }
+
+        // ===========================================
+        // ANALYSIS FUNCTIONS
+        // ===========================================
+
+        function openAnalysisPanel() {
+            document.getElementById('analysisPanel').classList.add('active');
+            document.getElementById('analysisProgress').style.display = 'block';
+            document.getElementById('analysisResults').style.display = 'none';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressText').textContent = 'מנתח מסמכים...';
+        }
+
+        function closeAnalysisPanel() {
+            document.getElementById('analysisPanel').classList.remove('active');
+        }
+
+        function updateProgress(percent, text) {
+            document.getElementById('progressFill').style.width = percent + '%';
+            if (text) document.getElementById('progressText').textContent = text;
+        }
+
+        function getSeverityClass(severity) {
+            const s = (severity || 'medium').toLowerCase();
+            if (s === 'critical' || s === 'verified') return 'severity-critical';
+            if (s === 'high' || s === 'likely') return 'severity-high';
+            if (s === 'medium' || s === 'suspicious') return 'severity-medium';
+            return 'severity-low';
+        }
+
+        function getSeverityLabel(severity) {
+            const s = (severity || 'medium').toLowerCase();
+            if (s === 'critical' || s === 'verified') return 'קריטי';
+            if (s === 'high' || s === 'likely') return 'גבוה';
+            if (s === 'medium' || s === 'suspicious') return 'בינוני';
+            return 'נמוך';
+        }
+
+        function getContradictionTypeLabel(type) {
+            const types = {
+                'temporal': 'סתירה זמנית',
+                'temporal_sequence': 'סתירה בסדר אירועים',
+                'quantitative': 'סתירה כמותית',
+                'identity': 'סתירת זהות',
+                'attribute': 'סתירת מאפיינים',
+                'presence': 'סתירת נוכחות',
+                'document': 'סתירה מסמכית',
+                'logical': 'סתירה לוגית'
+            };
+            return types[type] || type || 'סתירה';
+        }
+
+        function renderContradictions(contradictions) {
+            const container = document.getElementById('contradictionsList');
+
+            if (!contradictions || contradictions.length === 0) {
+                container.innerHTML = '<div class="empty-state">לא נמצאו סתירות</div>';
+                return;
+            }
+
+            container.innerHTML = contradictions.map((c, idx) => `
+                <div class="contradiction-card" id="contradiction-${idx}">
+                    <div class="contradiction-header" onclick="toggleContradiction(${idx})">
+                        <div class="contradiction-type">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                <line x1="12" y1="9" x2="12" y2="13"></line>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                            ${getContradictionTypeLabel(c.contradiction_type || c.type)}
+                        </div>
+                        <span class="contradiction-severity ${getSeverityClass(c.severity || c.status)}">
+                            ${getSeverityLabel(c.severity || c.status)}
+                        </span>
+                    </div>
+                    <div class="contradiction-body">
+                        <div class="contradiction-description">
+                            ${c.explanation || c.description || 'אין תיאור זמין'}
+                        </div>
+                        <div class="contradiction-claims">
+                            <div class="claim-box">
+                                <div class="claim-box-header">טענה א'</div>
+                                <div class="claim-text">${c.claim1_text || c.claim1?.text || '-'}</div>
+                                <div class="claim-source">מקור: ${c.claim1_source || c.claim1?.source_name || '-'}</div>
+                            </div>
+                            <div class="claim-box">
+                                <div class="claim-box-header">טענה ב'</div>
+                                <div class="claim-text">${c.claim2_text || c.claim2?.text || '-'}</div>
+                                <div class="claim-source">מקור: ${c.claim2_source || c.claim2?.source_name || '-'}</div>
+                            </div>
+                        </div>
+                        ${c.cross_exam_questions && c.cross_exam_questions.length > 0 ? `
+                            <div style="margin-top: 16px;">
+                                <strong>שאלות מוצעות לחקירה:</strong>
+                                ${c.cross_exam_questions.map(q => `
+                                    <div class="cross-exam-question">${q}</div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function toggleContradiction(idx) {
+            const card = document.getElementById(`contradiction-${idx}`);
+            card.classList.toggle('expanded');
+        }
+
+        function renderCrossExamQuestions(questions) {
+            const section = document.getElementById('crossExamSection');
+            const container = document.getElementById('crossExamQuestions');
+
+            if (!questions || questions.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            container.innerHTML = questions.map(q => `
+                <div class="cross-exam-question">${q.question || q}</div>
+            `).join('');
+        }
+
+        function showAnalysisResults(result) {
+            document.getElementById('analysisProgress').style.display = 'none';
+            document.getElementById('analysisResults').style.display = 'block';
+
+            // Update stats
+            const claims = result.claims || [];
+            const contradictions = result.contradictions || [];
+            const criticalCount = contradictions.filter(c =>
+                (c.severity === 'critical' || c.status === 'verified')
+            ).length;
+
+            document.getElementById('statClaims').textContent = claims.length || result.claims_count || 0;
+            document.getElementById('statContradictions').textContent = contradictions.length;
+            document.getElementById('statCritical').textContent = criticalCount;
+            document.getElementById('statDuration').textContent =
+                result.duration_ms ? (result.duration_ms / 1000).toFixed(1) : '< 1';
+
+            // Render contradictions
+            renderContradictions(contradictions);
+
+            // Render cross-exam questions if available
+            if (result.cross_exam_questions) {
+                renderCrossExamQuestions(result.cross_exam_questions);
+            }
+        }
+
+        async function pollJobStatus(jobId, maxAttempts = 60) {
+            for (let i = 0; i < maxAttempts; i++) {
+                try {
+                    const status = await apiGet(`/api/v1/jobs/${jobId}`);
+
+                    const progress = status.progress || Math.min((i / maxAttempts) * 100, 90);
+                    updateProgress(progress, `מנתח... ${Math.round(progress)}%`);
+
+                    if (status.status === 'finished' || status.status === 'done') {
+                        updateProgress(100, 'הניתוח הושלם!');
+                        return status.result;
+                    } else if (status.status === 'failed') {
+                        throw new Error(status.error || 'הניתוח נכשל');
+                    }
+
+                    // Wait before next poll
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } catch (err) {
+                    if (i === maxAttempts - 1) throw err;
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            throw new Error('הניתוח לקח יותר מדי זמן');
+        }
+
+        // Document selection functions
+        function updateDocSelection() {
+            const checkboxes = document.querySelectorAll('.doc-checkbox');
+            const selectedIds = [];
+            checkboxes.forEach(cb => {
+                if (cb.checked) {
+                    selectedIds.push(cb.dataset.docId);
+                }
+            });
+            window.selectedDocIds = new Set(selectedIds);
+
+            const totalDocs = window.currentDocuments?.length || 0;
+            const selectedCount = selectedIds.length;
+
+            // Update UI
+            const countEl = document.getElementById('selectedCount');
+            const btnText = document.getElementById('analyzeBtnText');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const selectAllCb = document.getElementById('selectAllCheckbox');
+
+            if (selectedCount > 0) {
+                countEl.textContent = `נבחרו ${selectedCount} מתוך ${totalDocs}`;
+                btnText.textContent = `נתח ${selectedCount} מסמכים`;
+                analyzeBtn.disabled = false;
+            } else {
+                countEl.textContent = '';
+                btnText.textContent = 'נתח את כל המסמכים';
+                analyzeBtn.disabled = totalDocs === 0;
+            }
+
+            // Update select all checkbox
+            selectAllCb.checked = totalDocs > 0 && selectedCount === totalDocs;
+            selectAllCb.indeterminate = selectedCount > 0 && selectedCount < totalDocs;
+        }
+
+        function toggleSelectAll() {
+            const selectAllCb = document.getElementById('selectAllCheckbox');
+            const checkboxes = document.querySelectorAll('.doc-checkbox');
+
+            checkboxes.forEach(cb => {
+                cb.checked = selectAllCb.checked;
+            });
+
+            updateDocSelection();
+        }
+
+        async function analyzeCase() {
+            if (!selectedCaseId) return;
+
+            openAnalysisPanel();
+            updateProgress(5, 'שולח בקשת ניתוח...');
+
+            // Get selected document IDs (empty array = analyze all)
+            const documentIds = window.selectedDocIds?.size > 0
+                ? Array.from(window.selectedDocIds)
+                : null;
+
+            const docCountText = documentIds
+                ? `${documentIds.length} מסמכים נבחרים`
+                : 'כל המסמכים';
+
+            updateProgress(5, `מנתח ${docCountText}...`);
+
+            try {
+                const result = await apiPost(`/api/v1/cases/${selectedCaseId}/analyze`, {
+                    document_ids: documentIds
+                });
+
+                if (result.job_id) {
+                    // Async job - poll for status
+                    updateProgress(10, 'הניתוח התחיל...');
+                    const jobResult = await pollJobStatus(result.job_id);
+
+                    // Check for error status first
+                    if (jobResult && jobResult.status === 'error') {
+                        closeAnalysisPanel();
+                        const errorMsg = jobResult.message || 'שגיאה בניתוח';
+                        toast(errorMsg, 'error');
+                        return;
+                    }
+
+                    // Job result contains analysis_run_id - fetch full data with contradictions
+                    if (jobResult && jobResult.analysis_run_id) {
+                        updateProgress(95, 'טוען תוצאות...');
+                        const runResult = await apiGet(`/api/v1/analysis-runs/${jobResult.analysis_run_id}`);
+                        showAnalysisResults(runResult);
+                    } else if (jobResult && jobResult.contradictions) {
+                        // Job returned contradictions directly
+                        showAnalysisResults(jobResult);
+                    } else if (result.analysis_run_id || result.run_id) {
+                        // Fallback - try using result's analysis_run_id (only if it exists)
+                        updateProgress(95, 'טוען תוצאות...');
+                        const runResult = await apiGet(`/api/v1/analysis-runs/${result.analysis_run_id || result.run_id}`);
+                        showAnalysisResults(runResult);
+                    } else {
+                        // No analysis_run_id available - show job result directly
+                        updateProgress(100, 'הניתוח הושלם!');
+                        showAnalysisResults(jobResult || result);
+                    }
+                } else if (result.cached || result.contradictions) {
+                    // Immediate result (cached or sync)
+                    updateProgress(100, 'הניתוח הושלם!');
+                    showAnalysisResults(result);
+                } else if (result.status === 'error') {
+                    // Error in sync response
+                    closeAnalysisPanel();
+                    toast(result.message || 'שגיאה בניתוח', 'error');
+                } else {
+                    // Unknown response format
+                    updateProgress(100, 'הניתוח הושלם!');
+                    showAnalysisResults(result);
+                }
+            } catch (err) {
+                closeAnalysisPanel();
+                toast('שגיאה בניתוח: ' + err.message, 'error');
+            }
+        }
+
+        async function viewDocument(docId) {
+            try {
+                const doc = await apiGet(`/api/v1/documents/${docId}`);
+                const name = doc.doc_name || doc.original_filename || docId;
+                alert(`מסמך: ${name}\\nסוג: ${doc.mime_type || '-'}\\nסטטוס: ${doc.status || '-'}\\nעמודים: ${doc.page_count || '-'}\\n\\nהערה: תצוגת טקסט מלאה תתווסף בהמשך.`);
+            } catch (err) {
+                toast('שגיאה בטעינת מסמך: ' + err.message, 'error');
+            }
+        }
+
+        // ===========================================
+        // USERS
+        // ===========================================
+        async function loadUsers() {
+            try {
+                const users = await apiGet('/users');
+
+                if (!users.length) {
+                    document.getElementById('usersTable').innerHTML = `
+                        <tr><td colspan="6" class="empty-state">אין משתמשים</td></tr>`;
+                    return;
+                }
+
+                document.getElementById('usersTable').innerHTML = users.map(u => `
+                    <tr>
+                        <td><strong>${u.name}</strong></td>
+                        <td>${u.email}</td>
+                        <td><span class="badge badge-info">${roleLabels[u.system_role] || u.system_role}</span></td>
+                        <td>${u.professional_role || '-'}</td>
+                        <td><span class="badge badge-${u.is_active ? 'success' : 'danger'}">${u.is_active ? 'פעיל' : 'לא פעיל'}</span></td>
+                        <td class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="editUser('${u.id}')">ערוך</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                document.getElementById('usersTable').innerHTML = `
+                    <tr><td colspan="6" class="empty-state">שגיאה בטעינת משתמשים</td></tr>`;
+            }
+        }
+
+        async function createUser() {
+            const name = document.getElementById('newUserName').value;
+            const email = document.getElementById('newUserEmail').value;
+            const systemRole = document.getElementById('newUserRole').value;
+            const profRole = document.getElementById('newUserProfRole').value;
+
+            if (!name || !email) {
+                toast('נא למלא שם ואימייל', 'error');
+                return;
+            }
+
+            try {
+                await apiPost('/users', {
+                    name,
+                    email,
+                    system_role: systemRole,
+                    professional_role: profRole
+                });
+                toast('המשתמש נוצר');
+                closeModal('newUser');
+                loadUsers();
+
+                // Clear form
+                document.getElementById('newUserName').value = '';
+                document.getElementById('newUserEmail').value = '';
+                document.getElementById('newUserProfRole').value = '';
+            } catch (err) {
+                toast('שגיאה ביצירת משתמש: ' + err.message, 'error');
+            }
+        }
+
+        // ===========================================
+        // TEAMS
+        // ===========================================
+        async function loadTeams() {
+            try {
+                const teams = await apiGet('/teams');
+
+                if (!teams.length) {
+                    document.getElementById('teamsContainer').innerHTML = `
+                        <div class="empty-state" style="grid-column: 1/-1;">
+                            <p>אין צוותים עדיין</p>
+                            <button class="btn btn-primary" style="margin-top: 12px;" onclick="openModal('newTeam')">צור צוות ראשון</button>
+                        </div>`;
+                    return;
+                }
+
+                document.getElementById('teamsContainer').innerHTML = teams.map(t => `
+                    <div class="card">
+                        <h3>${t.name}</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0;">${t.description || 'אין תיאור'}</p>
+                        <p style="font-size: 14px;"><strong>${t.member_count || 0}</strong> חברים</p>
+                        <div class="actions" style="margin-top: 16px;">
+                            <button class="btn btn-secondary btn-sm" onclick="manageTeamMembers('${t.id}', '${t.name}')">נהל חברים</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                document.getElementById('teamsContainer').innerHTML = `
+                    <div class="empty-state" style="grid-column: 1/-1;">שגיאה בטעינת צוותים</div>`;
+            }
+        }
+
+        async function createTeam() {
+            const name = document.getElementById('newTeamName').value;
+            const desc = document.getElementById('newTeamDesc').value;
+
+            if (!name) {
+                toast('נא להזין שם צוות', 'error');
+                return;
+            }
+
+            try {
+                await apiPost('/teams', { name, description: desc });
+                toast('הצוות נוצר');
+                closeModal('newTeam');
+                loadTeams();
+
+                document.getElementById('newTeamName').value = '';
+                document.getElementById('newTeamDesc').value = '';
+            } catch (err) {
+                toast('שגיאה ביצירת צוות: ' + err.message, 'error');
+            }
+        }
+
+        async function manageTeamMembers(teamId, teamName) {
+            currentTeamId = teamId;
+            document.querySelector('#modal-teamMembers .modal-title').textContent = `חברי צוות: ${teamName}`;
+
+            try {
+                // Load team details with members
+                const team = await apiGet(`/teams/${teamId}`);
+                const members = team.members || [];
+
+                document.getElementById('teamMembersList').innerHTML = members.length ? members.map(m => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border);">
+                        <div>
+                            <strong>${m.name}</strong>
+                            <span class="badge badge-info" style="margin-right: 8px;">${teamRoleLabels[m.team_role] || m.team_role}</span>
+                        </div>
+                        <button class="btn btn-danger btn-sm" onclick="removeTeamMember('${teamId}', '${m.id}')">הסר</button>
+                    </div>
+                `).join('') : '<p style="color: var(--text-muted);">אין חברים בצוות</p>';
+
+                // Load users for add dropdown
+                const users = await apiGet('/users');
+                const memberIds = members.map(m => m.id);
+                const availableUsers = users.filter(u => !memberIds.includes(u.id));
+
+                document.getElementById('addMemberSelect').innerHTML = '<option value="">בחר משתמש...</option>' +
+                    availableUsers.map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+
+                openModal('teamMembers');
+            } catch (err) {
+                toast('שגיאה בטעינת צוות: ' + err.message, 'error');
+            }
+        }
+
+        async function addTeamMember() {
+            const userId = document.getElementById('addMemberSelect').value;
+            const role = document.getElementById('addMemberRole').value;
+
+            if (!userId || !currentTeamId) {
+                toast('נא לבחור משתמש', 'error');
+                return;
+            }
+
+            try {
+                await apiPost(`/teams/${currentTeamId}/members`, {
+                    user_id: userId,
+                    team_role: role
+                });
+                toast('המשתמש נוסף לצוות');
+                manageTeamMembers(currentTeamId, document.querySelector('#modal-teamMembers .modal-title').textContent.replace('חברי צוות: ', ''));
+            } catch (err) {
+                toast('שגיאה בהוספת חבר: ' + err.message, 'error');
+            }
+        }
+
+        async function removeTeamMember(teamId, userId) {
+            if (!confirm('האם להסיר את המשתמש מהצוות?')) return;
+
+            try {
+                await apiDelete(`/teams/${teamId}/members/${userId}`);
+                toast('המשתמש הוסר');
+                manageTeamMembers(teamId, document.querySelector('#modal-teamMembers .modal-title').textContent.replace('חברי צוות: ', ''));
+            } catch (err) {
+                toast('שגיאה בהסרת חבר: ' + err.message, 'error');
+            }
+        }
+
+        // ===========================================
+        // FIRMS (Super Admin only)
+        // ===========================================
+        async function loadFirms() {
+            try {
+                const firms = await apiGet('/firms');
+
+                if (!firms.length) {
+                    document.getElementById('firmsTable').innerHTML = `
+                        <tr><td colspan="6" class="empty-state">אין משרדות</td></tr>`;
+                    return;
+                }
+
+                document.getElementById('firmsTable').innerHTML = firms.map(f => `
+                    <tr>
+                        <td><strong>${f.name}</strong></td>
+                        <td>${f.domain || '-'}</td>
+                        <td>${f.user_count || 0}</td>
+                        <td>${f.team_count || 0}</td>
+                        <td>${new Date(f.created_at).toLocaleDateString('he-IL')}</td>
+                        <td class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="editFirm('${f.id}')">ערוך</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                document.getElementById('firmsTable').innerHTML = `
+                    <tr><td colspan="6" class="empty-state">שגיאה בטעינת משרדות</td></tr>`;
+            }
+        }
+
+        async function createFirm() {
+            const name = document.getElementById('newFirmName').value;
+            const domain = document.getElementById('newFirmDomain').value;
+
+            if (!name) {
+                toast('נא להזין שם משרד', 'error');
+                return;
+            }
+
+            try {
+                await apiPost('/firms', { name, domain });
+                toast('המשרד נוצר');
+                closeModal('newFirm');
+                loadFirms();
+
+                document.getElementById('newFirmName').value = '';
+                document.getElementById('newFirmDomain').value = '';
+            } catch (err) {
+                toast('שגיאה ביצירת משרד: ' + err.message, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

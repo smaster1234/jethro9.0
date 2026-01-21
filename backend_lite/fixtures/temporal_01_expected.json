@@ -1,0 +1,7 @@
+{
+  "min_contradictions": 0,
+  "expected_types": ["temporal_date_conflict"],
+  "expected_buckets": ["dispute"],
+  "should_not_contain": ["תוצאות הניתוח", "LLM_"],
+  "note": "Rule-based may not detect without same-event markers. LLM will improve."
+}

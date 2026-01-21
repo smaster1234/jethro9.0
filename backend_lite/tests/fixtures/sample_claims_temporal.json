@@ -1,0 +1,41 @@
+{
+  "description": "Sample claims with temporal contradiction",
+  "claims": [
+    {
+      "id": "claim_1",
+      "text": "החוזה נחתם ביום 15.3.2020 במשרדי החברה בתל אביב",
+      "source": "תצהיר התובע",
+      "page": 3,
+      "speaker": "יוסי כהן"
+    },
+    {
+      "id": "claim_2",
+      "text": "במועד חתימת החוזה, קרי 20.5.2021, הוסכם על התנאים",
+      "source": "כתב הגנה",
+      "page": 5,
+      "speaker": "דני לוי"
+    },
+    {
+      "id": "claim_3",
+      "text": "הפגישה התקיימה ביום ראשון בשעות הבוקר",
+      "source": "תצהיר עד",
+      "page": 2,
+      "speaker": "שרה מזרחי"
+    },
+    {
+      "id": "claim_4",
+      "text": "לאחר חתימת החוזה ב-15.3.2020 החל ביצוע העבודות",
+      "source": "תצהיר התובע",
+      "page": 7,
+      "speaker": "יוסי כהן"
+    }
+  ],
+  "expected_contradictions": [
+    {
+      "claim1_id": "claim_1",
+      "claim2_id": "claim_2",
+      "type": "temporal_conflict",
+      "reason": "תאריכים שונים לאותו אירוע: 15.3.2020 vs 20.5.2021"
+    }
+  ]
+}

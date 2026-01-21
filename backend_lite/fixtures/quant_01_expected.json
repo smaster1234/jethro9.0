@@ -1,0 +1,7 @@
+{
+  "min_contradictions": 0,
+  "expected_types": ["quant_amount_conflict"],
+  "expected_buckets": ["dispute"],
+  "should_not_contain": ["תוצאות הניתוח"],
+  "note": "Rule-based may need same-event context. LLM will improve detection."
+}

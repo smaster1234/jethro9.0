@@ -1,0 +1,6 @@
+{
+  "max_contradictions": 0,
+  "expected_types": [],
+  "claims_should_not_contain": ["תוצאות הניתוח", "מטא-דאטה", "claim_1", "LLM_"],
+  "description": "Report output should be sanitized and not analyzed"
+}

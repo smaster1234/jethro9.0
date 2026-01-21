@@ -1,0 +1,7 @@
+{
+  "min_contradictions": 1,
+  "expected_types": ["quant_amount_conflict"],
+  "expected_buckets": ["dispute"],
+  "expected_relation": "cross_party",
+  "should_not_contain": []
+}

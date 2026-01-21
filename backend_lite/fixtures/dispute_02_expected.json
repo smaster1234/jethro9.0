@@ -1,0 +1,7 @@
+{
+  "min_contradictions": 1,
+  "expected_types": ["factual_conflict"],
+  "expected_buckets": ["dispute"],
+  "expected_relation": "cross_party",
+  "description": "Same date but different locations - factual dispute"
+}

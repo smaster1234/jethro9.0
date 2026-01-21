@@ -1,0 +1,10 @@
+# Nixpacks configuration (fallback if Docker not used)
+
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install -r backend_lite/requirements.txt"]
+
+[start]
+cmd = "sh -c 'uvicorn backend_lite.api:app --host 0.0.0.0 --port ${PORT:-8000}'"

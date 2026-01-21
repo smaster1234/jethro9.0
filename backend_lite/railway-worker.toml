@@ -1,0 +1,13 @@
+# Railway Configuration for backend_lite WORKER
+# Set this as the Config File Path for the worker service
+# Root Directory should be: backend_lite
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/app/backend_lite/start_worker.sh"
+# No healthcheck for worker - it's not a web server
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

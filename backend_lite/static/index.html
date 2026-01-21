@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>זיהוי סתירות - JETHRO</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+        }
+        body {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #1a365d;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+        @media (max-width: 1000px) {
+            .main-container { grid-template-columns: 1fr; }
+        }
+        .panel {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .panel.full-width {
+            grid-column: 1 / -1;
+        }
+        h2 {
+            color: #2d3748;
+            margin-top: 0;
+            font-size: 1.2em;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+        h3 {
+            color: #4a5568;
+            margin: 20px 0 10px;
+            font-size: 1.1em;
+        }
+        textarea {
+            width: 100%;
+            height: 250px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 14px;
+            resize: vertical;
+            direction: rtl;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4299e1;
+            box-shadow: 0 0 0 3px rgba(66,153,225,0.2);
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #3182ce;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #2c5282;
+        }
+        button:disabled {
+            background: #a0aec0;
+            cursor: not-allowed;
+        }
+
+        /* Claims Table */
+        .claims-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .claims-table th {
+            background: #2d3748;
+            color: white;
+            padding: 12px 8px;
+            text-align: right;
+            font-weight: 600;
+        }
+        .claims-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: top;
+        }
+        .claims-table tr:hover {
+            background: #f7fafc;
+            cursor: pointer;
+        }
+        .claims-table tr.selected {
+            background: #ebf8ff;
+        }
+        .claim-text {
+            max-width: 300px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .claim-text:hover {
+            white-space: normal;
+        }
+
+        /* Status badges */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .status-no_issues { background: #c6f6d5; color: #22543d; }
+        .status-potential_contradiction { background: #feebc8; color: #744210; }
+        .status-verified_contradiction { background: #fed7d7; color: #742a2a; }
+        .status-needs_review { background: #e2e8f0; color: #4a5568; }
+
+        /* Severity badges */
+        .severity-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        .severity-critical { background: #742a2a; color: white; }
+        .severity-high { background: #fed7d7; color: #742a2a; }
+        .severity-medium { background: #feebc8; color: #744210; }
+        .severity-low { background: #fefcbf; color: #744210; }
+
+        /* Type badges */
+        .type-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 10px;
+            margin-left: 4px;
+            margin-bottom: 2px;
+        }
+        .type-temporal { background: #bee3f8; color: #2a4365; }
+        .type-quant { background: #c6f6d5; color: #22543d; }
+        .type-actor { background: #feebc8; color: #744210; }
+        .type-presence { background: #e9d8fd; color: #553c9a; }
+        .type-document { background: #fed7e2; color: #702459; }
+        .type-identity { background: #b2f5ea; color: #234e52; }
+
+        /* Details panel */
+        .details-panel {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            display: none;
+        }
+        .details-panel.visible {
+            display: block;
+        }
+        .contradiction-item {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-right: 4px solid #fc8181;
+        }
+        .contradiction-item.high { border-color: #f56565; }
+        .contradiction-item.medium { border-color: #ed8936; }
+        .contradiction-item.low { border-color: #ecc94b; }
+
+        .contradiction-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .quote {
+            background: #edf2f7;
+            padding: 10px;
+            border-radius: 6px;
+            margin: 8px 0;
+            font-size: 13px;
+            color: #4a5568;
+        }
+        .question-item {
+            background: #ebf8ff;
+            padding: 10px;
+            border-radius: 6px;
+            margin: 6px 0;
+            font-size: 13px;
+        }
+        .question-purpose {
+            color: #718096;
+            font-size: 11px;
+            margin-top: 5px;
+        }
+
+        /* Metadata */
+        .metadata {
+            background: #edf2f7;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #4a5568;
+            margin-bottom: 15px;
+        }
+        .metadata span {
+            margin-left: 20px;
+        }
+        .validation-flag {
+            background: #feebc8;
+            color: #744210;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-left: 5px;
+        }
+
+        /* Loading & States */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+        .spinner {
+            border: 3px solid #e2e8f0;
+            border-top: 3px solid #4299e1;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .error {
+            background: #fff5f5;
+            color: #c53030;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .empty {
+            text-align: center;
+            color: #a0aec0;
+            padding: 30px;
+        }
+        .api-url {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .api-url input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        /* Summary stats */
+        .summary-stats {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .stat-box {
+            background: white;
+            border-radius: 8px;
+            padding: 12px 20px;
+            text-align: center;
+            min-width: 100px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2d3748;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #718096;
+        }
+        .stat-box.issues .stat-value { color: #e53e3e; }
+        .stat-box.ok .stat-value { color: #38a169; }
+    </style>
+</head>
+<body>
+    <h1>זיהוי סתירות במסמכים משפטיים</h1>
+
+    <div class="api-url">
+        <input type="text" id="apiUrl" value="" placeholder="API URL">
+    </div>
+
+    <div class="main-container">
+        <div class="panel">
+            <h2>הזן טקסט לניתוח</h2>
+            <textarea id="inputText" placeholder="הדבק כאן את הטקסט המשפטי...
+
+לדוגמה:
+1. החוזה נחתם ביום 15.3.2020 במשרדי החברה בתל אביב.
+2. התובע טוען שהחוזה נחתם ביום 20.5.2021 בירושלים.
+3. סכום העסקה היה 500,000 ש&quot;ח.
+4. סכום העסקה היה 350,000 שקלים בלבד."></textarea>
+            <button id="analyzeBtn" onclick="analyze()">נתח סתירות</button>
+        </div>
+
+        <div class="panel">
+            <h2>תוצאות הניתוח</h2>
+            <div id="results">
+                <div class="empty">הזן טקסט ולחץ "נתח סתירות"</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let currentData = null;
+        let selectedClaimId = null;
+
+        // Auto-detect API URL based on current location
+        document.addEventListener('DOMContentLoaded', function() {
+            const apiInput = document.getElementById('apiUrl');
+            apiInput.value = window.location.origin;
+        });
+
+        async function analyze() {
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+            const text = document.getElementById('inputText').value.trim();
+            const resultsDiv = document.getElementById('results');
+            const btn = document.getElementById('analyzeBtn');
+
+            if (!text) {
+                alert('נא להזין טקסט לניתוח');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'מנתח...';
+            resultsDiv.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>מנתח את הטקסט...</div>
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`${apiUrl}/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, source_name: 'מסמך' })
+                });
+
+                currentData = await response.json();
+                displayResults(currentData);
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="error">
+                        <strong>שגיאה בחיבור ל-API</strong><br>
+                        ${error.message}<br><br>
+                        וודא שהשרת רץ ב: ${apiUrl}
+                    </div>
+                `;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'נתח סתירות';
+        }
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            let html = '';
+
+            // Metadata
+            html += `
+                <div class="metadata">
+                    <strong>מטא-דאטה:</strong>
+                    <span>${data.metadata.total_time_ms.toFixed(1)}ms</span>
+                    <span>${data.metadata.claims_count} טענות</span>
+                    <span>${data.metadata.mode}</span>
+                    ${data.metadata.validation_flags.map(f =>
+                        `<span class="validation-flag">${f}</span>`
+                    ).join('')}
+                </div>
+            `;
+
+            // Summary statistics
+            const claimResults = data.claim_results || [];
+            const noIssues = claimResults.filter(c => c.status === 'no_issues').length;
+            const potential = claimResults.filter(c => c.status === 'potential_contradiction').length;
+            const verified = claimResults.filter(c => c.status === 'verified_contradiction').length;
+            const needsReview = claimResults.filter(c => c.status === 'needs_review').length;
+            const totalIssues = potential + verified + needsReview;
+
+            html += `
+                <div class="summary-stats">
+                    <div class="stat-box">
+                        <div class="stat-value">${data.claims?.length || 0}</div>
+                        <div class="stat-label">טענות נבדקו</div>
+                    </div>
+                    <div class="stat-box ok">
+                        <div class="stat-value">${noIssues}</div>
+                        <div class="stat-label">תקינות</div>
+                    </div>
+                    <div class="stat-box ${totalIssues > 0 ? 'issues' : ''}">
+                        <div class="stat-value">${totalIssues}</div>
+                        <div class="stat-label">עם בעיות</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">${data.contradictions.length}</div>
+                        <div class="stat-label">סתירות</div>
+                    </div>
+                </div>
+            `;
+
+            // Claims table
+            if (data.claims && data.claims.length > 0) {
+                html += `<h3>טבלת טענות</h3>`;
+                html += `<table class="claims-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>מקור</th>
+                            <th>טקסט</th>
+                            <th>סטטוס</th>
+                            <th>סתירות</th>
+                            <th>חומרה</th>
+                            <th>סוגים</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+                // Build lookup for claim results
+                const resultLookup = {};
+                for (const cr of claimResults) {
+                    resultLookup[cr.claim_id] = cr;
+                }
+
+                for (const claim of data.claims) {
+                    const result = resultLookup[claim.id] || {
+                        status: 'no_issues',
+                        contradiction_count: 0,
+                        max_severity: null,
+                        types: []
+                    };
+
+                    const statusLabel = {
+                        'no_issues': 'תקין',
+                        'potential_contradiction': 'סתירה אפשרית',
+                        'verified_contradiction': 'סתירה מאומתת',
+                        'needs_review': 'דורש בדיקה'
+                    }[result.status] || result.status;
+
+                    const typeBadges = result.types.map(t => {
+                        const typeClass = t.split('_')[0];
+                        const typeLabel = getTypeLabel(t);
+                        return `<span class="type-badge type-${typeClass}">${typeLabel}</span>`;
+                    }).join('');
+
+                    html += `
+                        <tr onclick="selectClaim('${claim.id}')" class="${selectedClaimId === claim.id ? 'selected' : ''}">
+                            <td>${claim.id}</td>
+                            <td>${claim.doc_name || '-'}</td>
+                            <td class="claim-text" title="${escapeHtml(claim.text)}">${escapeHtml(claim.text)}</td>
+                            <td><span class="status-badge status-${result.status}">${statusLabel}</span></td>
+                            <td>${result.contradiction_count}</td>
+                            <td>${result.max_severity ?
+                                `<span class="severity-badge severity-${result.max_severity}">${result.max_severity}</span>` :
+                                '-'}</td>
+                            <td>${typeBadges || '-'}</td>
+                        </tr>
+                    `;
+                }
+
+                html += `</tbody></table>`;
+
+                // Details panel (shown when claim is selected)
+                html += `<div id="detailsPanel" class="details-panel"></div>`;
+            } else if (data.contradictions.length === 0) {
+                html += '<div class="empty">לא נמצאו טענות לניתוח</div>';
+            }
+
+            // Fallback: show contradictions directly if no claims table
+            if (!data.claims || data.claims.length === 0) {
+                if (data.contradictions.length > 0) {
+                    html += `<h3>נמצאו ${data.contradictions.length} סתירות</h3>`;
+                    for (const c of data.contradictions) {
+                        html += renderContradiction(c);
+                    }
+                }
+
+                if (data.cross_exam_questions.length > 0) {
+                    html += `<h3>שאלות לחקירה נגדית</h3>`;
+                    for (const qSet of data.cross_exam_questions) {
+                        html += renderQuestionSet(qSet);
+                    }
+                }
+            }
+
+            resultsDiv.innerHTML = html;
+        }
+
+        function selectClaim(claimId) {
+            selectedClaimId = claimId;
+
+            // Update table selection
+            document.querySelectorAll('.claims-table tr').forEach(tr => {
+                tr.classList.remove('selected');
+            });
+            event.currentTarget.classList.add('selected');
+
+            // Show details panel
+            const detailsPanel = document.getElementById('detailsPanel');
+            if (!detailsPanel) return;
+
+            const claim = currentData.claims.find(c => c.id === claimId);
+            const claimResult = currentData.claim_results?.find(cr => cr.claim_id === claimId);
+
+            if (!claim) return;
+
+            let html = `<h3>פרטי הטענה: ${claimId}</h3>`;
+            html += `<div class="quote">${escapeHtml(claim.text)}</div>`;
+
+            if (claim.locator) {
+                html += `<div style="font-size: 12px; color: #718096; margin-bottom: 15px;">
+                    מיקום: ${claim.locator.doc_id || ''}
+                    ${claim.locator.paragraph ? `פסקה ${claim.locator.paragraph}` : ''}
+                    ${claim.locator.char_start ? `(${claim.locator.char_start}-${claim.locator.char_end})` : ''}
+                </div>`;
+            }
+
+            // Find related contradictions
+            const relatedContradictions = currentData.contradictions.filter(c =>
+                c.claim1_id === claimId || c.claim2_id === claimId ||
+                c.claim1?.claim_id === claimId || c.claim2?.claim_id === claimId
+            );
+
+            if (relatedContradictions.length > 0) {
+                html += `<h4>סתירות קשורות (${relatedContradictions.length})</h4>`;
+                for (const c of relatedContradictions) {
+                    html += renderContradiction(c, claimId);
+                }
+
+                // Find related cross-exam questions
+                const relatedQuestions = currentData.cross_exam_questions.filter(q =>
+                    relatedContradictions.some(c => c.id === q.contradiction_id)
+                );
+
+                if (relatedQuestions.length > 0) {
+                    html += `<h4>שאלות לחקירה נגדית</h4>`;
+                    for (const qSet of relatedQuestions) {
+                        html += renderQuestionSet(qSet);
+                    }
+                }
+            } else {
+                html += `<div class="empty" style="padding: 20px;">אין סתירות קשורות לטענה זו</div>`;
+            }
+
+            detailsPanel.innerHTML = html;
+            detailsPanel.classList.add('visible');
+        }
+
+        function renderContradiction(c, highlightClaimId = null) {
+            const typeLabel = getTypeLabel(c.type);
+
+            // Determine which quote is the "other" claim
+            const isHighlighted1 = highlightClaimId && (c.claim1_id === highlightClaimId || c.claim1?.claim_id === highlightClaimId);
+            const isHighlighted2 = highlightClaimId && (c.claim2_id === highlightClaimId || c.claim2?.claim_id === highlightClaimId);
+
+            return `
+                <div class="contradiction-item ${c.severity}">
+                    <div class="contradiction-header">
+                        <span class="type-badge type-${c.type.split('_')[0]}">${typeLabel}</span>
+                        <div>
+                            <span class="severity-badge severity-${c.severity}">${c.severity}</span>
+                            <span class="status-badge status-${c.status === 'verified' ? 'verified_contradiction' : c.status === 'likely' ? 'potential_contradiction' : 'needs_review'}">${c.status}</span>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 10px;"><strong>${c.explanation}</strong></div>
+                    <div class="quote" style="${isHighlighted1 ? 'border-right: 3px solid #4299e1;' : ''}">${c.quote1 || c.claim1?.quote || ''}</div>
+                    <div class="quote" style="${isHighlighted2 ? 'border-right: 3px solid #4299e1;' : ''}">${c.quote2 || c.claim2?.quote || ''}</div>
+                </div>
+            `;
+        }
+
+        function renderQuestionSet(qSet) {
+            let html = `<div style="margin-bottom: 15px;">`;
+            for (const q of qSet.questions.slice(0, 5)) {
+                html += `
+                    <div class="question-item">
+                        ${q.question}
+                        <div class="question-purpose">${q.purpose}</div>
+                    </div>
+                `;
+            }
+            html += `</div>`;
+            return html;
+        }
+
+        function getTypeLabel(type) {
+            return {
+                'temporal_date_conflict': 'תאריך',
+                'quant_amount_conflict': 'סכום',
+                'actor_attribution_conflict': 'ייחוס',
+                'presence_participation_conflict': 'נוכחות',
+                'document_existence_conflict': 'מסמך',
+                'identity_basic_conflict': 'זיהוי',
+                'temporal_conflict': 'זמן',
+                'quantitative_conflict': 'כמות',
+                'attribution_conflict': 'ייחוס',
+                'factual_conflict': 'עובדה'
+            }[type] || type;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

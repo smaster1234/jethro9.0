@@ -1,0 +1,7 @@
+{
+  "min_contradictions": 0,
+  "expected_types": ["presence_participation_conflict"],
+  "expected_buckets": ["dispute"],
+  "should_not_contain": [],
+  "note": "Presence detection is more complex. LLM recommended."
+}

@@ -1,0 +1,6 @@
+{
+  "max_contradictions": 0,
+  "expected_types": [],
+  "should_not_flag_as_date": ["17682-06-25", "23456-01-24"],
+  "description": "Case numbers should not be detected as dates"
+}

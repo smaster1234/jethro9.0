@@ -1,0 +1,41 @@
+{
+  "description": "Sample claims with quantitative contradiction",
+  "claims": [
+    {
+      "id": "claim_1",
+      "text": "סכום התמורה בחוזה עמד על 500,000 ש\"ח כפי שסוכם בין הצדדים",
+      "source": "תצהיר התובע",
+      "page": 4,
+      "speaker": "יוסי כהן"
+    },
+    {
+      "id": "claim_2",
+      "text": "סכום התמורה בחוזה היה 350,000 שקלים בלבד",
+      "source": "כתב הגנה",
+      "page": 6,
+      "speaker": "דני לוי"
+    },
+    {
+      "id": "claim_3",
+      "text": "התובע דורש פיצוי בסך 500,000 ש\"ח כפי שנקבע בחוזה",
+      "source": "כתב תביעה",
+      "page": 8,
+      "speaker": "יוסי כהן"
+    },
+    {
+      "id": "claim_4",
+      "text": "הנתבע שילם רק 200,000 ש\"ח מתוך סכום התמורה בחוזה",
+      "source": "תצהיר התובע",
+      "page": 10,
+      "speaker": "יוסי כהן"
+    }
+  ],
+  "expected_contradictions": [
+    {
+      "claim1_id": "claim_1",
+      "claim2_id": "claim_2",
+      "type": "quantitative_conflict",
+      "reason": "סכומים שונים: 500,000 vs 350,000"
+    }
+  ]
+}
