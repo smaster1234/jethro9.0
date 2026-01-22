@@ -24,7 +24,10 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install serve
+# Copy package.json for npm run start
+COPY --from=builder /app/package.json ./
+
+# Install serve globally and as project dependency
 RUN npm install -g serve@14
 
 # Copy built files from builder
@@ -33,5 +36,8 @@ COPY --from=builder /app/dist ./dist
 # Default port
 ENV PORT=3000
 
-# Start the server
+# Expose port
+EXPOSE 3000
+
+# Start the server (Railway uses startCommand from config)
 CMD ["sh", "-c", "serve dist -s -l $PORT"]
