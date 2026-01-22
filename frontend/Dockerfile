@@ -34,7 +34,8 @@ COPY --from=builder /app/dist ./dist
 ENV PORT=3000
 
 # Run serve on the PORT Railway provides
-CMD ["sh", "-c", "serve dist -s -l $PORT"]
+CMD ["sh", "-c", "serve dist -s -l tcp://0.0.0.0:$PORT"]
+
 
 
 
