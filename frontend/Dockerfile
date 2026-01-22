@@ -3,41 +3,36 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files first for better caching
-COPY package.json package-lock.json* ./
+# Copy package files
+COPY package*.json ./
 
-# Install dependencies (with fallback)
-RUN npm ci --legacy-peer-deps 2>/dev/null || npm install
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
 
 # Copy source files
 COPY . .
 
-# Build argument for API URL (with default fallback)
+# Build argument for API URL
 ARG VITE_API_URL=""
 ENV VITE_API_URL=${VITE_API_URL}
 
 # Build the app
 RUN npm run build
 
-# Production stage
-FROM node:20-alpine AS runner
+# Production stage - simple static server
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package.json for npm run start
-COPY --from=builder /app/package.json ./
-
-# Install serve globally and as project dependency
+# Install serve globally
 RUN npm install -g serve@14
 
-# Copy built files from builder
+# Copy only the built files
 COPY --from=builder /app/dist ./dist
 
-# Default port
+# Railway sets PORT automatically
 ENV PORT=3000
-
-# Expose port
 EXPOSE 3000
 
-# Start the server (Railway uses startCommand from config)
-CMD ["sh", "-c", "serve dist -s -l $PORT"]
+# Run serve directly (no npm needed)
+CMD serve dist -s -l $PORT
