@@ -35,9 +35,3 @@ ENV PORT=3000
 
 # Run serve on the PORT Railway provides
 CMD ["serve", "dist", "-s", "-l", "3000"]
-
-
-
-
-
-
