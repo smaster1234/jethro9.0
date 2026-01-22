@@ -32,7 +32,6 @@ COPY --from=builder /app/dist ./dist
 
 # Railway sets PORT automatically
 ENV PORT=3000
-EXPOSE 3000
 
-# Run serve directly (no npm needed)
-CMD serve dist -s -l $PORT
+# Run serve - listen on 0.0.0.0 for container networking
+CMD ["sh", "-c", "serve dist -s -l tcp://0.0.0.0:$PORT"]
