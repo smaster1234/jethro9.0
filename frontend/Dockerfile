@@ -33,5 +33,5 @@ COPY --from=builder /app/dist ./dist
 # Railway sets PORT automatically
 ENV PORT=3000
 
-# Run serve - listen on 0.0.0.0 for container networking
-CMD ["sh", "-c", "serve dist -s -l tcp://0.0.0.0:$PORT"]
+# Run serve on the PORT Railway provides
+CMD ["sh", "-c", "serve dist -s -p $PORT"]
