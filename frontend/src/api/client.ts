@@ -1,7 +1,22 @@
 import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 import type { TokenResponse, ApiError } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+type RuntimeEnv = {
+  API_URL?: string;
+};
+
+const getRuntimeApiUrl = (): string => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  const runtimeEnv = (window as Window & { __JETHRO_ENV__?: RuntimeEnv }).__JETHRO_ENV__;
+  return runtimeEnv?.API_URL ?? '';
+};
+
+const normalizeBaseUrl = (value: string): string => value.replace(/\/+$/, '');
+
+const API_BASE_URL = normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
 
 // Create axios instance
 export const apiClient: AxiosInstance = axios.create({

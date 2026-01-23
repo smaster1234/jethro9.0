@@ -30,8 +30,12 @@ RUN npm install -g serve@14
 # Copy only the built files
 COPY --from=builder /app/dist ./dist
 
+# Runtime config entrypoint (writes env.js)
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Railway sets PORT automatically
 ENV PORT=3000
 
 # Run serve on the PORT Railway provides
-CMD ["sh", "-c", "serve dist -s -l ${PORT:-3000}"]
+CMD ["/app/docker-entrypoint.sh"]
