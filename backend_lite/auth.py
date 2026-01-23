@@ -140,16 +140,35 @@ ROLE_PERMISSIONS = {
 # PASSWORD HASHING
 # =============================================================================
 
+# bcrypt truncates passwords at 72 bytes; enforce to avoid 500s.
+MAX_PASSWORD_BYTES = 72
+
+def is_password_too_long(password: str) -> bool:
+    """Return True if password exceeds bcrypt 72-byte limit."""
+    try:
+        return len(password.encode("utf-8")) > MAX_PASSWORD_BYTES
+    except Exception:
+        return len(password) > MAX_PASSWORD_BYTES
+
 try:
     from passlib.context import CryptContext
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against a hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        if is_password_too_long(plain_password):
+            logger.warning("Auth failed: password exceeds bcrypt 72-byte limit")
+            return False
+        try:
+            return pwd_context.verify(plain_password, hashed_password)
+        except ValueError as e:
+            logger.warning(f"Auth failed: invalid password format ({e})")
+            return False
 
     def get_password_hash(password: str) -> str:
         """Hash a password"""
+        if is_password_too_long(password):
+            raise ValueError("Password exceeds bcrypt 72-byte limit")
         return pwd_context.hash(password)
 
     PASSWORD_HASHING_AVAILABLE = True
