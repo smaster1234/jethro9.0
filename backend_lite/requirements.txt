@@ -36,6 +36,7 @@ boto3>=1.34.0  # S3-compatible storage
 
 # Auth / password hashing (optional but removes noisy warning)
 passlib[bcrypt]>=1.7.4
+PyJWT>=2.10.1
 
 # Testing
 pytest>=7.4.0
