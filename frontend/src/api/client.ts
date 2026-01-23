@@ -1,11 +1,38 @@
 import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 import type { TokenResponse, ApiError } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+type RuntimeEnv = {
+  API_URL?: string;
+};
+
+const getRuntimeApiUrl = (): string => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  const runtimeEnv = (window as Window & { __JETHRO_ENV__?: RuntimeEnv }).__JETHRO_ENV__;
+  return runtimeEnv?.API_URL ?? '';
+};
+
+const stripEnvPrefix = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('API_URL=')) {
+    return trimmed.slice('API_URL='.length);
+  }
+  if (trimmed.startsWith('VITE_API_URL=')) {
+    return trimmed.slice('VITE_API_URL='.length);
+  }
+  return trimmed;
+};
+
+const normalizeBaseUrl = (value: string): string => stripEnvPrefix(value).replace(/\/+$/, '');
+
+const getApiBaseUrl = (): string =>
+  normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
 
 // Create axios instance
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   headers: {
     'Content-Type': 'application/json',
   },
@@ -34,6 +61,10 @@ export const getAccessToken = () => accessToken;
 // Request interceptor - add auth header
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    const runtimeBaseUrl = getApiBaseUrl();
+    if (runtimeBaseUrl) {
+      config.baseURL = runtimeBaseUrl;
+    }
     if (accessToken && config.headers) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }

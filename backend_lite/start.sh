@@ -9,6 +9,6 @@ if [ "$ROLE" = "worker" ]; then
   exec /app/backend_lite/start_worker.sh
 fi
 
-PORT="${PORT:-8000}"
+PORT="${PORT:-8080}"
 echo "Starting Contradiction Service on port $PORT"
 exec python3 -m uvicorn backend_lite.api:app --host 0.0.0.0 --port "$PORT"

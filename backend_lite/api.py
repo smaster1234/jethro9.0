@@ -106,7 +106,8 @@ from .auth import (
     get_auth_service,
     create_access_token, create_refresh_token, decode_token,
     get_password_hash, verify_password,
-    JWT_AVAILABLE, PASSWORD_HASHING_AVAILABLE
+    PASSWORD_HASHING_AVAILABLE, is_jwt_available,
+    is_password_too_long, MAX_PASSWORD_BYTES,
 )
 
 from sqlalchemy.orm import Session
@@ -168,10 +169,20 @@ app = FastAPI(
 )
 
 # CORS - get allowed origins from environment, default to localhost for development
-CORS_ALLOW_ORIGINS = os.environ.get(
+def _parse_cors_origins(raw: str) -> List[str]:
+    origins: List[str] = []
+    for item in raw.split(","):
+        origin = item.strip().strip('"').strip("'").rstrip("/")
+        if origin:
+            origins.append(origin)
+    return origins
+
+_cors_raw = os.environ.get(
     "CORS_ALLOW_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000"
-).split(",")
+)
+CORS_ALLOW_ORIGINS = _parse_cors_origins(_cors_raw)
+logger.info(f"CORS allow origins: {CORS_ALLOW_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -220,10 +231,13 @@ FRONTEND_BUILD_DIR = Path(__file__).parent / "frontend_build"
 if not FRONTEND_BUILD_DIR.exists():
     FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
 FRONTEND_BUILD_AVAILABLE = FRONTEND_BUILD_DIR.exists() and (FRONTEND_BUILD_DIR / "index.html").exists()
-if FRONTEND_BUILD_AVAILABLE:
+FRONTEND_STATIC_DIR = FRONTEND_BUILD_DIR / "static"
+if FRONTEND_BUILD_AVAILABLE and FRONTEND_STATIC_DIR.exists():
     # Mount React static assets (JS, CSS, etc.)
-    app.mount("/react-static", StaticFiles(directory=str(FRONTEND_BUILD_DIR / "static")), name="react-static")
+    app.mount("/react-static", StaticFiles(directory=str(FRONTEND_STATIC_DIR)), name="react-static")
     logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR}")
+elif FRONTEND_BUILD_AVAILABLE:
+    logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR} (no /static dir)")
 
 # Include upload router if available
 if UPLOAD_ENABLED and upload_router:
@@ -2357,10 +2371,15 @@ async def login(request: LoginRequest, db: Session = Depends(get_db_dependency))
     Login with email and password.
     Returns JWT access token.
     """
-    if not JWT_AVAILABLE or not PASSWORD_HASHING_AVAILABLE:
+    if not is_jwt_available() or not PASSWORD_HASHING_AVAILABLE:
         raise HTTPException(
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
+        )
+    if is_password_too_long(request.password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too long (max {MAX_PASSWORD_BYTES} bytes)"
         )
 
     auth_service = get_auth_service(db)
@@ -2386,10 +2405,15 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db_depend
     Register a new user with email and password.
     If firm_id is not provided, creates a new firm for the user.
     """
-    if not JWT_AVAILABLE or not PASSWORD_HASHING_AVAILABLE:
+    if not is_jwt_available() or not PASSWORD_HASHING_AVAILABLE:
         raise HTTPException(
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
+        )
+    if is_password_too_long(request.password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too long (max {MAX_PASSWORD_BYTES} bytes)"
         )
 
     # Check if email already exists
