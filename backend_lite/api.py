@@ -106,7 +106,8 @@ from .auth import (
     get_auth_service,
     create_access_token, create_refresh_token, decode_token,
     get_password_hash, verify_password,
-    PASSWORD_HASHING_AVAILABLE, is_jwt_available
+    PASSWORD_HASHING_AVAILABLE, is_jwt_available,
+    is_password_too_long, MAX_PASSWORD_BYTES,
 )
 
 from sqlalchemy.orm import Session
@@ -2375,6 +2376,11 @@ async def login(request: LoginRequest, db: Session = Depends(get_db_dependency))
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
         )
+    if is_password_too_long(request.password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too long (max {MAX_PASSWORD_BYTES} bytes)"
+        )
 
     auth_service = get_auth_service(db)
     auth = auth_service.authenticate_user(request.email, request.password)
@@ -2403,6 +2409,11 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db_depend
         raise HTTPException(
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
+        )
+    if is_password_too_long(request.password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too long (max {MAX_PASSWORD_BYTES} bytes)"
         )
 
     # Check if email already exists
