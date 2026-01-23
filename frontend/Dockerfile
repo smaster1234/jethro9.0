@@ -34,4 +34,4 @@ COPY --from=builder /app/dist ./dist
 ENV PORT=3000
 
 # Run serve on the PORT Railway provides
-CMD ["serve", "dist", "-s", "-l", "3000"]
+CMD ["sh", "-c", "serve dist -s -l ${PORT:-3000}"]
