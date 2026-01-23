@@ -2,6 +2,14 @@
 set -e
 
 API_URL="${API_URL:-${VITE_API_URL:-}}"
+case "$API_URL" in
+  API_URL=*)
+    API_URL="${API_URL#API_URL=}"
+    ;;
+  VITE_API_URL=*)
+    API_URL="${API_URL#VITE_API_URL=}"
+    ;;
+esac
 export API_URL
 
 echo "Writing /app/dist/env.js with API_URL=${API_URL:-<empty>}"
