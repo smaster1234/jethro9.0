@@ -34,13 +34,13 @@ RUN chmod +x ./backend_lite/start.sh ./backend_lite/start_worker.sh 2>/dev/null 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV LLM_MODE=none
-ENV PORT=8000
+ENV PORT=8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8000}/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8080}/health')" || exit 1
 
-EXPOSE 8000
+EXPOSE 8080
 
 # Default command - Web server
 # For worker: override with BACKEND_LITE_ROLE=worker
