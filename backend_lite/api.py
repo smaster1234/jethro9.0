@@ -2434,11 +2434,16 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db_depend
         db.refresh(firm)
 
     # Create user with hashed password
+    try:
+        password_hash = get_password_hash(request.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     user = User(
         firm_id=firm.id,
         email=request.email,
         name=request.name,
-        password_hash=get_password_hash(request.password),
+        password_hash=password_hash,
         system_role=SystemRole.SUPER_ADMIN if not request.firm_id else SystemRole.MEMBER
     )
     db.add(user)

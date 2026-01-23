@@ -152,7 +152,9 @@ def is_password_too_long(password: str) -> bool:
 
 try:
     from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    # bcrypt_sha256 avoids bcrypt 72-byte password limit while
+    # keeping backward compatibility with existing bcrypt hashes.
+    pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against a hash"""
