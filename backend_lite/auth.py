@@ -188,6 +188,10 @@ def _load_jwt():
         JWT_AVAILABLE = False
         return None
 
+def is_jwt_available() -> bool:
+    """Return True if PyJWT is available (lazy-loaded)."""
+    return _load_jwt() is not None
+
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""

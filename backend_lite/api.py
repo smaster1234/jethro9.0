@@ -106,7 +106,7 @@ from .auth import (
     get_auth_service,
     create_access_token, create_refresh_token, decode_token,
     get_password_hash, verify_password,
-    JWT_AVAILABLE, PASSWORD_HASHING_AVAILABLE
+    PASSWORD_HASHING_AVAILABLE, is_jwt_available
 )
 
 from sqlalchemy.orm import Session
@@ -2370,7 +2370,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db_dependency))
     Login with email and password.
     Returns JWT access token.
     """
-    if not JWT_AVAILABLE or not PASSWORD_HASHING_AVAILABLE:
+    if not is_jwt_available() or not PASSWORD_HASHING_AVAILABLE:
         raise HTTPException(
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
@@ -2399,7 +2399,7 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db_depend
     Register a new user with email and password.
     If firm_id is not provided, creates a new firm for the user.
     """
-    if not JWT_AVAILABLE or not PASSWORD_HASHING_AVAILABLE:
+    if not is_jwt_available() or not PASSWORD_HASHING_AVAILABLE:
         raise HTTPException(
             status_code=501,
             detail="JWT authentication not available. Install PyJWT and passlib."
