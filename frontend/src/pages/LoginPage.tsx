@@ -14,6 +14,7 @@ export const LoginPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const isPasswordTooLong = (value: string) => new TextEncoder().encode(value).length > 72;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,6 +22,10 @@ export const LoginPage: React.FC = () => {
     setIsLoading(true);
 
     try {
+      if (isPasswordTooLong(password)) {
+        setError('הסיסמה ארוכה מדי (מקסימום 72 בתים)');
+        return;
+      }
       await login({ email, password });
       navigate('/dashboard');
     } catch (err) {

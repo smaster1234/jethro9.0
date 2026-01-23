@@ -16,6 +16,7 @@ export const RegisterPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const isPasswordTooLong = (value: string) => new TextEncoder().encode(value).length > 72;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,6 +29,10 @@ export const RegisterPage: React.FC = () => {
 
     if (password.length < 6) {
       setError('הסיסמה חייבת להכיל לפחות 6 תווים');
+      return;
+    }
+    if (isPasswordTooLong(password)) {
+      setError('הסיסמה ארוכה מדי (מקסימום 72 בתים)');
       return;
     }
 
