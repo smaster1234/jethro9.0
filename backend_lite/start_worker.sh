@@ -8,7 +8,7 @@ echo "Redis URL: ${REDIS_URL:-not set}"
 # Some platforms enforce an HTTP healthcheck even for workers.
 # To guarantee healthcheck success, run the health server in the foreground,
 # and run the RQ worker in the background with auto-restart.
-PORT="${PORT:-8000}"
+PORT="${PORT:-8080}"
 
 start_worker_loop() {
   while true; do
