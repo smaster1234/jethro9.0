@@ -16,11 +16,12 @@ const getRuntimeApiUrl = (): string => {
 
 const normalizeBaseUrl = (value: string): string => value.replace(/\/+$/, '');
 
-const API_BASE_URL = normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
+const getApiBaseUrl = (): string =>
+  normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
 
 // Create axios instance
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   headers: {
     'Content-Type': 'application/json',
   },
@@ -49,6 +50,10 @@ export const getAccessToken = () => accessToken;
 // Request interceptor - add auth header
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    const runtimeBaseUrl = getApiBaseUrl();
+    if (runtimeBaseUrl) {
+      config.baseURL = runtimeBaseUrl;
+    }
     if (accessToken && config.headers) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }
