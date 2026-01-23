@@ -14,7 +14,18 @@ const getRuntimeApiUrl = (): string => {
   return runtimeEnv?.API_URL ?? '';
 };
 
-const normalizeBaseUrl = (value: string): string => value.replace(/\/+$/, '');
+const stripEnvPrefix = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('API_URL=')) {
+    return trimmed.slice('API_URL='.length);
+  }
+  if (trimmed.startsWith('VITE_API_URL=')) {
+    return trimmed.slice('VITE_API_URL='.length);
+  }
+  return trimmed;
+};
+
+const normalizeBaseUrl = (value: string): string => stripEnvPrefix(value).replace(/\/+$/, '');
 
 const getApiBaseUrl = (): string =>
   normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
