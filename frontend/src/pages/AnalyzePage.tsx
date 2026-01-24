@@ -13,7 +13,26 @@ import {
 } from 'lucide-react';
 import { analysisApi, handleApiError } from '../api';
 import { Card, Button, Badge, Progress, Spinner, EmptyState } from '../components/ui';
-import type { AnalysisResponse, Contradiction, CrossExamQuestion } from '../types';
+import type { AnalysisResponse, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+
+// Helper to flatten cross-exam questions from nested structure
+const flattenCrossExamQuestions = (
+  questions: CrossExamQuestionsOutput[] | CrossExamQuestion[] | undefined
+): CrossExamQuestion[] => {
+  if (!questions || questions.length === 0) return [];
+
+  // Check if it's already a flat array of questions
+  const first = questions[0];
+  if ('question' in first && typeof first.question === 'string') {
+    // Already flat
+    return questions as CrossExamQuestion[];
+  }
+
+  // It's nested - flatten
+  return (questions as CrossExamQuestionsOutput[]).flatMap(
+    (set) => set.questions || []
+  );
+};
 
 export const AnalyzePage: React.FC = () => {
   const [text, setText] = useState('');
@@ -22,7 +41,7 @@ export const AnalyzePage: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<'contradictions' | 'questions'>('contradictions');
+  const [activeTab, setActiveTab] = useState<'claims' | 'contradictions' | 'questions'>('contradictions');
 
   const handleAnalyze = async () => {
     if (!text.trim()) {
@@ -187,51 +206,121 @@ export const AnalyzePage: React.FC = () => {
               className="space-y-4"
             >
               {/* Summary */}
-              <Card>
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <div className="text-3xl font-bold text-slate-900">
-                      {result.claims?.length || 0}
-                    </div>
-                    <div className="text-sm text-slate-500">טענות זוהו</div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-bold text-warning-600">
-                      {result.contradictions?.length || 0}
-                    </div>
-                    <div className="text-sm text-slate-500">סתירות נמצאו</div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-bold text-primary-600">
-                      {result.cross_exam_questions?.length || 0}
-                    </div>
-                    <div className="text-sm text-slate-500">שאלות הומלצו</div>
-                  </div>
-                </div>
-              </Card>
+              {(() => {
+                const flatQuestions = flattenCrossExamQuestions(result.cross_exam_questions);
+                return (
+                  <>
+                    <Card>
+                      <div className="grid grid-cols-3 gap-4 text-center">
+                        <div>
+                          <div className="text-3xl font-bold text-slate-900">
+                            {result.claims?.length || 0}
+                          </div>
+                          <div className="text-sm text-slate-500">טענות זוהו</div>
+                        </div>
+                        <div>
+                          <div className="text-3xl font-bold text-warning-600">
+                            {result.contradictions?.length || 0}
+                          </div>
+                          <div className="text-sm text-slate-500">סתירות נמצאו</div>
+                        </div>
+                        <div>
+                          <div className="text-3xl font-bold text-primary-600">
+                            {flatQuestions.length}
+                          </div>
+                          <div className="text-sm text-slate-500">שאלות הומלצו</div>
+                        </div>
+                      </div>
+                    </Card>
 
-              {/* Tabs */}
-              <div className="flex gap-2">
-                <Button
-                  variant={activeTab === 'contradictions' ? 'primary' : 'secondary'}
-                  size="sm"
-                  onClick={() => setActiveTab('contradictions')}
-                  leftIcon={<AlertTriangle className="w-4 h-4" />}
-                >
-                  סתירות ({result.contradictions?.length || 0})
-                </Button>
-                <Button
-                  variant={activeTab === 'questions' ? 'primary' : 'secondary'}
-                  size="sm"
-                  onClick={() => setActiveTab('questions')}
-                  leftIcon={<MessageSquare className="w-4 h-4" />}
-                >
-                  שאלות ({result.cross_exam_questions?.length || 0})
-                </Button>
-              </div>
+                    {/* Tabs */}
+                    <div className="flex gap-2">
+                      <Button
+                        variant={activeTab === 'claims' ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setActiveTab('claims')}
+                        leftIcon={<FileText className="w-4 h-4" />}
+                      >
+                        טענות ({result.claims?.length || 0})
+                      </Button>
+                      <Button
+                        variant={activeTab === 'contradictions' ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setActiveTab('contradictions')}
+                        leftIcon={<AlertTriangle className="w-4 h-4" />}
+                      >
+                        סתירות ({result.contradictions?.length || 0})
+                      </Button>
+                      <Button
+                        variant={activeTab === 'questions' ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setActiveTab('questions')}
+                        leftIcon={<MessageSquare className="w-4 h-4" />}
+                      >
+                        שאלות ({flatQuestions.length})
+                      </Button>
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Content */}
               <AnimatePresence mode="wait">
+                {activeTab === 'claims' && (
+                  <motion.div
+                    key="claims"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    className="space-y-3"
+                  >
+                    {result.claims?.length === 0 ? (
+                      <Card>
+                        <div className="text-center py-8">
+                          <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                          <p className="text-lg font-medium text-slate-700">
+                            לא זוהו טענות
+                          </p>
+                          <p className="text-sm text-slate-500 mt-2">
+                            נסה להזין טקסט מפורט יותר
+                          </p>
+                        </div>
+                      </Card>
+                    ) : (
+                      result.claims?.map((claim, index) => (
+                        <motion.div
+                          key={claim.id || index}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.05 }}
+                        >
+                          <Card className="border-r-4 border-primary-400">
+                            <div className="flex items-start gap-3">
+                              <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-sm flex-shrink-0">
+                                {index + 1}
+                              </div>
+                              <div className="flex-1">
+                                <p className="text-slate-900">{claim.text}</p>
+                                <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
+                                  {claim.source_name && (
+                                    <span>מקור: {claim.source_name}</span>
+                                  )}
+                                  {claim.speaker && (
+                                    <span>דובר: {claim.speaker}</span>
+                                  )}
+                                  {claim.category && (
+                                    <Badge variant="neutral" size="sm">{claim.category}</Badge>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </Card>
+                        </motion.div>
+                      ))
+                    )}
+                  </motion.div>
+                )}
+
                 {activeTab === 'contradictions' && (
                   <motion.div
                     key="contradictions"
@@ -272,25 +361,32 @@ export const AnalyzePage: React.FC = () => {
                     exit={{ opacity: 0, x: -20 }}
                     className="space-y-4"
                   >
-                    {result.cross_exam_questions?.length === 0 ? (
-                      <Card>
-                        <div className="text-center py-8">
-                          <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                          <p className="text-lg font-medium text-slate-700">
-                            אין שאלות מומלצות
-                          </p>
-                        </div>
-                      </Card>
-                    ) : (
-                      result.cross_exam_questions?.map((question, index) => (
+                    {(() => {
+                      const flatQuestions = flattenCrossExamQuestions(result.cross_exam_questions);
+                      if (flatQuestions.length === 0) {
+                        return (
+                          <Card>
+                            <div className="text-center py-8">
+                              <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                              <p className="text-lg font-medium text-slate-700">
+                                אין שאלות מומלצות
+                              </p>
+                              <p className="text-sm text-slate-500 mt-2">
+                                שאלות נוצרות כאשר מזוהות סתירות
+                              </p>
+                            </div>
+                          </Card>
+                        );
+                      }
+                      return flatQuestions.map((question, index) => (
                         <QuestionCard
                           key={question.id || index}
                           question={question}
                           index={index}
                           onCopy={copyToClipboard}
                         />
-                      ))
-                    )}
+                      ));
+                    })()}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -334,6 +430,40 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
     }
   };
 
+  const getTypeLabel = (type: string) => {
+    const types: Record<string, string> = {
+      'TEMPORAL_DATE': 'סתירה בתאריכים',
+      'QUANTITATIVE_AMOUNT': 'סתירה בכמויות/סכומים',
+      'ACTOR_ATTRIBUTION': 'סתירה בזיהוי מבצע הפעולה',
+      'PRESENCE_PARTICIPATION': 'סתירה בנוכחות/השתתפות',
+      'DOCUMENT_EXISTENCE': 'סתירה בקיום מסמך',
+      'IDENTITY_BASIC': 'סתירה בזיהוי/זהות',
+    };
+    return types[type] || type;
+  };
+
+  // Generate explanation if not provided
+  const getExplanation = () => {
+    if (contradiction.explanation_he) return contradiction.explanation_he;
+    if (contradiction.explanation) return contradiction.explanation;
+
+    // Generate a basic explanation based on contradiction type
+    const claimAText = contradiction.claim_a?.text || 'טענה א\'';
+    const claimBText = contradiction.claim_b?.text || 'טענה ב\'';
+
+    const explanations: Record<string, string> = {
+      'TEMPORAL_DATE': `התאריכים בשתי הטענות אינם תואמים. יש לברר איזה תאריך הוא הנכון.`,
+      'QUANTITATIVE_AMOUNT': `הכמויות או הסכומים המצוינים בשתי הטענות שונים זה מזה.`,
+      'ACTOR_ATTRIBUTION': `יש אי-התאמה לגבי מי ביצע את הפעולה המתוארת.`,
+      'PRESENCE_PARTICIPATION': `הטענות סותרות זו את זו לגבי נוכחות או השתתפות במאורע.`,
+      'DOCUMENT_EXISTENCE': `יש סתירה לגבי קיומו או אי-קיומו של מסמך.`,
+      'IDENTITY_BASIC': `פרטי הזיהוי בשתי הטענות אינם תואמים.`,
+    };
+
+    return explanations[contradiction.contradiction_type] ||
+      `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -351,7 +481,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
               <Badge variant={getSeverityColor(contradiction.severity) as any}>
                 {getSeverityLabel(contradiction.severity)}
               </Badge>
-              <Badge variant="neutral">{contradiction.contradiction_type}</Badge>
+              <Badge variant="neutral">{getTypeLabel(contradiction.contradiction_type)}</Badge>
             </div>
           </div>
 
@@ -378,15 +508,11 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
             </div>
           </div>
 
-          {/* Explanation */}
-          {(contradiction.explanation_he || contradiction.explanation) && (
-            <div className="p-4 bg-slate-50 rounded-xl">
-              <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
-              <p className="text-slate-700">
-                {contradiction.explanation_he || contradiction.explanation}
-              </p>
-            </div>
-          )}
+          {/* Explanation - always shown */}
+          <div className="p-4 bg-slate-50 rounded-xl">
+            <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
+            <p className="text-slate-700">{getExplanation()}</p>
+          </div>
 
           {/* Confidence */}
           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -454,11 +580,18 @@ const QuestionCard: React.FC<{
             </p>
           )}
 
-          {question.follow_ups && question.follow_ups.length > 0 && (
+          {/* Show follow-up question if available */}
+          {(question.follow_up || (question.follow_ups && question.follow_ups.length > 0)) && (
             <div className="pt-3 border-t border-slate-100">
               <p className="text-xs text-slate-500 font-medium mb-2">שאלות המשך:</p>
               <ul className="space-y-1">
-                {question.follow_ups.map((followUp, i) => (
+                {question.follow_up && (
+                  <li className="text-sm text-slate-600 flex items-start gap-2">
+                    <span className="text-slate-400">•</span>
+                    {question.follow_up}
+                  </li>
+                )}
+                {question.follow_ups?.map((followUp, i) => (
                   <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
                     <span className="text-slate-400">•</span>
                     {followUp}

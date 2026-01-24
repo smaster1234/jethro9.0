@@ -13,6 +13,10 @@ import {
   Eye,
   Search,
   RefreshCw,
+  FolderPlus,
+  Folder,
+  ChevronDown,
+  ChevronLeft,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError } from '../api';
 import {
@@ -23,6 +27,7 @@ import {
   EmptyState,
   Modal,
   Progress,
+  Input,
 } from '../components/ui';
 import type { Case, Document, AnalysisRun, Folder as FolderType } from '../types';
 
@@ -34,10 +39,11 @@ export const CaseDetailPage: React.FC = () => {
 
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
-  const [_folders, setFolders] = useState<FolderType[]>([]);
+  const [folders, setFolders] = useState<FolderType[]>([]);
   const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('documents');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | undefined>(undefined);
 
   // Upload state
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -45,6 +51,14 @@ export const CaseDetailPage: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState('');
+  const [uploadFolderId, setUploadFolderId] = useState<string | undefined>(undefined);
+
+  // Create folder state
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderParentId, setNewFolderParentId] = useState<string | undefined>(undefined);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState('');
 
   // Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -127,6 +141,35 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const fetchFolders = async () => {
+    if (!caseId) return;
+    try {
+      const foldersRes = await documentsApi.folders.getTree(caseId);
+      setFolders(foldersRes);
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!caseId || !newFolderName.trim()) return;
+
+    setIsCreatingFolder(true);
+    setCreateFolderError('');
+
+    try {
+      await documentsApi.folders.create(caseId, newFolderName.trim(), newFolderParentId);
+      setShowCreateFolderModal(false);
+      setNewFolderName('');
+      setNewFolderParentId(undefined);
+      await fetchFolders();
+    } catch (error) {
+      setCreateFolderError(handleApiError(error));
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  };
+
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
@@ -152,7 +195,7 @@ export const CaseDetailPage: React.FC = () => {
         role: 'evidence',
       }));
 
-      const result = await documentsApi.upload(caseId, uploadFiles, metadata);
+      const result = await documentsApi.upload(caseId, uploadFiles, metadata, uploadFolderId);
 
       // Track active jobs
       if (result.job_ids && result.job_ids.length > 0) {
@@ -160,6 +203,7 @@ export const CaseDetailPage: React.FC = () => {
       }
 
       setUploadFiles([]);
+      setUploadFolderId(undefined);
       setShowUploadModal(false);
       await fetchDocuments();
     } catch (error) {
@@ -352,58 +396,117 @@ export const CaseDetailPage: React.FC = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
           >
-            {documents.length === 0 ? (
-              <EmptyState
-                icon={<FileText className="w-16 h-16" />}
-                title="אין מסמכים בתיק"
-                description="העלו מסמכים כדי להתחיל בניתוח"
-                action={{
-                  label: 'העלה מסמכים',
-                  onClick: () => setShowUploadModal(true),
-                  icon: <Upload className="w-5 h-5" />,
-                }}
-              />
-            ) : (
-              <Card padding="none">
-                <div className="divide-y divide-slate-100">
-                  {documents.map((doc) => (
-                    <motion.div
-                      key={doc.id}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="p-4 hover:bg-slate-50 transition-colors"
+            <div className="flex gap-6">
+              {/* Folder Sidebar */}
+              <div className="w-64 flex-shrink-0">
+                <Card>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-semibold text-slate-900">תיקיות</h3>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowCreateFolderModal(true)}
+                      leftIcon={<FolderPlus className="w-4 h-4" />}
                     >
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl">
-                          {getFileIcon(doc.mime_type)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-medium text-slate-900 truncate">
-                              {doc.doc_name || doc.original_filename}
-                            </h3>
-                            {getStatusBadge(doc.status)}
-                          </div>
-                          <div className="flex items-center gap-3 text-sm text-slate-500 mt-1">
-                            {doc.page_count && <span>{doc.page_count} עמודים</span>}
-                            {doc.party && <span>צד: {doc.party}</span>}
-                            <span>{new Date(doc.created_at).toLocaleDateString('he-IL')}</span>
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => navigate(`/documents/${doc.id}`)}
-                          leftIcon={<Eye className="w-4 h-4" />}
+                      חדש
+                    </Button>
+                  </div>
+
+                  {/* All Documents */}
+                  <button
+                    onClick={() => setSelectedFolderId(undefined)}
+                    className={`w-full flex items-center gap-2 p-2 rounded-lg transition-colors ${
+                      selectedFolderId === undefined
+                        ? 'bg-primary-50 text-primary-700'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span className="text-sm font-medium">כל המסמכים</span>
+                    <span className="mr-auto text-xs text-slate-400">({documents.length})</span>
+                  </button>
+
+                  {/* Folder Tree */}
+                  {folders.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {folders.map((folder) => (
+                        <FolderTreeItem
+                          key={folder.id}
+                          folder={folder}
+                          selectedFolderId={selectedFolderId}
+                          onSelect={setSelectedFolderId}
+                          level={0}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {folders.length === 0 && (
+                    <div className="text-center py-4 text-sm text-slate-500">
+                      אין תיקיות עדיין
+                    </div>
+                  )}
+                </Card>
+              </div>
+
+              {/* Documents List */}
+              <div className="flex-1">
+                {documents.length === 0 ? (
+                  <EmptyState
+                    icon={<FileText className="w-16 h-16" />}
+                    title="אין מסמכים בתיק"
+                    description="העלו מסמכים כדי להתחיל בניתוח"
+                    action={{
+                      label: 'העלה מסמכים',
+                      onClick: () => setShowUploadModal(true),
+                      icon: <Upload className="w-5 h-5" />,
+                    }}
+                  />
+                ) : (
+                  <Card padding="none">
+                    <div className="divide-y divide-slate-100">
+                      {documents
+                        .filter((doc) => !selectedFolderId || doc.metadata?.folder_id === selectedFolderId)
+                        .map((doc) => (
+                        <motion.div
+                          key={doc.id}
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="p-4 hover:bg-slate-50 transition-colors"
                         >
-                          צפייה
-                        </Button>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </Card>
-            )}
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl">
+                              {getFileIcon(doc.mime_type)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h3 className="font-medium text-slate-900 truncate">
+                                  {doc.doc_name || doc.original_filename}
+                                </h3>
+                                {getStatusBadge(doc.status)}
+                              </div>
+                              <div className="flex items-center gap-3 text-sm text-slate-500 mt-1">
+                                {doc.page_count && <span>{doc.page_count} עמודים</span>}
+                                {doc.party && <span>צד: {doc.party}</span>}
+                                <span>{new Date(doc.created_at).toLocaleDateString('he-IL')}</span>
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => navigate(`/documents/${doc.id}`)}
+                              leftIcon={<Eye className="w-4 h-4" />}
+                            >
+                              צפייה
+                            </Button>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+              </div>
+            </div>
           </motion.div>
         )}
 
@@ -483,12 +586,84 @@ export const CaseDetailPage: React.FC = () => {
         )}
       </AnimatePresence>
 
+      {/* Create Folder Modal */}
+      <Modal
+        isOpen={showCreateFolderModal}
+        onClose={() => {
+          setShowCreateFolderModal(false);
+          setNewFolderName('');
+          setNewFolderParentId(undefined);
+          setCreateFolderError('');
+        }}
+        title="יצירת תיקייה חדשה"
+        description="צרו תיקייה חדשה לארגון המסמכים"
+        size="md"
+      >
+        <div className="space-y-4">
+          {createFolderError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {createFolderError}
+            </div>
+          )}
+
+          <Input
+            label="שם התיקייה"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            placeholder="לדוגמה: עדויות, מסמכי בית משפט"
+            required
+          />
+
+          {folders.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                תיקיית אב (אופציונלי)
+              </label>
+              <select
+                value={newFolderParentId || ''}
+                onChange={(e) => setNewFolderParentId(e.target.value || undefined)}
+                className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                <option value="">בחר תיקייה (שורש)</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              onClick={handleCreateFolder}
+              className="flex-1"
+              isLoading={isCreatingFolder}
+              disabled={!newFolderName.trim()}
+            >
+              צור תיקייה
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowCreateFolderModal(false);
+                setNewFolderName('');
+                setNewFolderParentId(undefined);
+              }}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Upload Modal */}
       <Modal
         isOpen={showUploadModal}
         onClose={() => {
           setShowUploadModal(false);
           setUploadFiles([]);
+          setUploadFolderId(undefined);
           setUploadError('');
         }}
         title="העלאת מסמכים"
@@ -526,6 +701,27 @@ export const CaseDetailPage: React.FC = () => {
               </p>
             </label>
           </div>
+
+          {/* Folder selection */}
+          {folders.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                העלה לתיקייה (אופציונלי)
+              </label>
+              <select
+                value={uploadFolderId || ''}
+                onChange={(e) => setUploadFolderId(e.target.value || undefined)}
+                className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                <option value="">שורש התיק</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Selected files */}
           {uploadFiles.length > 0 && (
@@ -589,6 +785,65 @@ export const CaseDetailPage: React.FC = () => {
           </div>
         </div>
       </Modal>
+    </div>
+  );
+};
+
+// Folder Tree Item Component
+const FolderTreeItem: React.FC<{
+  folder: FolderType;
+  selectedFolderId: string | undefined;
+  onSelect: (folderId: string | undefined) => void;
+  level: number;
+}> = ({ folder, selectedFolderId, onSelect, level }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const hasChildren = folder.children && folder.children.length > 0;
+
+  return (
+    <div>
+      <button
+        onClick={() => onSelect(folder.id)}
+        className={`w-full flex items-center gap-2 p-2 rounded-lg transition-colors ${
+          selectedFolderId === folder.id
+            ? 'bg-primary-50 text-primary-700'
+            : 'hover:bg-slate-50 text-slate-700'
+        }`}
+        style={{ paddingRight: `${8 + level * 16}px` }}
+      >
+        {hasChildren && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsExpanded(!isExpanded);
+            }}
+            className="p-0.5 hover:bg-slate-200 rounded"
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronLeft className="w-3 h-3" />
+            )}
+          </button>
+        )}
+        <Folder className="w-4 h-4 text-amber-500" />
+        <span className="text-sm font-medium truncate">{folder.name}</span>
+        {folder.document_count !== undefined && folder.document_count > 0 && (
+          <span className="mr-auto text-xs text-slate-400">({folder.document_count})</span>
+        )}
+      </button>
+      {hasChildren && isExpanded && (
+        <div className="space-y-1">
+          {folder.children!.map((child) => (
+            <FolderTreeItem
+              key={child.id}
+              folder={child}
+              selectedFolderId={selectedFolderId}
+              onSelect={onSelect}
+              level={level + 1}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };
