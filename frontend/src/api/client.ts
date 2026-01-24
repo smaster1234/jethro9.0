@@ -41,6 +41,8 @@ export const apiClient: AxiosInstance = axios.create({
 // Token management
 let accessToken: string | null = localStorage.getItem('access_token');
 let refreshToken: string | null = localStorage.getItem('refresh_token');
+let isRefreshing = false;
+let refreshSubscribers: ((token: string) => void)[] = [];
 
 export const setTokens = (tokens: TokenResponse) => {
   accessToken = tokens.access_token;
@@ -57,6 +59,54 @@ export const clearTokens = () => {
 };
 
 export const getAccessToken = () => accessToken;
+export const getRefreshToken = () => refreshToken;
+
+// Subscribe to token refresh
+const subscribeTokenRefresh = (callback: (token: string) => void) => {
+  refreshSubscribers.push(callback);
+};
+
+// Notify all subscribers with new token
+const onTokenRefreshed = (newToken: string) => {
+  refreshSubscribers.forEach((callback) => callback(newToken));
+  refreshSubscribers = [];
+};
+
+// Refresh the access token
+const refreshAccessToken = async (): Promise<string | null> => {
+  if (!refreshToken) return null;
+
+  try {
+    const response = await axios.post<TokenResponse>(
+      `${getApiBaseUrl()}/auth/refresh`,
+      { refresh_token: refreshToken },
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+
+    const tokens = response.data;
+    setTokens(tokens);
+    return tokens.access_token;
+  } catch (error) {
+    clearTokens();
+    return null;
+  }
+};
+
+// Logout and revoke token on server
+export const logout = async (): Promise<void> => {
+  if (accessToken) {
+    try {
+      await axios.post(
+        `${getApiBaseUrl()}/auth/logout`,
+        {},
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+    } catch {
+      // Ignore errors during logout
+    }
+  }
+  clearTokens();
+};
 
 // Request interceptor - add auth header
 apiClient.interceptors.request.use(
@@ -73,22 +123,44 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor - handle errors
+// Response interceptor - handle errors and token refresh
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError<ApiError>) => {
-    const originalRequest = error.config;
+    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
     // If 401 and we have a refresh token, try to refresh
-    if (error.response?.status === 401 && refreshToken && originalRequest) {
+    if (error.response?.status === 401 && refreshToken && originalRequest && !originalRequest._retry) {
+      if (isRefreshing) {
+        // Wait for the refresh to complete
+        return new Promise((resolve) => {
+          subscribeTokenRefresh((newToken: string) => {
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
+            resolve(apiClient(originalRequest));
+          });
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
       try {
-        // Try to refresh token (implement if backend supports it)
-        // For now, just clear tokens and redirect to login
-        clearTokens();
-        window.location.href = '/login';
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          isRefreshing = false;
+          onTokenRefreshed(newToken);
+          originalRequest.headers.Authorization = `Bearer ${newToken}`;
+          return apiClient(originalRequest);
+        } else {
+          isRefreshing = false;
+          window.location.href = '/login';
+          return Promise.reject(error);
+        }
       } catch {
+        isRefreshing = false;
         clearTokens();
         window.location.href = '/login';
+        return Promise.reject(error);
       }
     }
 

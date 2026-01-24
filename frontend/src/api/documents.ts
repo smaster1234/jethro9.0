@@ -26,6 +26,15 @@ export interface UpdateDocumentRequest {
   version_label?: string;
 }
 
+export interface CaseJob {
+  id: string;
+  job_type: string;
+  status: 'queued' | 'started' | 'finished' | 'failed';
+  progress?: number;
+  error_message?: string;
+  created_at: string;
+}
+
 export const documentsApi = {
   // List documents in a case
   list: async (caseId: string, params?: ListDocumentsParams): Promise<Document[]> => {
@@ -138,6 +147,14 @@ export const documentsApi = {
   // Get job status
   getJobStatus: async (jobId: string): Promise<Job> => {
     const response = await apiClient.get<Job>(`/api/v1/jobs/${jobId}`);
+    return response.data;
+  },
+
+  // List case jobs
+  listCaseJobs: async (caseId: string, status?: string): Promise<CaseJob[]> => {
+    const response = await apiClient.get<CaseJob[]>(`/api/v1/cases/${caseId}/jobs`, {
+      params: status ? { status } : undefined,
+    });
     return response.data;
   },
 

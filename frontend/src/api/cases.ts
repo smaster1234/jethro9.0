@@ -15,6 +15,14 @@ export interface MemoryItem {
   type?: 'note' | 'finding' | 'todo';
 }
 
+export interface CaseParticipant {
+  user_id: string;
+  name: string;
+  email: string;
+  role?: string;
+  added_at: string;
+}
+
 export const casesApi = {
   // List all cases
   list: async (): Promise<Case[]> => {
@@ -87,6 +95,20 @@ export const casesApi = {
   // Save case memory/notes
   saveMemory: async (caseId: string, memory: MemoryItem[]): Promise<void> => {
     await apiClient.post(`/cases/${caseId}/memory`, { memory });
+  },
+
+  // List case participants
+  getParticipants: async (caseId: string): Promise<CaseParticipant[]> => {
+    const response = await apiClient.get<CaseParticipant[]>(`/cases/${caseId}/participants`);
+    return response.data;
+  },
+
+  // Add participant to case
+  addParticipant: async (caseId: string, userId: string, role?: string): Promise<CaseParticipant> => {
+    const response = await apiClient.post<CaseParticipant>(`/cases/${caseId}/participants`, null, {
+      params: { user_id: userId, role },
+    });
+    return response.data;
   },
 };
 
