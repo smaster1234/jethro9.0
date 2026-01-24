@@ -14,14 +14,19 @@ import {
   AlertTriangle,
   RefreshCw,
   Copy,
+  Edit3,
+  Trash2,
+  Save,
 } from 'lucide-react';
-import { documentsApi, handleApiError } from '../api';
+import { documentsApi, handleApiError, getAccessToken } from '../api';
 import {
   Card,
   Button,
   Badge,
   Spinner,
   EmptyState,
+  Modal,
+  Input,
 } from '../components/ui';
 import type { Document } from '../types';
 
@@ -42,6 +47,21 @@ export const DocumentDetailPage: React.FC = () => {
   const [isLoadingText, setIsLoadingText] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Edit modal state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm, setEditForm] = useState({
+    doc_name: '',
+    party: '',
+    role: '',
+    author: '',
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  // Delete confirmation state
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (documentId) {
@@ -91,6 +111,87 @@ export const DocumentDetailPage: React.FC = () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleOpenEdit = () => {
+    if (document) {
+      setEditForm({
+        doc_name: document.doc_name || '',
+        party: document.party || '',
+        role: document.role || '',
+        author: document.author || '',
+      });
+      setShowEditModal(true);
+      setSaveError('');
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!documentId) return;
+
+    setIsSaving(true);
+    setSaveError('');
+
+    try {
+      await documentsApi.update(documentId, {
+        doc_name: editForm.doc_name || undefined,
+        party: editForm.party || undefined,
+        role: editForm.role || undefined,
+        author: editForm.author || undefined,
+      });
+
+      // Refresh document
+      await fetchDocument();
+      setShowEditModal(false);
+    } catch (err) {
+      console.error('Failed to update document:', err);
+      setSaveError(handleApiError(err));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!documentId) return;
+
+    setIsDeleting(true);
+
+    try {
+      await documentsApi.delete(documentId);
+      navigate(-1);
+    } catch (err) {
+      console.error('Failed to delete document:', err);
+      setShowDeleteConfirm(false);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDownload = () => {
+    if (!documentId) return;
+
+    // Create a temporary link with auth header
+    const downloadUrl = documentsApi.getDownloadUrl(documentId);
+    const token = getAccessToken();
+
+    // Use fetch with auth to get the file, then trigger download
+    fetch(downloadUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((response) => response.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = window.document.createElement('a');
+        a.href = url;
+        a.download = document?.original_filename || document?.doc_name || 'document';
+        window.document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+      })
+      .catch((err) => console.error('Download failed:', err));
   };
 
   const getStatusBadge = (status: string) => {
@@ -184,6 +285,27 @@ export const DocumentDetailPage: React.FC = () => {
               leftIcon={copied ? <CheckCircle className="w-5 h-5 text-success-500" /> : <Copy className="w-5 h-5" />}
             >
               {copied ? 'הועתק!' : 'העתק טקסט'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleDownload}
+              leftIcon={<Download className="w-5 h-5" />}
+            >
+              הורד
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleOpenEdit}
+              leftIcon={<Edit3 className="w-5 h-5" />}
+            >
+              ערוך
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => setShowDeleteConfirm(true)}
+              leftIcon={<Trash2 className="w-5 h-5" />}
+            >
+              מחק
             </Button>
           </div>
         </div>
@@ -366,6 +488,132 @@ export const DocumentDetailPage: React.FC = () => {
           </Card>
         </div>
       </div>
+
+      {/* Edit Modal */}
+      <Modal
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        title="עריכת פרטי מסמך"
+        description="עדכון המטאדטה של המסמך"
+        size="md"
+      >
+        <div className="space-y-4">
+          {saveError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {saveError}
+            </div>
+          )}
+
+          <Input
+            label="שם המסמך"
+            value={editForm.doc_name}
+            onChange={(e) => setEditForm({ ...editForm, doc_name: e.target.value })}
+            placeholder="שם המסמך"
+          />
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              צד
+            </label>
+            <select
+              value={editForm.party}
+              onChange={(e) => setEditForm({ ...editForm, party: e.target.value })}
+              className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+            >
+              <option value="">לא מוגדר</option>
+              <option value="ours">שלנו</option>
+              <option value="theirs">של הצד השני</option>
+              <option value="court">בית משפט</option>
+              <option value="third_party">צד שלישי</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              תפקיד
+            </label>
+            <select
+              value={editForm.role}
+              onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+              className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+            >
+              <option value="">לא מוגדר</option>
+              <option value="statement_of_claim">כתב תביעה</option>
+              <option value="defense">כתב הגנה</option>
+              <option value="reply">כתב תשובה</option>
+              <option value="affidavit">תצהיר</option>
+              <option value="evidence">ראיה</option>
+              <option value="expert_opinion">חוות דעת מומחה</option>
+              <option value="correspondence">התכתבות</option>
+              <option value="court_decision">החלטת בית משפט</option>
+              <option value="other">אחר</option>
+            </select>
+          </div>
+
+          <Input
+            label="מחבר"
+            value={editForm.author}
+            onChange={(e) => setEditForm({ ...editForm, author: e.target.value })}
+            placeholder="שם המחבר"
+          />
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              onClick={handleSaveEdit}
+              className="flex-1"
+              isLoading={isSaving}
+              leftIcon={<Save className="w-4 h-4" />}
+            >
+              שמור
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowEditModal(false)}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        isOpen={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        title="מחיקת מסמך"
+        description="האם אתה בטוח שברצונך למחוק מסמך זה? פעולה זו בלתי הפיכה."
+        size="sm"
+      >
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-danger-50 border border-danger-200">
+            <div className="flex items-center gap-3 text-danger-700">
+              <AlertTriangle className="w-5 h-5" />
+              <span className="font-medium">אזהרה</span>
+            </div>
+            <p className="text-sm text-danger-600 mt-2">
+              מחיקת המסמך תסיר גם את כל הטענות והסתירות הקשורות אליו.
+            </p>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              variant="danger"
+              onClick={handleDelete}
+              className="flex-1"
+              isLoading={isDeleting}
+              leftIcon={<Trash2 className="w-4 h-4" />}
+            >
+              מחק לצמיתות
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowDeleteConfirm(false)}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

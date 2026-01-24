@@ -21,8 +21,13 @@ import {
   Copy,
   MessageSquare,
   X,
+  ExternalLink,
+  StickyNote,
+  Plus,
+  Save,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError } from '../api';
+import type { MemoryItem } from '../api/cases';
 import {
   Card,
   Button,
@@ -49,7 +54,7 @@ const flattenCrossExamQuestions = (
   );
 };
 
-type Tab = 'documents' | 'analysis' | 'history';
+type Tab = 'documents' | 'analysis' | 'notes';
 
 export const CaseDetailPage: React.FC = () => {
   const { caseId } = useParams<{ caseId: string }>();
@@ -97,11 +102,32 @@ export const CaseDetailPage: React.FC = () => {
   // Polling for jobs
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
 
+  // Notes state
+  const [notes, setNotes] = useState<MemoryItem[]>([]);
+  const [isLoadingNotes, setIsLoadingNotes] = useState(false);
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState('');
+
+  // Document filters
+  const [docSearchQuery, setDocSearchQuery] = useState('');
+  const [docStatusFilter, setDocStatusFilter] = useState<string>('');
+  const [docPartyFilter, setDocPartyFilter] = useState<string>('');
+  const [docRoleFilter, setDocRoleFilter] = useState<string>('');
+
   useEffect(() => {
     if (caseId) {
       fetchCaseData();
     }
   }, [caseId]);
+
+  // Fetch notes when notes tab is selected
+  useEffect(() => {
+    if (activeTab === 'notes' && caseId && notes.length === 0) {
+      fetchNotes();
+    }
+  }, [activeTab, caseId]);
 
   // Poll for job status
   useEffect(() => {
@@ -177,6 +203,84 @@ export const CaseDetailPage: React.FC = () => {
       setFolders(foldersRes);
     } catch (error) {
       console.error('Failed to fetch folders:', error);
+    }
+  };
+
+  const fetchNotes = async () => {
+    if (!caseId) return;
+    setIsLoadingNotes(true);
+    try {
+      const memoryItems = await casesApi.getMemory(caseId);
+      setNotes(memoryItems);
+    } catch (error) {
+      console.error('Failed to fetch notes:', error);
+    } finally {
+      setIsLoadingNotes(false);
+    }
+  };
+
+  const handleAddNote = async () => {
+    if (!caseId || !newNoteText.trim()) return;
+
+    const newNote: MemoryItem = {
+      id: crypto.randomUUID(),
+      text: newNoteText.trim(),
+      created_at: new Date().toISOString(),
+      type: 'note',
+    };
+
+    const updatedNotes = [newNote, ...notes];
+    setNotes(updatedNotes);
+    setNewNoteText('');
+
+    setIsSavingNotes(true);
+    try {
+      await casesApi.saveMemory(caseId, updatedNotes);
+    } catch (error) {
+      console.error('Failed to save note:', error);
+      // Revert on error
+      setNotes(notes);
+      setNewNoteText(newNote.text);
+    } finally {
+      setIsSavingNotes(false);
+    }
+  };
+
+  const handleUpdateNote = async (noteId: string) => {
+    if (!caseId || !editingNoteText.trim()) return;
+
+    const updatedNotes = notes.map((n) =>
+      n.id === noteId ? { ...n, text: editingNoteText.trim() } : n
+    );
+    setNotes(updatedNotes);
+    setEditingNoteId(null);
+    setEditingNoteText('');
+
+    setIsSavingNotes(true);
+    try {
+      await casesApi.saveMemory(caseId, updatedNotes);
+    } catch (error) {
+      console.error('Failed to update note:', error);
+      await fetchNotes(); // Refresh on error
+    } finally {
+      setIsSavingNotes(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    if (!caseId) return;
+
+    const updatedNotes = notes.filter((n) => n.id !== noteId);
+    setNotes(updatedNotes);
+
+    setIsSavingNotes(true);
+    try {
+      await casesApi.saveMemory(caseId, updatedNotes);
+    } catch (error) {
+      console.error('Failed to delete note:', error);
+      await fetchNotes(); // Refresh on error
+    } finally {
+      setIsSavingNotes(false);
     }
   };
 
@@ -330,6 +434,44 @@ export const CaseDetailPage: React.FC = () => {
     return '📁';
   };
 
+  // Filter documents based on search and filters
+  const filteredDocuments = documents.filter((doc) => {
+    // Folder filter
+    if (selectedFolderId && doc.metadata?.folder_id !== selectedFolderId) {
+      return false;
+    }
+
+    // Search query
+    if (docSearchQuery) {
+      const query = docSearchQuery.toLowerCase();
+      const name = (doc.doc_name || doc.original_filename || '').toLowerCase();
+      if (!name.includes(query)) {
+        return false;
+      }
+    }
+
+    // Status filter
+    if (docStatusFilter && doc.status !== docStatusFilter) {
+      return false;
+    }
+
+    // Party filter
+    if (docPartyFilter && doc.party !== docPartyFilter) {
+      return false;
+    }
+
+    // Role filter
+    if (docRoleFilter && doc.role !== docRoleFilter) {
+      return false;
+    }
+
+    return true;
+  });
+
+  // Get unique parties and roles for filter dropdowns
+  const uniqueParties = [...new Set(documents.map((d) => d.party).filter(Boolean))];
+  const uniqueRoles = [...new Set(documents.map((d) => d.role).filter(Boolean))];
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -423,7 +565,7 @@ export const CaseDetailPage: React.FC = () => {
           {[
             { id: 'documents', label: 'מסמכים', icon: FileText, count: documents.length },
             { id: 'analysis', label: 'ניתוח', icon: Search, count: analysisRuns.length },
-            { id: 'history', label: 'היסטוריה', icon: Clock },
+            { id: 'notes', label: 'הערות', icon: StickyNote, count: notes.length || undefined },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -509,7 +651,101 @@ export const CaseDetailPage: React.FC = () => {
               </div>
 
               {/* Documents List */}
-              <div className="flex-1">
+              <div className="flex-1 space-y-4">
+                {/* Document Search and Filters */}
+                {documents.length > 0 && (
+                  <Card>
+                    <div className="flex flex-col md:flex-row gap-3">
+                      {/* Search */}
+                      <div className="flex-1">
+                        <Input
+                          placeholder="חיפוש לפי שם מסמך..."
+                          value={docSearchQuery}
+                          onChange={(e) => setDocSearchQuery(e.target.value)}
+                          leftIcon={<Search className="w-5 h-5" />}
+                        />
+                      </div>
+
+                      {/* Filters */}
+                      <div className="flex gap-2 flex-wrap">
+                        {/* Status Filter */}
+                        <div className="relative">
+                          <select
+                            value={docStatusFilter}
+                            onChange={(e) => setDocStatusFilter(e.target.value)}
+                            className="appearance-none pl-8 pr-4 py-2.5 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm font-medium focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none cursor-pointer"
+                          >
+                            <option value="">כל הסטטוסים</option>
+                            <option value="completed">הושלם</option>
+                            <option value="processing">בעיבוד</option>
+                            <option value="pending">ממתין</option>
+                            <option value="failed">נכשל</option>
+                          </select>
+                          <ChevronDown className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                        </div>
+
+                        {/* Party Filter */}
+                        {uniqueParties.length > 0 && (
+                          <div className="relative">
+                            <select
+                              value={docPartyFilter}
+                              onChange={(e) => setDocPartyFilter(e.target.value)}
+                              className="appearance-none pl-8 pr-4 py-2.5 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm font-medium focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">כל הצדדים</option>
+                              {uniqueParties.map((party) => (
+                                <option key={party} value={party}>{party}</option>
+                              ))}
+                            </select>
+                            <ChevronDown className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                          </div>
+                        )}
+
+                        {/* Role Filter */}
+                        {uniqueRoles.length > 0 && (
+                          <div className="relative">
+                            <select
+                              value={docRoleFilter}
+                              onChange={(e) => setDocRoleFilter(e.target.value)}
+                              className="appearance-none pl-8 pr-4 py-2.5 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm font-medium focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">כל התפקידים</option>
+                              {uniqueRoles.map((role) => (
+                                <option key={role} value={role}>{role}</option>
+                              ))}
+                            </select>
+                            <ChevronDown className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                          </div>
+                        )}
+
+                        {/* Clear Filters */}
+                        {(docSearchQuery || docStatusFilter || docPartyFilter || docRoleFilter) && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setDocSearchQuery('');
+                              setDocStatusFilter('');
+                              setDocPartyFilter('');
+                              setDocRoleFilter('');
+                            }}
+                            leftIcon={<X className="w-4 h-4" />}
+                          >
+                            נקה
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Results count */}
+                    {(docSearchQuery || docStatusFilter || docPartyFilter || docRoleFilter) && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 text-sm text-slate-500">
+                        נמצאו {filteredDocuments.length} מתוך {documents.length} מסמכים
+                      </div>
+                    )}
+                  </Card>
+                )}
+
                 {documents.length === 0 ? (
                   <EmptyState
                     icon={<FileText className="w-16 h-16" />}
@@ -521,12 +757,18 @@ export const CaseDetailPage: React.FC = () => {
                       icon: <Upload className="w-5 h-5" />,
                     }}
                   />
+                ) : filteredDocuments.length === 0 ? (
+                  <Card>
+                    <div className="text-center py-8">
+                      <Search className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                      <p className="text-lg font-medium text-slate-700">לא נמצאו מסמכים</p>
+                      <p className="text-sm text-slate-500 mt-2">נסו לשנות את הסינון או החיפוש</p>
+                    </div>
+                  </Card>
                 ) : (
                   <Card padding="none">
                     <div className="divide-y divide-slate-100">
-                      {documents
-                        .filter((doc) => !selectedFolderId || doc.metadata?.folder_id === selectedFolderId)
-                        .map((doc) => (
+                      {filteredDocuments.map((doc) => (
                         <motion.div
                           key={doc.id}
                           initial={{ opacity: 0 }}
@@ -798,18 +1040,116 @@ export const CaseDetailPage: React.FC = () => {
           </motion.div>
         )}
 
-        {activeTab === 'history' && (
+        {activeTab === 'notes' && (
           <motion.div
-            key="history"
+            key="notes"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
           >
-            <EmptyState
-              icon={<Clock className="w-16 h-16" />}
-              title="היסטוריית פעילות"
-              description="כאן תוצג היסטוריית הפעולות בתיק"
-            />
+            {/* Add New Note */}
+            <Card>
+              <div className="space-y-3">
+                <h3 className="font-semibold text-slate-900">הוסף הערה חדשה</h3>
+                <textarea
+                  value={newNoteText}
+                  onChange={(e) => setNewNoteText(e.target.value)}
+                  placeholder="כתבו הערה, ממצא חשוב, או משימה לביצוע..."
+                  rows={3}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none resize-none"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleAddNote}
+                    disabled={!newNoteText.trim()}
+                    isLoading={isSavingNotes}
+                    leftIcon={<Plus className="w-4 h-4" />}
+                  >
+                    הוסף הערה
+                  </Button>
+                </div>
+              </div>
+            </Card>
+
+            {/* Notes List */}
+            {isLoadingNotes ? (
+              <div className="flex items-center justify-center py-12">
+                <Spinner size="lg" />
+              </div>
+            ) : notes.length === 0 ? (
+              <EmptyState
+                icon={<StickyNote className="w-16 h-16" />}
+                title="אין הערות עדיין"
+                description="הוסיפו הערות, ממצאים ומשימות לתיק"
+              />
+            ) : (
+              <div className="space-y-3">
+                {notes.map((note) => (
+                  <Card key={note.id}>
+                    {editingNoteId === note.id ? (
+                      <div className="space-y-3">
+                        <textarea
+                          value={editingNoteText}
+                          onChange={(e) => setEditingNoteText(e.target.value)}
+                          rows={3}
+                          className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none resize-none"
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              setEditingNoteId(null);
+                              setEditingNoteText('');
+                            }}
+                          >
+                            ביטול
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => handleUpdateNote(note.id)}
+                            isLoading={isSavingNotes}
+                            leftIcon={<Save className="w-4 h-4" />}
+                          >
+                            שמור
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          <p className="text-slate-800 whitespace-pre-wrap">{note.text}</p>
+                          <p className="text-xs text-slate-400 mt-2">
+                            {new Date(note.created_at).toLocaleString('he-IL')}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditingNoteId(note.id);
+                              setEditingNoteText(note.text);
+                            }}
+                          >
+                            ערוך
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteNote(note.id)}
+                            className="text-danger-600 hover:text-danger-700 hover:bg-danger-50"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1220,6 +1560,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
   contradiction,
   index,
 }) => {
+  const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'critical':
@@ -1305,9 +1646,35 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
                 {contradiction.claim_a?.text || 'לא זמין'}
               </p>
               {contradiction.claim_a?.source_name && (
-                <p className="text-xs text-slate-500 mt-2">
-                  מקור: {contradiction.claim_a.source_name}
-                </p>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-slate-500">מקור:</span>
+                  {contradiction.claim_a.source_doc_id ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const params = new URLSearchParams();
+                        if (contradiction.claim_a?.page_no) {
+                          params.set('page', String(contradiction.claim_a.page_no));
+                        }
+                        if (contradiction.claim_a?.block_index !== undefined) {
+                          params.set('block', String(contradiction.claim_a.block_index));
+                        }
+                        const query = params.toString() ? `?${params.toString()}` : '';
+                        const docId = contradiction.claim_a?.source_doc_id;
+                        if (docId) navigate(`/documents/${docId}${query}`);
+                      }}
+                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
+                    >
+                      {contradiction.claim_a.source_name}
+                      {contradiction.claim_a.page_no && (
+                        <span className="text-slate-400">(עמ' {contradiction.claim_a.page_no})</span>
+                      )}
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <span className="text-xs text-slate-500">{contradiction.claim_a.source_name}</span>
+                  )}
+                </div>
               )}
             </div>
 
@@ -1323,9 +1690,35 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
                 {contradiction.claim_b?.text || 'לא זמין'}
               </p>
               {contradiction.claim_b?.source_name && (
-                <p className="text-xs text-slate-500 mt-2">
-                  מקור: {contradiction.claim_b.source_name}
-                </p>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-slate-500">מקור:</span>
+                  {contradiction.claim_b.source_doc_id ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const params = new URLSearchParams();
+                        if (contradiction.claim_b?.page_no) {
+                          params.set('page', String(contradiction.claim_b.page_no));
+                        }
+                        if (contradiction.claim_b?.block_index !== undefined) {
+                          params.set('block', String(contradiction.claim_b.block_index));
+                        }
+                        const query = params.toString() ? `?${params.toString()}` : '';
+                        const docId = contradiction.claim_b?.source_doc_id;
+                        if (docId) navigate(`/documents/${docId}${query}`);
+                      }}
+                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
+                    >
+                      {contradiction.claim_b.source_name}
+                      {contradiction.claim_b.page_no && (
+                        <span className="text-slate-400">(עמ' {contradiction.claim_b.page_no})</span>
+                      )}
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <span className="text-xs text-slate-500">{contradiction.claim_b.source_name}</span>
+                  )}
+                </div>
               )}
             </div>
           </div>

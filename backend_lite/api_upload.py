@@ -826,6 +826,170 @@ async def get_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class UpdateDocumentRequest(BaseModel):
+    """Update document metadata request"""
+    doc_name: Optional[str] = None
+    party: Optional[str] = None
+    role: Optional[str] = None
+    author: Optional[str] = None
+    version_label: Optional[str] = None
+
+
+@router.patch("/documents/{doc_id}")
+async def update_document(
+    doc_id: str,
+    request: UpdateDocumentRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """
+    Update document metadata (name, party, role, etc.)
+    """
+    try:
+        from .db.session import get_db_session
+        from .db.models import Document
+
+        with get_db_session() as db:
+            doc = db.query(Document).filter(
+                Document.id == doc_id,
+                Document.firm_id == auth.firm_id
+            ).first()
+
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Update fields if provided
+            if request.doc_name is not None:
+                doc.doc_name = request.doc_name.strip()
+            if request.party is not None:
+                doc.party = _normalize_party(request.party)
+            if request.role is not None:
+                doc.role = request.role.strip() if request.role else None
+            if request.author is not None:
+                doc.author = request.author.strip() if request.author else None
+            if request.version_label is not None:
+                doc.version_label = request.version_label.strip() if request.version_label else None
+
+            db.commit()
+            db.refresh(doc)
+
+            return {
+                "id": doc.id,
+                "doc_name": doc.doc_name,
+                "party": _enum_value(doc.party) if doc.party else None,
+                "role": doc.role,
+                "author": doc.author,
+                "version_label": doc.version_label,
+                "message": "Document updated successfully"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update document")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """
+    Delete a document and all related data.
+    """
+    try:
+        from .db.session import get_db_session
+        from .db.models import Document, DocumentPage, DocumentBlock, Claim, Paragraph
+        from .storage import get_storage
+
+        with get_db_session() as db:
+            doc = db.query(Document).filter(
+                Document.id == doc_id,
+                Document.firm_id == auth.firm_id
+            ).first()
+
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Delete related records
+            db.query(DocumentBlock).filter(DocumentBlock.document_id == doc_id).delete()
+            db.query(DocumentPage).filter(DocumentPage.document_id == doc_id).delete()
+            db.query(Claim).filter(Claim.doc_id == doc_id).delete()
+            db.query(Paragraph).filter(Paragraph.doc_id == doc_id).delete()
+
+            # Delete from storage if exists
+            if doc.storage_key:
+                try:
+                    storage = get_storage()
+                    storage.delete(doc.storage_key)
+                except Exception as e:
+                    logger.warning(f"Failed to delete from storage: {e}")
+
+            # Delete document
+            db.delete(doc)
+            db.commit()
+
+            return {"message": "Document deleted successfully", "id": doc_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to delete document")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/documents/{doc_id}/download")
+async def download_document(
+    doc_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """
+    Download the original document file.
+    """
+    try:
+        from .db.session import get_db_session
+        from .db.models import Document
+        from .storage import get_storage
+        from fastapi.responses import StreamingResponse
+        import io
+
+        with get_db_session() as db:
+            doc = db.query(Document).filter(
+                Document.id == doc_id,
+                Document.firm_id == auth.firm_id
+            ).first()
+
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            if not doc.storage_key:
+                raise HTTPException(status_code=404, detail="Document file not available")
+
+            storage = get_storage()
+            file_data = storage.get(doc.storage_key)
+
+            if not file_data:
+                raise HTTPException(status_code=404, detail="Document file not found in storage")
+
+            # Determine content type
+            content_type = doc.mime_type or "application/octet-stream"
+            filename = doc.original_filename or doc.doc_name or f"document-{doc_id}"
+
+            return StreamingResponse(
+                io.BytesIO(file_data),
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to download document")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/documents/{doc_id}/text")
 async def get_document_text(
     doc_id: str,

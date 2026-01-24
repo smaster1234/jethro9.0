@@ -18,6 +18,14 @@ export interface SnippetResponse {
   context_after?: string;
 }
 
+export interface UpdateDocumentRequest {
+  doc_name?: string;
+  party?: string;
+  role?: string;
+  author?: string;
+  version_label?: string;
+}
+
 export const documentsApi = {
   // List documents in a case
   list: async (caseId: string, params?: ListDocumentsParams): Promise<Document[]> => {
@@ -50,6 +58,23 @@ export const documentsApi = {
       params: { page_no: pageNo, block_index: blockIndex, context },
     });
     return response.data;
+  },
+
+  // Update document metadata
+  update: async (docId: string, data: UpdateDocumentRequest): Promise<Document> => {
+    const response = await apiClient.patch<Document>(`/api/v1/documents/${docId}`, data);
+    return response.data;
+  },
+
+  // Delete document
+  delete: async (docId: string): Promise<void> => {
+    await apiClient.delete(`/api/v1/documents/${docId}`);
+  },
+
+  // Get document download URL
+  getDownloadUrl: (docId: string): string => {
+    const baseUrl = apiClient.defaults.baseURL || '';
+    return `${baseUrl}/api/v1/documents/${docId}/download`;
   },
 
   // Upload documents
