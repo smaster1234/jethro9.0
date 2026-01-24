@@ -59,7 +59,7 @@ export const casesApi = {
 
   // List analysis runs
   listRuns: async (caseId: string, limit = 20): Promise<AnalysisRun[]> => {
-    const response = await apiClient.get<AnalysisRun[]>(`/cases/${caseId}/runs`, {
+    const response = await apiClient.get<AnalysisRun[]>(`/api/v1/cases/${caseId}/runs`, {
       params: { limit },
     });
     return response.data;
@@ -67,7 +67,7 @@ export const casesApi = {
 
   // Get analysis run details
   getRun: async (runId: string): Promise<AnalysisRun> => {
-    const response = await apiClient.get<AnalysisRun>(`/analysis-runs/${runId}`);
+    const response = await apiClient.get<AnalysisRun>(`/api/v1/analysis-runs/${runId}`);
     return response.data;
   },
 };

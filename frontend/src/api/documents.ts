@@ -21,7 +21,7 @@ export interface SnippetResponse {
 export const documentsApi = {
   // List documents in a case
   list: async (caseId: string, params?: ListDocumentsParams): Promise<Document[]> => {
-    const response = await apiClient.get<Document[]>(`/cases/${caseId}/documents`, {
+    const response = await apiClient.get<Document[]>(`/api/v1/cases/${caseId}/documents`, {
       params,
     });
     return response.data;
@@ -29,13 +29,13 @@ export const documentsApi = {
 
   // Get document by ID
   get: async (docId: string): Promise<Document> => {
-    const response = await apiClient.get<Document>(`/documents/${docId}`);
+    const response = await apiClient.get<Document>(`/api/v1/documents/${docId}`);
     return response.data;
   },
 
   // Get document text
   getText: async (docId: string): Promise<{ doc_id: string; doc_name: string; text: string; page_count: number }> => {
-    const response = await apiClient.get(`/documents/${docId}/text`);
+    const response = await apiClient.get(`/api/v1/documents/${docId}/text`);
     return response.data;
   },
 
@@ -46,7 +46,7 @@ export const documentsApi = {
     blockIndex: number,
     context = 1
   ): Promise<SnippetResponse> => {
-    const response = await apiClient.get<SnippetResponse>(`/documents/${docId}/snippet`, {
+    const response = await apiClient.get<SnippetResponse>(`/api/v1/documents/${docId}/snippet`, {
       params: { page_no: pageNo, block_index: blockIndex, context },
     });
     return response.data;
@@ -72,7 +72,7 @@ export const documentsApi = {
     }
 
     const response = await apiClient.post<UploadResponse>(
-      `/cases/${caseId}/documents`,
+      `/api/v1/cases/${caseId}/documents`,
       formData,
       {
         headers: {
@@ -99,7 +99,7 @@ export const documentsApi = {
     formData.append('mapping_mode', mappingMode);
 
     const response = await apiClient.post(
-      `/cases/${caseId}/documents/zip`,
+      `/api/v1/cases/${caseId}/documents/zip`,
       formData,
       {
         headers: {
@@ -112,7 +112,7 @@ export const documentsApi = {
 
   // Get job status
   getJobStatus: async (jobId: string): Promise<Job> => {
-    const response = await apiClient.get<Job>(`/jobs/${jobId}`);
+    const response = await apiClient.get<Job>(`/api/v1/jobs/${jobId}`);
     return response.data;
   },
 
@@ -120,7 +120,7 @@ export const documentsApi = {
   folders: {
     // Create folder
     create: async (caseId: string, name: string, parentId?: string): Promise<Folder> => {
-      const response = await apiClient.post<Folder>(`/cases/${caseId}/folders`, {
+      const response = await apiClient.post<Folder>(`/api/v1/cases/${caseId}/folders`, {
         name,
         parent_id: parentId,
       });
@@ -129,13 +129,13 @@ export const documentsApi = {
 
     // Get folder tree
     getTree: async (caseId: string): Promise<Folder[]> => {
-      const response = await apiClient.get<Folder[]>(`/cases/${caseId}/folders/tree`);
+      const response = await apiClient.get<Folder[]>(`/api/v1/cases/${caseId}/folders/tree`);
       return response.data;
     },
 
     // List documents in folder
     listDocuments: async (folderId: string, params?: Omit<ListDocumentsParams, 'folder_id'>): Promise<Document[]> => {
-      const response = await apiClient.get<Document[]>(`/folders/${folderId}/documents`, {
+      const response = await apiClient.get<Document[]>(`/api/v1/folders/${folderId}/documents`, {
         params,
       });
       return response.data;
