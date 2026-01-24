@@ -8,14 +8,16 @@ import {
   Palette,
   Save,
   CheckCircle,
+  AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, Button, Badge, Input } from '../components/ui';
+import { authApi, handleApiError } from '../api';
 
 type SettingsTab = 'profile' | 'firm' | 'notifications' | 'appearance';
 
 export const SettingsPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -40,16 +42,32 @@ export const SettingsPage: React.FC = () => {
     }
   }, [user]);
 
+  const [saveError, setSaveError] = useState('');
+
   const handleSaveProfile = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
+    setSaveError('');
 
-    // TODO: Implement API call to update profile
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      await authApi.updateProfile({
+        name: profileForm.name,
+        professional_role: profileForm.professional_role || undefined,
+      });
 
-    setIsSaving(false);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
+      // Refresh user data in context
+      if (refreshUser) {
+        await refreshUser();
+      }
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error('Failed to save profile:', err);
+      setSaveError(handleApiError(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const tabs = [
@@ -159,6 +177,12 @@ export const SettingsPage: React.FC = () => {
                         <div className="flex items-center gap-2 text-success-600">
                           <CheckCircle className="w-5 h-5" />
                           <span className="text-sm font-medium">השינויים נשמרו</span>
+                        </div>
+                      )}
+                      {saveError && (
+                        <div className="flex items-center gap-2 text-danger-600">
+                          <AlertTriangle className="w-5 h-5" />
+                          <span className="text-sm font-medium">{saveError}</span>
                         </div>
                       )}
                     </div>

@@ -1,6 +1,19 @@
 import apiClient, { setTokens, clearTokens } from './client';
 import type { LoginRequest, RegisterRequest, TokenResponse, User } from '../types';
 
+export interface UpdateProfileRequest {
+  name?: string;
+  professional_role?: string;
+}
+
+export interface UpdateProfileResponse {
+  id: string;
+  email: string;
+  name: string;
+  professional_role?: string;
+  message: string;
+}
+
 export const authApi = {
   // Login with email and password
   login: async (data: LoginRequest): Promise<TokenResponse> => {
@@ -27,6 +40,12 @@ export const authApi = {
     const response = await apiClient.get<User>('/users/by-email', {
       params: { email },
     });
+    return response.data;
+  },
+
+  // Update user profile
+  updateProfile: async (data: UpdateProfileRequest): Promise<UpdateProfileResponse> => {
+    const response = await apiClient.patch<UpdateProfileResponse>('/users/me', data);
     return response.data;
   },
 

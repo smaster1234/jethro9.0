@@ -17,6 +17,10 @@ import {
   Folder,
   ChevronDown,
   ChevronLeft,
+  ArrowDown,
+  Copy,
+  MessageSquare,
+  X,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError } from '../api';
 import {
@@ -29,7 +33,21 @@ import {
   Progress,
   Input,
 } from '../components/ui';
-import type { Case, Document, AnalysisRun, Folder as FolderType } from '../types';
+import type { Case, Document, AnalysisRun, Folder as FolderType, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+
+// Helper to flatten cross-exam questions from nested structure
+const flattenCrossExamQuestions = (
+  questions: CrossExamQuestionsOutput[] | CrossExamQuestion[] | undefined
+): CrossExamQuestion[] => {
+  if (!questions || questions.length === 0) return [];
+  const first = questions[0];
+  if ('question' in first && typeof first.question === 'string') {
+    return questions as CrossExamQuestion[];
+  }
+  return (questions as CrossExamQuestionsOutput[]).flatMap(
+    (set) => set.questions || []
+  );
+};
 
 type Tab = 'documents' | 'analysis' | 'history';
 
@@ -64,6 +82,11 @@ export const CaseDetailPage: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [_currentRun, setCurrentRun] = useState<AnalysisRun | null>(null);
+
+  // Analysis results view state
+  const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
+  const [isLoadingRun, setIsLoadingRun] = useState(false);
+  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
 
   // Polling for jobs
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
@@ -148,6 +171,26 @@ export const CaseDetailPage: React.FC = () => {
       setFolders(foldersRes);
     } catch (error) {
       console.error('Failed to fetch folders:', error);
+    }
+  };
+
+  const handleSelectRun = async (run: AnalysisRun) => {
+    if (selectedRun?.id === run.id) {
+      // Toggle off if same run clicked
+      setSelectedRun(null);
+      return;
+    }
+
+    setIsLoadingRun(true);
+    try {
+      const fullRun = await casesApi.getRun(run.id);
+      setSelectedRun(fullRun);
+    } catch (error) {
+      console.error('Failed to fetch run details:', error);
+      // Still show basic run info
+      setSelectedRun(run);
+    } finally {
+      setIsLoadingRun(false);
     }
   };
 
@@ -530,41 +573,210 @@ export const CaseDetailPage: React.FC = () => {
               />
             ) : (
               <div className="space-y-4">
-                {analysisRuns.map((run) => (
-                  <Card
-                    key={run.id}
-                    variant="interactive"
-                    onClick={() => navigate(`/analysis/${run.id}`)}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <h3 className="font-bold text-slate-900">
-                            ניתוח #{run.id.slice(0, 8)}
-                          </h3>
-                          {getStatusBadge(run.status)}
-                        </div>
-                        <p className="text-sm text-slate-500 mt-1">
-                          {new Date(run.created_at).toLocaleString('he-IL')}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-8 text-center">
-                        <div>
-                          <div className="text-2xl font-bold text-slate-900">
-                            {run.claims_count || 0}
+                {/* Analysis Runs List */}
+                {!selectedRun && (
+                  <>
+                    {analysisRuns.map((run) => (
+                      <Card
+                        key={run.id}
+                        variant="interactive"
+                        onClick={() => handleSelectRun(run)}
+                        className="cursor-pointer"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="flex items-center gap-3">
+                              <h3 className="font-bold text-slate-900">
+                                ניתוח #{run.id.slice(0, 8)}
+                              </h3>
+                              {getStatusBadge(run.status)}
+                            </div>
+                            <p className="text-sm text-slate-500 mt-1">
+                              {new Date(run.created_at).toLocaleString('he-IL')}
+                            </p>
                           </div>
-                          <div className="text-xs text-slate-500">טענות</div>
-                        </div>
-                        <div>
-                          <div className="text-2xl font-bold text-warning-600">
-                            {run.contradictions_count || 0}
+                          <div className="flex items-center gap-8 text-center">
+                            <div>
+                              <div className="text-2xl font-bold text-slate-900">
+                                {run.claims_count || 0}
+                              </div>
+                              <div className="text-xs text-slate-500">טענות</div>
+                            </div>
+                            <div>
+                              <div className="text-2xl font-bold text-warning-600">
+                                {run.contradictions_count || 0}
+                              </div>
+                              <div className="text-xs text-slate-500">סתירות</div>
+                            </div>
+                            <Eye className="w-5 h-5 text-slate-400" />
                           </div>
-                          <div className="text-xs text-slate-500">סתירות</div>
                         </div>
-                      </div>
-                    </div>
+                      </Card>
+                    ))}
+                  </>
+                )}
+
+                {/* Loading state */}
+                {isLoadingRun && (
+                  <Card className="flex items-center justify-center py-12">
+                    <Spinner size="lg" />
+                    <span className="mr-3 text-slate-600">טוען תוצאות ניתוח...</span>
                   </Card>
-                ))}
+                )}
+
+                {/* Selected Run Results */}
+                {selectedRun && !isLoadingRun && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="space-y-4"
+                  >
+                    {/* Header with back button */}
+                    <Card>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <button
+                            onClick={() => setSelectedRun(null)}
+                            className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                          >
+                            <X className="w-5 h-5 text-slate-500" />
+                          </button>
+                          <div>
+                            <h3 className="font-bold text-slate-900">
+                              ניתוח #{selectedRun.id.slice(0, 8)}
+                            </h3>
+                            <p className="text-sm text-slate-500">
+                              {new Date(selectedRun.created_at).toLocaleString('he-IL')}
+                            </p>
+                          </div>
+                          {getStatusBadge(selectedRun.status)}
+                        </div>
+                        <div className="flex items-center gap-6 text-center">
+                          <div>
+                            <div className="text-2xl font-bold text-slate-900">
+                              {selectedRun.claims_count || 0}
+                            </div>
+                            <div className="text-xs text-slate-500">טענות</div>
+                          </div>
+                          <div>
+                            <div className="text-2xl font-bold text-warning-600">
+                              {selectedRun.contradictions?.length || selectedRun.contradictions_count || 0}
+                            </div>
+                            <div className="text-xs text-slate-500">סתירות</div>
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Results Tabs */}
+                    <div className="flex gap-2">
+                      <Button
+                        variant={analysisResultsTab === 'contradictions' ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setAnalysisResultsTab('contradictions')}
+                        leftIcon={<AlertTriangle className="w-4 h-4" />}
+                      >
+                        סתירות ({selectedRun.contradictions?.length || 0})
+                      </Button>
+                      <Button
+                        variant={analysisResultsTab === 'questions' ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => setAnalysisResultsTab('questions')}
+                        leftIcon={<MessageSquare className="w-4 h-4" />}
+                      >
+                        שאלות לחקירה
+                      </Button>
+                    </div>
+
+                    {/* Results Content */}
+                    <AnimatePresence mode="wait">
+                      {analysisResultsTab === 'contradictions' && (
+                        <motion.div
+                          key="contradictions"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          {!selectedRun.contradictions || selectedRun.contradictions.length === 0 ? (
+                            <Card>
+                              <div className="text-center py-8">
+                                <CheckCircle className="w-12 h-12 text-success-500 mx-auto mb-4" />
+                                <p className="text-lg font-medium text-slate-700">
+                                  לא נמצאו סתירות
+                                </p>
+                                <p className="text-sm text-slate-500 mt-2">
+                                  המסמכים נראים עקביים ללא סתירות ברורות
+                                </p>
+                              </div>
+                            </Card>
+                          ) : (
+                            selectedRun.contradictions.map((contradiction, index) => (
+                              <ContradictionCard
+                                key={contradiction.id || index}
+                                contradiction={contradiction}
+                                index={index}
+                              />
+                            ))
+                          )}
+                        </motion.div>
+                      )}
+
+                      {analysisResultsTab === 'questions' && (
+                        <motion.div
+                          key="questions"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          {(() => {
+                            // Extract questions from contradictions or metadata
+                            const allQuestions: CrossExamQuestion[] = [];
+                            selectedRun.contradictions?.forEach((c) => {
+                              // If contradiction has questions, add them
+                              const meta = c as any;
+                              if (meta.cross_exam_questions) {
+                                const flat = flattenCrossExamQuestions(meta.cross_exam_questions);
+                                allQuestions.push(...flat);
+                              }
+                            });
+                            // Also check metadata
+                            const runMeta = selectedRun.metadata as any;
+                            if (runMeta?.cross_exam_questions) {
+                              const flat = flattenCrossExamQuestions(runMeta.cross_exam_questions);
+                              allQuestions.push(...flat);
+                            }
+
+                            if (allQuestions.length === 0) {
+                              return (
+                                <Card>
+                                  <div className="text-center py-8">
+                                    <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                                    <p className="text-lg font-medium text-slate-700">
+                                      אין שאלות לחקירה נגדית
+                                    </p>
+                                    <p className="text-sm text-slate-500 mt-2">
+                                      שאלות נוצרות כאשר מזוהות סתירות
+                                    </p>
+                                  </div>
+                                </Card>
+                              );
+                            }
+
+                            return allQuestions.map((question, index) => (
+                              <QuestionCard
+                                key={question.id || index}
+                                question={question}
+                                index={index}
+                              />
+                            ));
+                          })()}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                )}
               </div>
             )}
           </motion.div>
@@ -845,6 +1057,217 @@ const FolderTreeItem: React.FC<{
         </div>
       )}
     </div>
+  );
+};
+
+// Contradiction Card Component
+const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number }> = ({
+  contradiction,
+  index,
+}) => {
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical':
+      case 'high':
+        return 'danger';
+      case 'medium':
+        return 'warning';
+      default:
+        return 'neutral';
+    }
+  };
+
+  const getSeverityLabel = (severity: string) => {
+    switch (severity) {
+      case 'critical':
+        return 'קריטי';
+      case 'high':
+        return 'גבוה';
+      case 'medium':
+        return 'בינוני';
+      case 'low':
+        return 'נמוך';
+      default:
+        return severity;
+    }
+  };
+
+  const getTypeLabel = (type: string) => {
+    const types: Record<string, string> = {
+      'TEMPORAL_DATE': 'סתירה בתאריכים',
+      'QUANTITATIVE_AMOUNT': 'סתירה בכמויות/סכומים',
+      'ACTOR_ATTRIBUTION': 'סתירה בזיהוי מבצע הפעולה',
+      'PRESENCE_PARTICIPATION': 'סתירה בנוכחות/השתתפות',
+      'DOCUMENT_EXISTENCE': 'סתירה בקיום מסמך',
+      'IDENTITY_BASIC': 'סתירה בזיהוי/זהות',
+    };
+    return types[type] || type;
+  };
+
+  const getExplanation = () => {
+    if (contradiction.explanation_he) return contradiction.explanation_he;
+    if (contradiction.explanation) return contradiction.explanation;
+
+    const explanations: Record<string, string> = {
+      'TEMPORAL_DATE': `התאריכים בשתי הטענות אינם תואמים. יש לברר איזה תאריך הוא הנכון.`,
+      'QUANTITATIVE_AMOUNT': `הכמויות או הסכומים המצוינים בשתי הטענות שונים זה מזה.`,
+      'ACTOR_ATTRIBUTION': `יש אי-התאמה לגבי מי ביצע את הפעולה המתוארת.`,
+      'PRESENCE_PARTICIPATION': `הטענות סותרות זו את זו לגבי נוכחות או השתתפות במאורע.`,
+      'DOCUMENT_EXISTENCE': `יש סתירה לגבי קיומו או אי-קיומו של מסמך.`,
+      'IDENTITY_BASIC': `פרטי הזיהוי בשתי הטענות אינם תואמים.`,
+    };
+
+    return explanations[contradiction.contradiction_type] ||
+      `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+    >
+      <Card className="border-r-4 border-warning-500">
+        <div className="space-y-4">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-warning-500" />
+              <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={getSeverityColor(contradiction.severity) as any}>
+                {getSeverityLabel(contradiction.severity)}
+              </Badge>
+              <Badge variant="neutral">{getTypeLabel(contradiction.contradiction_type)}</Badge>
+            </div>
+          </div>
+
+          {/* Claims */}
+          <div className="space-y-3">
+            <div className="p-4 bg-red-50 rounded-xl border border-red-100">
+              <div className="text-xs text-red-500 font-medium mb-1">טענה א'</div>
+              <p className="text-slate-800">
+                {contradiction.claim_a?.text || 'לא זמין'}
+              </p>
+              {contradiction.claim_a?.source_name && (
+                <p className="text-xs text-slate-500 mt-2">
+                  מקור: {contradiction.claim_a.source_name}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-center">
+              <div className="w-8 h-8 rounded-full bg-warning-100 flex items-center justify-center">
+                <ArrowDown className="w-4 h-4 text-warning-600" />
+              </div>
+            </div>
+
+            <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
+              <div className="text-xs text-orange-500 font-medium mb-1">טענה ב'</div>
+              <p className="text-slate-800">
+                {contradiction.claim_b?.text || 'לא זמין'}
+              </p>
+              {contradiction.claim_b?.source_name && (
+                <p className="text-xs text-slate-500 mt-2">
+                  מקור: {contradiction.claim_b.source_name}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Explanation */}
+          <div className="p-4 bg-slate-50 rounded-xl">
+            <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
+            <p className="text-slate-700">{getExplanation()}</p>
+          </div>
+
+          {/* Confidence */}
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <span>רמת ביטחון:</span>
+            <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+              <div
+                className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
+                style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
+              />
+            </div>
+            <span className="font-medium">
+              {Math.round((contradiction.confidence || 0) * 100)}%
+            </span>
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  );
+};
+
+// Question Card Component
+const QuestionCard: React.FC<{
+  question: CrossExamQuestion;
+  index: number;
+}> = ({ question, index }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(question.question);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+    >
+      <Card>
+        <div className="space-y-3">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-sm">
+                {index + 1}
+              </div>
+              <span className="text-xs text-slate-500">{question.strategy || 'שאלה'}</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleCopy}
+              leftIcon={copied ? <CheckCircle className="w-4 h-4 text-success-500" /> : <Copy className="w-4 h-4" />}
+            >
+              {copied ? 'הועתק!' : 'העתק'}
+            </Button>
+          </div>
+
+          <p className="text-lg text-slate-900 font-medium">{question.question}</p>
+
+          {question.purpose && (
+            <p className="text-sm text-slate-500">
+              <span className="font-medium">מטרה:</span> {question.purpose}
+            </p>
+          )}
+
+          {(question.follow_up || (question.follow_ups && question.follow_ups.length > 0)) && (
+            <div className="pt-3 border-t border-slate-100">
+              <p className="text-xs text-slate-500 font-medium mb-2">שאלות המשך:</p>
+              <ul className="space-y-1">
+                {question.follow_up && (
+                  <li className="text-sm text-slate-600 flex items-start gap-2">
+                    <span className="text-slate-400">•</span>
+                    {question.follow_up}
+                  </li>
+                )}
+                {question.follow_ups?.map((followUp, i) => (
+                  <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
+                    <span className="text-slate-400">•</span>
+                    {followUp}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </Card>
+    </motion.div>
   );
 };
 
