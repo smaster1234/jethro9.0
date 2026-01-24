@@ -9,6 +9,8 @@ import {
   CasesPage,
   CaseDetailPage,
   AnalyzePage,
+  SettingsPage,
+  TeamsPage,
 } from './pages';
 import './index.css';
 
@@ -38,8 +40,8 @@ function App() {
               <Route path="/cases/new" element={<CasesPage />} />
               <Route path="/cases/:caseId" element={<CaseDetailPage />} />
               <Route path="/analyze" element={<AnalyzePage />} />
-              <Route path="/teams" element={<ComingSoon title="צוותים" />} />
-              <Route path="/settings" element={<ComingSoon title="הגדרות" />} />
+              <Route path="/teams" element={<TeamsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
             </Route>
 
             {/* Redirects */}
@@ -49,19 +51,6 @@ function App() {
         </Router>
       </AuthProvider>
     </QueryClientProvider>
-  );
-}
-
-// Coming Soon placeholder
-function ComingSoon({ title }: { title: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-      <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mb-6">
-        <span className="text-4xl">🚧</span>
-      </div>
-      <h1 className="text-3xl font-bold text-slate-900 mb-2">{title}</h1>
-      <p className="text-slate-500">עמוד זה בבנייה ויהיה זמין בקרוב</p>
-    </div>
   );
 }
 

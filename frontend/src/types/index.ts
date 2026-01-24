@@ -188,7 +188,17 @@ export interface CrossExamQuestion {
   target_claim_id?: string;
   strategy?: string;
   purpose?: string;
+  severity?: string;
+  follow_up?: string;
   follow_ups?: string[];
+}
+
+// Backend returns this structure for cross-exam questions
+export interface CrossExamQuestionsOutput {
+  contradiction_id: string;
+  target_party?: string;
+  questions: CrossExamQuestion[];
+  goal?: string;
 }
 
 export interface CrossExamTrack {
@@ -204,7 +214,8 @@ export interface AnalysisResponse {
   claims: Claim[];
   claim_results?: Record<string, unknown>;
   contradictions: Contradiction[];
-  cross_exam_questions: CrossExamQuestion[];
+  // Backend returns array of CrossExamQuestionsOutput (grouped by contradiction)
+  cross_exam_questions: CrossExamQuestionsOutput[] | CrossExamQuestion[];
   metadata?: {
     total_claims?: number;
     total_contradictions?: number;
