@@ -81,23 +81,27 @@ export const DashboardPage: React.FC = () => {
   const [cases, setCases] = useState<Case[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  const fetchData = async () => {
+    setIsLoading(true);
+    setLoadError('');
+    try {
+      const [casesData, healthData] = await Promise.all([
+        casesApi.listMyCases(),
+        healthApi.check(),
+      ]);
+      setCases(casesData);
+      setHealth(healthData);
+    } catch (error) {
+      console.error('Failed to fetch data:', error);
+      setLoadError('לא ניתן להתחבר לשרת. ודא שהשרת פועל ונסה שוב.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [casesData, healthData] = await Promise.all([
-          casesApi.listMyCases(),
-          healthApi.check(),
-        ]);
-        setCases(casesData);
-        setHealth(healthData);
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     fetchData();
   }, []);
 
@@ -121,6 +125,21 @@ export const DashboardPage: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Card className="max-w-md text-center">
+          <div className="w-16 h-16 rounded-full bg-danger-100 flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-8 h-8 text-danger-600" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 mb-2">שגיאת חיבור</h2>
+          <p className="text-slate-600 mb-4">{loadError}</p>
+          <Button onClick={fetchData}>נסה שוב</Button>
+        </Card>
       </div>
     );
   }

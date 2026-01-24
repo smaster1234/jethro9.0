@@ -35,6 +35,7 @@ export const CasesPage: React.FC = () => {
   const navigate = useNavigate();
   const [cases, setCases] = useState<Case[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -58,11 +59,14 @@ export const CasesPage: React.FC = () => {
   }, []);
 
   const fetchCases = async () => {
+    setIsLoading(true);
+    setLoadError('');
     try {
       const data = await casesApi.listMyCases();
       setCases(data);
     } catch (error) {
       console.error('Failed to fetch cases:', error);
+      setLoadError(handleApiError(error));
     } finally {
       setIsLoading(false);
     }
@@ -133,6 +137,21 @@ export const CasesPage: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Card className="max-w-md text-center">
+          <div className="w-16 h-16 rounded-full bg-danger-100 flex items-center justify-center mx-auto mb-4">
+            <Briefcase className="w-8 h-8 text-danger-600" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 mb-2">שגיאה בטעינת התיקים</h2>
+          <p className="text-slate-600 mb-4">{loadError}</p>
+          <Button onClick={fetchCases}>נסה שוב</Button>
+        </Card>
       </div>
     );
   }
