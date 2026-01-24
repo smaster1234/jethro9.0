@@ -2535,13 +2535,22 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
     db.add(reset_token)
     db.commit()
 
-    # TODO: In production, send email with reset link
-    # For now, include token in response (DEVELOPMENT ONLY)
+    # Send password reset email
+    from .email_utils import send_password_reset_email, is_email_configured
+
+    email_sent = send_password_reset_email(
+        to_email=user.email,
+        reset_token=token,
+        user_name=user.name
+    )
+
+    # In development mode (no SMTP), include token in response
     is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
 
     response = {"message": "If this email is registered, a reset link will be sent."}
-    if is_dev:
-        response["_dev_token"] = token  # Only in dev mode!
+    if is_dev and not is_email_configured():
+        response["_dev_token"] = token  # Only in dev mode without SMTP!
+        response["_dev_note"] = "SMTP not configured. Configure SMTP_HOST, SMTP_USER, SMTP_PASSWORD to send real emails."
 
     return response
 
