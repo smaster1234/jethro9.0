@@ -14,6 +14,7 @@ import {
   AnalyzePage,
   SettingsPage,
   TeamsPage,
+  UsersPage,
 } from './pages';
 import './index.css';
 
@@ -47,6 +48,7 @@ function App() {
               <Route path="/documents/:documentId" element={<DocumentDetailPage />} />
               <Route path="/analyze" element={<AnalyzePage />} />
               <Route path="/teams" element={<TeamsPage />} />
+              <Route path="/users" element={<UsersPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
 

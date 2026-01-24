@@ -6,6 +6,7 @@ import {
   Briefcase,
   Search,
   Users,
+  UserCog,
   Settings,
   LogOut,
   Scale,
@@ -25,6 +26,7 @@ const navItems = [
   { icon: Briefcase, label: 'תיקים', path: '/cases' },
   { icon: Search, label: 'ניתוח טקסט', path: '/analyze' },
   { icon: Users, label: 'צוותים', path: '/teams' },
+  { icon: UserCog, label: 'משתמשים', path: '/users' },
   { icon: Settings, label: 'הגדרות', path: '/settings' },
 ];
 

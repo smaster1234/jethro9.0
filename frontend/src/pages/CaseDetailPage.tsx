@@ -25,9 +25,14 @@ import {
   StickyNote,
   Plus,
   Save,
+  Users,
+  UserPlus,
+  Mail,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError } from '../api';
-import type { MemoryItem } from '../api/cases';
+import { usersApi } from '../api/users';
+import type { MemoryItem, CaseParticipant } from '../api/cases';
+import type { CaseJob } from '../api/documents';
 import {
   Card,
   Button,
@@ -54,7 +59,7 @@ const flattenCrossExamQuestions = (
   );
 };
 
-type Tab = 'documents' | 'analysis' | 'notes';
+type Tab = 'documents' | 'analysis' | 'notes' | 'team';
 
 export const CaseDetailPage: React.FC = () => {
   const { caseId } = useParams<{ caseId: string }>();
@@ -116,16 +121,50 @@ export const CaseDetailPage: React.FC = () => {
   const [docPartyFilter, setDocPartyFilter] = useState<string>('');
   const [docRoleFilter, setDocRoleFilter] = useState<string>('');
 
+  // Jobs state
+  const [caseJobs, setCaseJobs] = useState<CaseJob[]>([]);
+  const [showJobsPanel, setShowJobsPanel] = useState(false);
+
+  // Participants state
+  const [participants, setParticipants] = useState<CaseParticipant[]>([]);
+  const [isLoadingParticipants, setIsLoadingParticipants] = useState(false);
+  const [showAddParticipantModal, setShowAddParticipantModal] = useState(false);
+  const [newParticipantEmail, setNewParticipantEmail] = useState('');
+  const [newParticipantRole, setNewParticipantRole] = useState('');
+  const [isAddingParticipant, setIsAddingParticipant] = useState(false);
+  const [addParticipantError, setAddParticipantError] = useState('');
+
   useEffect(() => {
     if (caseId) {
       fetchCaseData();
+      fetchJobs();
     }
   }, [caseId]);
+
+  // Fetch jobs periodically when there are active jobs
+  useEffect(() => {
+    const hasActiveJobs = caseJobs.some(j => j.status === 'queued' || j.status === 'started');
+    if (!hasActiveJobs || !caseId) return;
+
+    const interval = setInterval(() => {
+      fetchJobs();
+      fetchDocuments();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [caseJobs, caseId]);
 
   // Fetch notes when notes tab is selected
   useEffect(() => {
     if (activeTab === 'notes' && caseId && notes.length === 0) {
       fetchNotes();
+    }
+  }, [activeTab, caseId]);
+
+  // Fetch participants when team tab is selected
+  useEffect(() => {
+    if (activeTab === 'team' && caseId && participants.length === 0) {
+      fetchParticipants();
     }
   }, [activeTab, caseId]);
 
@@ -196,6 +235,16 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const fetchJobs = async () => {
+    if (!caseId) return;
+    try {
+      const jobsRes = await documentsApi.listCaseJobs(caseId);
+      setCaseJobs(jobsRes);
+    } catch (error) {
+      console.error('Failed to fetch jobs:', error);
+    }
+  };
+
   const fetchFolders = async () => {
     if (!caseId) return;
     try {
@@ -216,6 +265,52 @@ export const CaseDetailPage: React.FC = () => {
       console.error('Failed to fetch notes:', error);
     } finally {
       setIsLoadingNotes(false);
+    }
+  };
+
+  const fetchParticipants = async () => {
+    if (!caseId) return;
+    setIsLoadingParticipants(true);
+    try {
+      const participantsRes = await casesApi.getParticipants(caseId);
+      setParticipants(participantsRes);
+    } catch (error) {
+      console.error('Failed to fetch participants:', error);
+    } finally {
+      setIsLoadingParticipants(false);
+    }
+  };
+
+  const handleAddParticipant = async () => {
+    if (!caseId || !newParticipantEmail.trim()) return;
+
+    setIsAddingParticipant(true);
+    setAddParticipantError('');
+
+    try {
+      // First lookup user by email
+      const user = await usersApi.lookupByEmail(newParticipantEmail.trim());
+
+      // Then add as participant
+      await casesApi.addParticipant(caseId, user.id, newParticipantRole || undefined);
+
+      // Refresh participants list
+      await fetchParticipants();
+
+      // Close modal and reset
+      setShowAddParticipantModal(false);
+      setNewParticipantEmail('');
+      setNewParticipantRole('');
+    } catch (error) {
+      console.error('Failed to add participant:', error);
+      const errorMessage = handleApiError(error);
+      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+        setAddParticipantError('משתמש עם כתובת דוא״ל זו לא נמצא במערכת');
+      } else {
+        setAddParticipantError(errorMessage);
+      }
+    } finally {
+      setIsAddingParticipant(false);
     }
   };
 
@@ -566,6 +661,7 @@ export const CaseDetailPage: React.FC = () => {
             { id: 'documents', label: 'מסמכים', icon: FileText, count: documents.length },
             { id: 'analysis', label: 'ניתוח', icon: Search, count: analysisRuns.length },
             { id: 'notes', label: 'הערות', icon: StickyNote, count: notes.length || undefined },
+            { id: 'team', label: 'צוות', icon: Users, count: participants.length || undefined },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -596,7 +692,87 @@ export const CaseDetailPage: React.FC = () => {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
           >
+            {/* Jobs Status */}
+            {caseJobs.length > 0 && (
+              <Card>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {caseJobs.some(j => j.status === 'queued' || j.status === 'started') ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 text-primary-500 animate-spin" />
+                        <span className="font-medium text-slate-900">
+                          {caseJobs.filter(j => j.status === 'queued' || j.status === 'started').length} עבודות פעילות
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="w-5 h-5 text-success-500" />
+                        <span className="font-medium text-slate-900">כל העבודות הושלמו</span>
+                      </>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowJobsPanel(!showJobsPanel)}
+                    leftIcon={showJobsPanel ? <ChevronDown className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+                  >
+                    {showJobsPanel ? 'הסתר' : 'הצג פרטים'}
+                  </Button>
+                </div>
+
+                {/* Expanded Jobs List */}
+                {showJobsPanel && (
+                  <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
+                    {caseJobs.slice(0, 10).map((job) => (
+                      <div key={job.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          {job.status === 'queued' && <Clock className="w-4 h-4 text-slate-400" />}
+                          {job.status === 'started' && <RefreshCw className="w-4 h-4 text-primary-500 animate-spin" />}
+                          {job.status === 'finished' && <CheckCircle className="w-4 h-4 text-success-500" />}
+                          {job.status === 'failed' && <AlertTriangle className="w-4 h-4 text-danger-500" />}
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">
+                              {job.job_type === 'parse' ? 'עיבוד מסמך' :
+                               job.job_type === 'analyze' ? 'ניתוח' : job.job_type}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {new Date(job.created_at).toLocaleString('he-IL')}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {job.progress !== undefined && job.progress < 100 && (
+                            <div className="w-20">
+                              <Progress value={job.progress} size="sm" />
+                            </div>
+                          )}
+                          <Badge
+                            variant={
+                              job.status === 'finished' ? 'success' :
+                              job.status === 'failed' ? 'danger' :
+                              job.status === 'started' ? 'warning' : 'neutral'
+                            }
+                          >
+                            {job.status === 'queued' ? 'ממתין' :
+                             job.status === 'started' ? 'בעיבוד' :
+                             job.status === 'finished' ? 'הושלם' : 'נכשל'}
+                          </Badge>
+                        </div>
+                      </div>
+                    ))}
+                    {caseJobs.length > 10 && (
+                      <p className="text-sm text-slate-500 text-center">
+                        ועוד {caseJobs.length - 10} עבודות...
+                      </p>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )}
+
             <div className="flex gap-6">
               {/* Folder Sidebar */}
               <div className="w-64 flex-shrink-0">
@@ -1152,7 +1328,131 @@ export const CaseDetailPage: React.FC = () => {
             )}
           </motion.div>
         )}
+
+        {activeTab === 'team' && (
+          <motion.div
+            key="team"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
+          >
+            {/* Header with Add Button */}
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">משתתפים בתיק</h3>
+              <Button
+                onClick={() => setShowAddParticipantModal(true)}
+                leftIcon={<UserPlus className="w-4 h-4" />}
+              >
+                הוסף משתתף
+              </Button>
+            </div>
+
+            {/* Participants List */}
+            {isLoadingParticipants ? (
+              <div className="flex items-center justify-center py-12">
+                <Spinner size="lg" />
+              </div>
+            ) : participants.length === 0 ? (
+              <EmptyState
+                icon={<Users className="w-16 h-16" />}
+                title="אין משתתפים בתיק"
+                description="הוסיפו משתמשים לתיק כדי לשתף אותם בעבודה"
+                action={{
+                  label: 'הוסף משתתף',
+                  onClick: () => setShowAddParticipantModal(true),
+                  icon: <UserPlus className="w-5 h-5" />,
+                }}
+              />
+            ) : (
+              <Card padding="none">
+                <div className="divide-y divide-slate-100">
+                  {participants.map((participant) => (
+                    <div
+                      key={participant.user_id}
+                      className="p-4 flex items-center gap-4"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-400 to-accent-400 flex items-center justify-center text-white font-bold">
+                        {participant.name?.charAt(0) || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-slate-900">{participant.name}</p>
+                        <p className="text-sm text-slate-500 truncate">{participant.email}</p>
+                      </div>
+                      {participant.role && (
+                        <Badge variant="neutral">{participant.role}</Badge>
+                      )}
+                      <p className="text-xs text-slate-400">
+                        {new Date(participant.added_at).toLocaleDateString('he-IL')}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </motion.div>
+        )}
       </AnimatePresence>
+
+      {/* Add Participant Modal */}
+      <Modal
+        isOpen={showAddParticipantModal}
+        onClose={() => {
+          setShowAddParticipantModal(false);
+          setNewParticipantEmail('');
+          setNewParticipantRole('');
+          setAddParticipantError('');
+        }}
+        title="הוספת משתתף לתיק"
+        description="הזינו את כתובת הדוא״ל של המשתמש להוספה לתיק"
+        size="md"
+      >
+        <div className="space-y-4">
+          {addParticipantError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {addParticipantError}
+            </div>
+          )}
+
+          <Input
+            label="כתובת דוא״ל"
+            type="email"
+            value={newParticipantEmail}
+            onChange={(e) => setNewParticipantEmail(e.target.value)}
+            placeholder="user@example.com"
+            leftIcon={<Mail className="w-5 h-5" />}
+            required
+          />
+
+          <Input
+            label="תפקיד (אופציונלי)"
+            value={newParticipantRole}
+            onChange={(e) => setNewParticipantRole(e.target.value)}
+            placeholder="לדוגמה: עורך דין, עוזר משפטי"
+          />
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              onClick={handleAddParticipant}
+              className="flex-1"
+              isLoading={isAddingParticipant}
+              disabled={!newParticipantEmail.trim()}
+            >
+              הוסף לתיק
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowAddParticipantModal(false);
+                setNewParticipantEmail('');
+                setNewParticipantRole('');
+              }}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Create Folder Modal */}
       <Modal
