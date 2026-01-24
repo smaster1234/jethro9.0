@@ -105,14 +105,11 @@ export const documentsApi = {
       formData.append('folder_id', folderId);
     }
 
+    // Note: Do NOT set Content-Type header manually for FormData
+    // axios will automatically set it with the correct boundary parameter
     const response = await apiClient.post<UploadResponse>(
       `/api/v1/cases/${caseId}/documents`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
+      formData
     );
     return response.data;
   },
@@ -132,14 +129,11 @@ export const documentsApi = {
     }
     formData.append('mapping_mode', mappingMode);
 
+    // Note: Do NOT set Content-Type header manually for FormData
+    // axios will automatically set it with the correct boundary parameter
     const response = await apiClient.post(
       `/api/v1/cases/${caseId}/documents/zip`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
+      formData
     );
     return response.data;
   },
@@ -181,6 +175,13 @@ export const documentsApi = {
         params,
       });
       return response.data;
+    },
+
+    // Delete folder
+    delete: async (folderId: string, recursive = false): Promise<void> => {
+      await apiClient.delete(`/api/v1/folders/${folderId}`, {
+        params: { recursive },
+      });
     },
   },
 };

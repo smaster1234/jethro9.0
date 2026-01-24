@@ -46,7 +46,9 @@ export const teamsApi = {
 
   // Assign a team to a case
   assignToCase: async (caseId: string, teamId: string): Promise<void> => {
-    await apiClient.post(`/cases/${caseId}/teams`, { team_id: teamId });
+    await apiClient.post(`/cases/${caseId}/teams`, null, {
+      params: { team_id: teamId },
+    });
   },
 
   // Get teams assigned to a case

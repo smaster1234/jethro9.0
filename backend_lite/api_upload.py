@@ -350,6 +350,103 @@ async def get_folder_tree(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/folders/{folder_id}")
+async def delete_folder(
+    folder_id: str,
+    recursive: bool = Query(default=False, description="Delete folder contents recursively"),
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """
+    Delete a folder.
+
+    If recursive=False (default), folder must be empty.
+    If recursive=True, deletes all documents and subfolders.
+    """
+    try:
+        from .db.session import get_db_session
+        from .db.models import Folder, Document, DocumentPage, DocumentBlock, Claim, Paragraph
+        from .storage import get_storage
+
+        with get_db_session() as db:
+            folder = db.query(Folder).filter(
+                Folder.id == folder_id,
+                Folder.firm_id == auth.firm_id
+            ).first()
+
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            # Check for documents
+            docs = db.query(Document).filter(Document.folder_id == folder_id).all()
+
+            # Check for subfolders
+            subfolders = db.query(Folder).filter(Folder.parent_id == folder_id).all()
+
+            if (docs or subfolders) and not recursive:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Folder is not empty. Use recursive=true to delete contents."
+                )
+
+            # If recursive, delete contents
+            if recursive:
+                storage = get_storage()
+
+                # Delete documents in this folder
+                for doc in docs:
+                    # Delete related records
+                    db.query(DocumentBlock).filter(DocumentBlock.document_id == doc.id).delete()
+                    db.query(DocumentPage).filter(DocumentPage.document_id == doc.id).delete()
+                    db.query(Claim).filter(Claim.doc_id == doc.id).delete()
+                    db.query(Paragraph).filter(Paragraph.doc_id == doc.id).delete()
+
+                    # Delete from storage
+                    if doc.storage_key:
+                        try:
+                            storage.delete(doc.storage_key)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete from storage: {e}")
+
+                    db.delete(doc)
+
+                # Recursively delete subfolders
+                def delete_subfolder(subfolder_id: str):
+                    subfolder_docs = db.query(Document).filter(Document.folder_id == subfolder_id).all()
+                    nested_subfolders = db.query(Folder).filter(Folder.parent_id == subfolder_id).all()
+
+                    for doc in subfolder_docs:
+                        db.query(DocumentBlock).filter(DocumentBlock.document_id == doc.id).delete()
+                        db.query(DocumentPage).filter(DocumentPage.document_id == doc.id).delete()
+                        db.query(Claim).filter(Claim.doc_id == doc.id).delete()
+                        db.query(Paragraph).filter(Paragraph.doc_id == doc.id).delete()
+                        if doc.storage_key:
+                            try:
+                                storage.delete(doc.storage_key)
+                            except:
+                                pass
+                        db.delete(doc)
+
+                    for nested in nested_subfolders:
+                        delete_subfolder(nested.id)
+                        db.delete(nested)
+
+                for subfolder in subfolders:
+                    delete_subfolder(subfolder.id)
+                    db.delete(subfolder)
+
+            # Delete the folder
+            db.delete(folder)
+            db.commit()
+
+            return {"message": "Folder deleted successfully", "id": folder_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to delete folder")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # DOCUMENT UPLOAD ENDPOINTS
 # =============================================================================
