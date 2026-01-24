@@ -691,3 +691,68 @@ class Finding(Base):
     locator_json = Column(JSONB, default=dict)
     created_by_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# =============================================================================
+# AUTH TOKENS (Password Reset, Token Blacklist)
+# =============================================================================
+
+class PasswordResetToken(Base):
+    """Token for password reset functionality"""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(128), nullable=False)  # SHA-256 hash of the token
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)  # Set when token is used
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_password_reset_user", "user_id"),
+        Index("ix_password_reset_token", "token_hash"),
+    )
+
+    # Relationships
+    user = relationship("User")
+
+
+class TokenBlacklist(Base):
+    """Blacklisted JWT tokens (for logout/revocation)"""
+    __tablename__ = "token_blacklist"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    jti = Column(String(64), unique=True, nullable=False)  # JWT ID
+    token_type = Column(String(20), nullable=False)  # access/refresh
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    blacklisted_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)  # When the original token would expire
+
+    __table_args__ = (
+        Index("ix_token_blacklist_jti", "jti"),
+        Index("ix_token_blacklist_user", "user_id"),
+    )
+
+
+class AuditLog(Base):
+    """Audit log for tracking user actions"""
+    __tablename__ = "audit_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String(100), nullable=False)  # login/logout/create_case/upload_document/etc.
+    resource_type = Column(String(50), nullable=True)  # case/document/user/team
+    resource_id = Column(String(36), nullable=True)
+    details = Column(JSONB, default=dict)  # Additional action details
+    ip_address = Column(String(45), nullable=True)  # IPv4 or IPv6
+    user_agent = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_audit_firm", "firm_id"),
+        Index("ix_audit_user", "user_id"),
+        Index("ix_audit_action", "action"),
+        Index("ix_audit_created", "created_at"),
+    )
+

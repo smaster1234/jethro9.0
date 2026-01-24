@@ -163,9 +163,9 @@ export const LoginPage: React.FC = () => {
                   />
                   זכור אותי
                 </label>
-                <a href="#" className="text-sm text-primary-600 hover:text-primary-700 font-medium">
+                <Link to="/forgot-password" className="text-sm text-primary-600 hover:text-primary-700 font-medium">
                   שכחת סיסמה?
-                </a>
+                </Link>
               </div>
 
               <Button
