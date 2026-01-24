@@ -27,6 +27,7 @@ import logging
 import os
 import uuid
 import asyncio
+import hashlib
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -191,6 +192,14 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Security Headers Middleware
+try:
+    from .middleware.security import SecurityHeadersMiddleware
+    app.add_middleware(SecurityHeadersMiddleware)
+    logger.info("Security headers middleware enabled")
+except ImportError:
+    logger.warning("Security headers middleware not available")
 
 # Rate Limiting Middleware
 try:
@@ -2476,6 +2485,198 @@ async def auth_me(
         "teams": auth.team_ids,
         "team_leader_of": auth.team_leader_of
     }
+
+
+# Password Reset Request
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@app.post("/auth/forgot-password", tags=["Auth"])
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db_dependency)):
+    """
+    Request a password reset token.
+    In production, this would send an email with the reset link.
+    For now, returns the token directly (development mode).
+    """
+    import secrets
+    import hashlib
+    from .db.models import PasswordResetToken
+
+    # Find user by email
+    user = db.query(User).filter(User.email == request.email, User.is_active == True).first()
+
+    # Always return success (don't reveal if email exists)
+    if not user:
+        return {"message": "If this email is registered, a reset link will be sent."}
+
+    # Generate reset token
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    # Delete any existing tokens for this user
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete()
+
+    # Create new token (expires in 1 hour)
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=datetime.utcnow() + timedelta(hours=1)
+    )
+    db.add(reset_token)
+    db.commit()
+
+    # TODO: In production, send email with reset link
+    # For now, include token in response (DEVELOPMENT ONLY)
+    is_dev = os.environ.get("ENVIRONMENT", "development") == "development"
+
+    response = {"message": "If this email is registered, a reset link will be sent."}
+    if is_dev:
+        response["_dev_token"] = token  # Only in dev mode!
+
+    return response
+
+
+@app.post("/auth/reset-password", tags=["Auth"])
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db_dependency)):
+    """
+    Reset password using a reset token.
+    """
+    import hashlib
+    from .db.models import PasswordResetToken
+
+    if not PASSWORD_HASHING_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Password hashing not available")
+
+    if is_password_too_long(request.new_password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too long (max {MAX_PASSWORD_BYTES} bytes)"
+        )
+
+    # Validate password strength
+    if len(request.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    # Find token
+    token_hash = hashlib.sha256(request.token.encode()).hexdigest()
+    reset_token = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == token_hash,
+        PasswordResetToken.used_at == None,
+        PasswordResetToken.expires_at > datetime.utcnow()
+    ).first()
+
+    if not reset_token:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    # Get user
+    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+
+    # Update password
+    user.password_hash = get_password_hash(request.new_password)
+
+    # Mark token as used
+    reset_token.used_at = datetime.utcnow()
+
+    db.commit()
+
+    return {"message": "Password reset successfully"}
+
+
+@app.post("/auth/refresh", tags=["Auth"], response_model=TokenResponse)
+async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db_dependency)):
+    """
+    Refresh an access token using a refresh token.
+    """
+    from .db.models import TokenBlacklist
+
+    if not is_jwt_available():
+        raise HTTPException(status_code=501, detail="JWT not available")
+
+    # Decode refresh token
+    payload = decode_token(request.refresh_token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Check token type
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    # Check if token is blacklisted
+    jti = payload.get("jti") or hashlib.sha256(request.refresh_token.encode()).hexdigest()[:32]
+    blacklisted = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+    if blacklisted:
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
+    # Get user
+    user_id = payload.get("sub")
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    # Create new tokens
+    token_data = {"sub": user.id, "firm_id": user.firm_id}
+    new_access_token = create_access_token(token_data)
+    new_refresh_token = create_refresh_token(token_data)
+
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token
+    )
+
+
+@app.post("/auth/logout", tags=["Auth"])
+async def logout(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db_dependency)
+):
+    """
+    Logout and invalidate the current access token.
+    Also invalidates the refresh token if provided.
+    """
+    import hashlib
+    from .db.models import TokenBlacklist
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="No token provided")
+
+    token = authorization.split(" ", 1)[1].strip()
+    payload = decode_token(token)
+
+    if not payload:
+        # Token already invalid, that's fine for logout
+        return {"message": "Logged out"}
+
+    # Add token to blacklist
+    jti = payload.get("jti") or hashlib.sha256(token.encode()).hexdigest()[:32]
+    user_id = payload.get("sub")
+    exp = payload.get("exp")
+    token_type = payload.get("type", "access")
+
+    # Check if already blacklisted
+    existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+    if not existing:
+        blacklist_entry = TokenBlacklist(
+            jti=jti,
+            token_type=token_type,
+            user_id=user_id,
+            expires_at=datetime.utcfromtimestamp(exp) if exp else datetime.utcnow() + timedelta(hours=1)
+        )
+        db.add(blacklist_entry)
+        db.commit()
+
+    return {"message": "Logged out successfully"}
 
 
 # =============================================================================
