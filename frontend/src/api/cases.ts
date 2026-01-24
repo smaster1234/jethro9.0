@@ -55,7 +55,7 @@ export const casesApi = {
     caseId: string,
     options?: AnalyzeCaseOptions
   ): Promise<AnalysisResponse & { cached?: boolean; run_id?: string }> => {
-    const response = await apiClient.post(`/cases/${caseId}/analyze`, options);
+    const response = await apiClient.post(`/api/v1/cases/${caseId}/analyze`, options || {});
     return response.data;
   },
 

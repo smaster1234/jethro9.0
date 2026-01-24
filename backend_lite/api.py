@@ -3854,113 +3854,217 @@ async def remove_team_member(
 @app.post("/cases/{case_id}/teams", tags=["Cases"], summary="Assign case to team")
 async def assign_case_to_team(
     case_id: str,
-    team_id: str,
-    auth: AuthContext = Depends(require_auth)
+    team_id: str = Query(...),
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
 ):
     """Assign a case to a team"""
-    db = get_database()
-    auth_service = get_auth_service()
+    try:
+        # Verify case exists and user has access
+        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
 
-    if not auth_service.can_assign_case_to_team(auth, case_id, team_id):
-        raise HTTPException(status_code=403, detail="Cannot assign this case to this team")
+        # Verify team exists and is in same firm
+        team = db.query(Team).filter(Team.id == team_id, Team.firm_id == auth.firm_id).first()
+        if not team:
+            raise HTTPException(status_code=404, detail="Team not found")
 
-    ct = db.assign_case_to_team(
-        case_id=case_id,
-        team_id=team_id,
-        assigned_by_user_id=auth.user.id
-    )
+        # Only admin or team leader can assign
+        if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+            # Check if user is team leader
+            tm = db.query(TeamMember).filter(
+                TeamMember.team_id == team_id,
+                TeamMember.user_id == auth.user_id,
+                TeamMember.team_role == TeamRole.TEAM_LEADER
+            ).first()
+            if not tm:
+                raise HTTPException(status_code=403, detail="Only admins or team leaders can assign cases to teams")
 
-    return {
-        "case_id": ct.case_id,
-        "team_id": ct.team_id,
-        "assigned_at": ct.assigned_at.isoformat()
-    }
+        # Check if already assigned
+        existing = db.query(CaseTeam).filter(
+            CaseTeam.case_id == case_id,
+            CaseTeam.team_id == team_id
+        ).first()
+        if existing:
+            return {
+                "case_id": case_id,
+                "team_id": team_id,
+                "assigned_at": existing.assigned_at.isoformat()
+            }
+
+        # Create assignment
+        ct = CaseTeam(
+            case_id=case_id,
+            team_id=team_id,
+            assigned_by_user_id=auth.user_id
+        )
+        db.add(ct)
+        db.commit()
+        db.refresh(ct)
+
+        return {
+            "case_id": ct.case_id,
+            "team_id": ct.team_id,
+            "assigned_at": ct.assigned_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Assign case to team failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @app.get("/cases/{case_id}/teams", tags=["Cases"], summary="List teams assigned to case")
-async def list_case_teams(case_id: str, auth: AuthContext = Depends(require_auth)):
+async def list_case_teams(
+    case_id: str,
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
+):
     """List all teams assigned to a case"""
-    auth_service = get_auth_service()
+    try:
+        # Verify case exists and user has access
+        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
 
-    if not auth.can_access_case(case_id, get_database()):
-        raise HTTPException(status_code=403, detail="Cannot access this case")
+        # Get teams assigned to the case
+        case_teams = db.query(CaseTeam).filter(CaseTeam.case_id == case_id).all()
+        team_ids = [ct.team_id for ct in case_teams]
 
-    db = get_database()
-    teams = db.get_case_teams(case_id)
+        if not team_ids:
+            return []
 
-    return [
-        {
-            "id": t.id,
-            "name": t.name,
-            "description": t.description
-        }
-        for t in teams if t
-    ]
+        teams = db.query(Team).filter(Team.id.in_(team_ids)).all()
+
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description
+            }
+            for t in teams
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List case teams failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @app.post("/cases/{case_id}/participants", tags=["Cases"], summary="Add participant to case")
 async def add_case_participant(
     case_id: str,
-    user_id: str,
-    role: Optional[str] = None,
-    auth: AuthContext = Depends(require_auth)
+    user_id: str = Query(...),
+    role: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
 ):
     """Add a user as participant to a case"""
-    db = get_database()
+    try:
+        # Verify case exists and is in user's firm
+        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
 
-    if not auth.can_access_case(case_id, db):
-        raise HTTPException(status_code=403, detail="Cannot access this case")
+        # Only team leaders or admins can add participants
+        if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+            # Check if user is team leader for any team assigned to this case
+            case_teams = db.query(CaseTeam).filter(CaseTeam.case_id == case_id).all()
+            team_ids = [ct.team_id for ct in case_teams]
+            if team_ids:
+                is_team_leader = db.query(TeamMember).filter(
+                    TeamMember.team_id.in_(team_ids),
+                    TeamMember.user_id == auth.user_id,
+                    TeamMember.team_role == TeamRole.TEAM_LEADER
+                ).first() is not None
+            else:
+                # If no teams assigned, check if user created the case
+                is_team_leader = case.created_by_user_id == auth.user_id
 
-    # Only team leaders or admins can add participants
-    if not auth.is_admin:
-        # Check if user is team leader for any team assigned to this case
-        case_teams = db.get_case_teams(case_id)
-        is_team_leader = any(t.id in auth.team_leader_of for t in case_teams)
-        if not is_team_leader:
-            raise HTTPException(status_code=403, detail="Only team leaders can add participants")
+            if not is_team_leader:
+                raise HTTPException(status_code=403, detail="Only team leaders can add participants")
 
-    # Verify user is in same firm
-    target_user = db.get_user(user_id)
-    if not target_user or target_user.firm_id != auth.firm_id:
-        raise HTTPException(status_code=403, detail="Cannot add user from different firm")
+        # Verify target user exists and is in same firm
+        target_user = db.query(User).filter(User.id == user_id, User.firm_id == auth.firm_id).first()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found or not in same firm")
 
-    cp = db.add_case_participant(
-        case_id=case_id,
-        user_id=user_id,
-        role=role,
-        added_by_user_id=auth.user.id
-    )
+        # Check if already a participant
+        existing = db.query(CaseParticipant).filter(
+            CaseParticipant.case_id == case_id,
+            CaseParticipant.user_id == user_id
+        ).first()
+        if existing:
+            return {
+                "case_id": case_id,
+                "user_id": user_id,
+                "name": target_user.name,
+                "email": target_user.email,
+                "role": existing.role,
+                "added_at": existing.added_at.isoformat()
+            }
 
-    return {
-        "case_id": cp.case_id,
-        "user_id": cp.user_id,
-        "role": cp.role,
-        "added_at": cp.added_at.isoformat()
-    }
+        # Add participant
+        cp = CaseParticipant(
+            case_id=case_id,
+            user_id=user_id,
+            role=role,
+            added_by_user_id=auth.user_id
+        )
+        db.add(cp)
+        db.commit()
+        db.refresh(cp)
+
+        return {
+            "case_id": cp.case_id,
+            "user_id": cp.user_id,
+            "name": target_user.name,
+            "email": target_user.email,
+            "role": cp.role,
+            "added_at": cp.added_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add case participant failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @app.get("/cases/{case_id}/participants", tags=["Cases"], summary="List case participants")
-async def list_case_participants(case_id: str, auth: AuthContext = Depends(require_auth)):
+async def list_case_participants(
+    case_id: str,
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
+):
     """List all participants in a case"""
-    db = get_database()
+    try:
+        # Verify case exists and is in user's firm
+        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
 
-    if not auth.can_access_case(case_id, db):
-        raise HTTPException(status_code=403, detail="Cannot access this case")
+        # Get participants with user info
+        participants = db.query(CaseParticipant, User).join(
+            User, CaseParticipant.user_id == User.id
+        ).filter(CaseParticipant.case_id == case_id).all()
 
-    participants = db.get_case_participants(case_id)
-    result = []
-    for p in participants:
-        user = db.get_user(p.user_id)
-        if user:
+        result = []
+        for cp, user in participants:
             result.append({
-                "user_id": p.user_id,
+                "user_id": cp.user_id,
                 "name": user.name,
                 "email": user.email,
-                "role": p.role,
-                "added_at": p.added_at.isoformat()
+                "role": cp.role,
+                "added_at": cp.added_at.isoformat()
             })
 
-    return result
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List case participants failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 # =============================================================================
@@ -3970,38 +4074,89 @@ async def list_case_participants(case_id: str, auth: AuthContext = Depends(requi
 @app.get("/my/cases", tags=["Cases"], summary="List my accessible cases")
 async def list_my_cases(
     status: Optional[str] = None,
-    auth: AuthContext = Depends(require_auth)
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
 ):
     """List all cases the current user can access"""
-    db = get_database()
-    auth_service = get_auth_service()
+    try:
+        # Parse status filter
+        status_enum = None
+        if status:
+            try:
+                status_enum = CaseStatus(status)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
 
-    # Parse status filter
-    status_enum = None
-    if status:
-        try:
-            status_enum = CaseStatus(status)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        # Build query for accessible cases
+        # A user can access cases if they:
+        # 1. Created the case
+        # 2. Are a participant in the case
+        # 3. Are a member of a team assigned to the case
+        # 4. Are admin/super_admin of the firm
 
-    # Get accessible case IDs
-    case_ids = auth_service.get_accessible_cases(auth, status_enum)
+        from sqlalchemy import or_, distinct
 
-    # Fetch case details
-    cases = []
-    for case_id in case_ids:
-        case = db.get_case(case_id)
-        if case:
-            cases.append({
+        # Start with cases in the user's firm
+        base_query = db.query(Case).filter(Case.firm_id == auth.firm_id)
+
+        # Apply status filter if provided
+        if status_enum:
+            base_query = base_query.filter(Case.status == status_enum)
+
+        # For super_admin or admin, show all firm cases
+        if auth.system_role in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+            cases = base_query.order_by(Case.updated_at.desc()).all()
+        else:
+            # For regular users, filter to accessible cases
+            # Get team IDs for the user
+            user_team_ids = db.query(TeamMember.team_id).filter(
+                TeamMember.user_id == auth.user_id
+            ).subquery()
+
+            # Get case IDs assigned to those teams
+            team_case_ids = db.query(CaseTeam.case_id).filter(
+                CaseTeam.team_id.in_(user_team_ids)
+            ).subquery()
+
+            # Get case IDs where user is a participant
+            participant_case_ids = db.query(CaseParticipant.case_id).filter(
+                CaseParticipant.user_id == auth.user_id
+            ).subquery()
+
+            # Filter: user created it, is participant, or is in assigned team
+            cases = base_query.filter(
+                or_(
+                    Case.created_by_user_id == auth.user_id,
+                    Case.responsible_user_id == auth.user_id,
+                    Case.id.in_(participant_case_ids),
+                    Case.id.in_(team_case_ids)
+                )
+            ).order_by(Case.updated_at.desc()).all()
+
+        # Build response with document counts
+        result = []
+        for case in cases:
+            doc_count = db.query(Document).filter(Document.case_id == case.id).count()
+            result.append({
                 "id": case.id,
                 "name": case.name,
                 "client_name": case.client_name,
                 "status": case.status.value if hasattr(case.status, 'value') else str(case.status),
-                "our_side": case.our_side.value,
-                "updated_at": case.updated_at.isoformat()
+                "our_side": case.our_side or "unknown",
+                "case_number": case.case_number,
+                "court": case.court,
+                "description": case.description,
+                "document_count": doc_count,
+                "created_at": case.created_at.isoformat() if case.created_at else None,
+                "updated_at": case.updated_at.isoformat() if case.updated_at else None
             })
 
-    return cases
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"List my cases failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 # =============================================================================
