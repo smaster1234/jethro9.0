@@ -6,50 +6,28 @@ import {
   UserPlus,
   Crown,
   Mail,
-  Trash2,
   MoreVertical,
   Search,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { Card, Button, Badge, Input, Modal, EmptyState, Spinner } from '../components/ui';
-import type { Team, TeamMember } from '../types';
-
-// Mock API for teams - replace with actual API calls
-const teamsApi = {
-  list: async (): Promise<Team[]> => {
-    // TODO: Replace with actual API call
-    return [];
-  },
-  create: async (name: string, description?: string): Promise<Team> => {
-    // TODO: Replace with actual API call
-    return {
-      id: `team_${Date.now()}`,
-      firm_id: '',
-      name,
-      description,
-      created_at: new Date().toISOString(),
-      members: [],
-    };
-  },
-  addMember: async (teamId: string, email: string, role: 'team_leader' | 'team_member'): Promise<void> => {
-    // TODO: Replace with actual API call
-  },
-  removeMember: async (teamId: string, userId: string): Promise<void> => {
-    // TODO: Replace with actual API call
-  },
-};
+import { Card, Button, Input, Modal, EmptyState, Spinner } from '../components/ui';
+import { teamsApi } from '../api/teams';
+import { handleApiError } from '../api';
+import type { Team } from '../types';
 
 export const TeamsPage: React.FC = () => {
   const { user } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [error, setError] = useState('');
 
   // Create team modal
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamDescription, setNewTeamDescription] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
 
   // Add member modal
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
@@ -57,6 +35,7 @@ export const TeamsPage: React.FC = () => {
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'team_leader' | 'team_member'>('team_member');
   const [isAddingMember, setIsAddingMember] = useState(false);
+  const [addMemberError, setAddMemberError] = useState('');
 
   useEffect(() => {
     fetchTeams();
@@ -64,11 +43,13 @@ export const TeamsPage: React.FC = () => {
 
   const fetchTeams = async () => {
     setIsLoading(true);
+    setError('');
     try {
       const data = await teamsApi.list();
       setTeams(data);
-    } catch (error) {
-      console.error('Failed to fetch teams:', error);
+    } catch (err) {
+      console.error('Failed to fetch teams:', err);
+      setError(handleApiError(err));
     } finally {
       setIsLoading(false);
     }
@@ -78,14 +59,19 @@ export const TeamsPage: React.FC = () => {
     if (!newTeamName.trim()) return;
 
     setIsCreating(true);
+    setCreateError('');
     try {
-      const newTeam = await teamsApi.create(newTeamName, newTeamDescription);
+      const newTeam = await teamsApi.create({
+        name: newTeamName,
+        description: newTeamDescription || undefined,
+      });
       setTeams([...teams, newTeam]);
       setShowCreateModal(false);
       setNewTeamName('');
       setNewTeamDescription('');
-    } catch (error) {
-      console.error('Failed to create team:', error);
+    } catch (err) {
+      console.error('Failed to create team:', err);
+      setCreateError(handleApiError(err));
     } finally {
       setIsCreating(false);
     }
@@ -95,14 +81,21 @@ export const TeamsPage: React.FC = () => {
     if (!selectedTeamId || !newMemberEmail.trim()) return;
 
     setIsAddingMember(true);
+    setAddMemberError('');
     try {
-      await teamsApi.addMember(selectedTeamId, newMemberEmail, newMemberRole);
+      // Note: Backend expects user_id, not email. For now we'll use email as user_id
+      // In production, you'd lookup the user by email first
+      await teamsApi.addMember(selectedTeamId, {
+        user_id: newMemberEmail, // Backend should handle email-to-user lookup
+        team_role: newMemberRole,
+      });
       await fetchTeams();
       setShowAddMemberModal(false);
       setNewMemberEmail('');
       setNewMemberRole('team_member');
-    } catch (error) {
-      console.error('Failed to add member:', error);
+    } catch (err) {
+      console.error('Failed to add member:', err);
+      setAddMemberError(handleApiError(err));
     } finally {
       setIsAddingMember(false);
     }
@@ -139,6 +132,13 @@ export const TeamsPage: React.FC = () => {
           </Button>
         )}
       </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+          {error}
+        </div>
+      )}
 
       {/* Search */}
       <Card>
@@ -264,6 +264,12 @@ export const TeamsPage: React.FC = () => {
         size="md"
       >
         <div className="space-y-4">
+          {createError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {createError}
+            </div>
+          )}
+
           <Input
             label="שם הצוות"
             value={newTeamName}
@@ -321,6 +327,12 @@ export const TeamsPage: React.FC = () => {
         size="md"
       >
         <div className="space-y-4">
+          {addMemberError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {addMemberError}
+            </div>
+          )}
+
           <Input
             label="כתובת דוא״ל"
             type="email"

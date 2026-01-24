@@ -10,6 +10,7 @@ import {
   DashboardPage,
   CasesPage,
   CaseDetailPage,
+  DocumentDetailPage,
   AnalyzePage,
   SettingsPage,
   TeamsPage,
@@ -43,6 +44,7 @@ function App() {
               <Route path="/cases" element={<CasesPage />} />
               <Route path="/cases/new" element={<CasesPage />} />
               <Route path="/cases/:caseId" element={<CaseDetailPage />} />
+              <Route path="/documents/:documentId" element={<DocumentDetailPage />} />
               <Route path="/analyze" element={<AnalyzePage />} />
               <Route path="/teams" element={<TeamsPage />} />
               <Route path="/settings" element={<SettingsPage />} />

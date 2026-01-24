@@ -448,9 +448,6 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
     if (contradiction.explanation) return contradiction.explanation;
 
     // Generate a basic explanation based on contradiction type
-    const claimAText = contradiction.claim_a?.text || 'טענה א\'';
-    const claimBText = contradiction.claim_b?.text || 'טענה ב\'';
-
     const explanations: Record<string, string> = {
       'TEMPORAL_DATE': `התאריכים בשתי הטענות אינם תואמים. יש לברר איזה תאריך הוא הנכון.`,
       'QUANTITATIVE_AMOUNT': `הכמויות או הסכומים המצוינים בשתי הטענות שונים זה מזה.`,

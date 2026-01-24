@@ -3537,6 +3537,41 @@ async def get_current_user_info(
     }
 
 
+class UpdateProfileRequest(BaseModel):
+    name: Optional[str] = None
+    professional_role: Optional[str] = None
+
+
+@app.patch("/users/me", tags=["Users"], summary="Update current user profile")
+async def update_current_user_profile(
+    request: UpdateProfileRequest,
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
+):
+    """Update the current authenticated user's profile"""
+    user = db.query(User).filter(User.id == auth.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if request.name is not None:
+        user.name = request.name.strip()
+
+    if request.professional_role is not None:
+        user.professional_role = request.professional_role.strip() if request.professional_role else None
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "professional_role": user.professional_role,
+        "message": "Profile updated successfully"
+    }
+
+
 @app.get("/users/by-email", tags=["Users"], summary="Get user by email (for demo login)")
 async def get_user_by_email(email: str, db: Session = Depends(get_db_dependency)):
     """
