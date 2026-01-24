@@ -28,6 +28,7 @@ import {
   Users,
   UserPlus,
   Mail,
+  Download,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError } from '../api';
 import { usersApi } from '../api/users';
@@ -43,7 +44,7 @@ import {
   Progress,
   Input,
 } from '../components/ui';
-import type { Case, Document, AnalysisRun, Folder as FolderType, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+import type { Case, Document as DocumentType, AnalysisRun, Folder as FolderType, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
 
 // Helper to flatten cross-exam questions from nested structure
 const flattenCrossExamQuestions = (
@@ -66,7 +67,7 @@ export const CaseDetailPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [caseData, setCaseData] = useState<Case | null>(null);
-  const [documents, setDocuments] = useState<Document[]>([]);
+  const [documents, setDocuments] = useState<DocumentType[]>([]);
   const [folders, setFolders] = useState<FolderType[]>([]);
   const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -127,6 +128,11 @@ export const CaseDetailPage: React.FC = () => {
   const [docStatusFilter, setDocStatusFilter] = useState<string>('');
   const [docPartyFilter, setDocPartyFilter] = useState<string>('');
   const [docRoleFilter, setDocRoleFilter] = useState<string>('');
+
+  // Contradiction filters
+  const [contradictionSeverityFilter, setContradictionSeverityFilter] = useState<string>('');
+  const [contradictionStatusFilter, setContradictionStatusFilter] = useState<string>('');
+  const [contradictionSearchQuery, setContradictionSearchQuery] = useState('');
 
   // Jobs state
   const [caseJobs, setCaseJobs] = useState<CaseJob[]>([]);
@@ -521,6 +527,66 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const handleExportContradictions = (contradictions: Contradiction[], format: 'csv' | 'text' = 'csv') => {
+    if (!contradictions || contradictions.length === 0) return;
+
+    const caseName = caseData?.name || 'case';
+    const date = new Date().toISOString().split('T')[0];
+
+    if (format === 'csv') {
+      // CSV export
+      const headers = ['מספר', 'חומרה', 'סטטוס', 'קטגוריה', 'הסבר', 'ציטוט 1', 'ציטוט 2'];
+      const rows = contradictions.map((c, i) => [
+        i + 1,
+        c.severity || '',
+        c.status || '',
+        c.category || '',
+        `"${(c.explanation || '').replace(/"/g, '""')}"`,
+        `"${(c.quote1 || '').replace(/"/g, '""')}"`,
+        `"${(c.quote2 || '').replace(/"/g, '""')}"`,
+      ]);
+
+      const csvContent = '\uFEFF' + headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `contradictions_${caseName}_${date}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } else {
+      // Text report export
+      let report = `דוח סתירות - ${caseName}\n`;
+      report += `תאריך: ${new Date().toLocaleDateString('he-IL')}\n`;
+      report += `סה"כ סתירות: ${contradictions.length}\n`;
+      report += '='.repeat(50) + '\n\n';
+
+      contradictions.forEach((c, i) => {
+        report += `סתירה #${i + 1}\n`;
+        report += `-`.repeat(30) + '\n';
+        report += `חומרה: ${c.severity || 'לא מוגדר'}\n`;
+        report += `סטטוס: ${c.status || 'לא מוגדר'}\n`;
+        report += `קטגוריה: ${c.category || 'לא מוגדר'}\n\n`;
+        report += `הסבר:\n${c.explanation || 'אין הסבר'}\n\n`;
+        if (c.quote1) report += `ציטוט 1:\n"${c.quote1}"\n\n`;
+        if (c.quote2) report += `ציטוט 2:\n"${c.quote2}"\n\n`;
+        report += '\n';
+      });
+
+      const blob = new Blob([report], { type: 'text/plain;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `contradictions_report_${caseName}_${date}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!caseId) return;
 
@@ -529,39 +595,85 @@ export const CaseDetailPage: React.FC = () => {
     setShowAnalysisModal(false);
 
     try {
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setAnalysisProgress((prev) => Math.min(prev + 10, 90));
-      }, 500);
-
       const result = await casesApi.analyze(caseId, {
         force: forceReanalyze,
         mode: analysisMode,
         document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
       });
 
-      clearInterval(progressInterval);
-      setAnalysisProgress(100);
-
       // Reset options
       setForceReanalyze(false);
       setSelectedDocIds([]);
 
-      // Refresh runs
-      const runs = await casesApi.listRuns(caseId);
-      setAnalysisRuns(runs);
-
-      // Navigate to analysis tab
-      setActiveTab('analysis');
-
-      if (result.run_id) {
+      // If result is cached, show immediately
+      if (result.cached && result.run_id) {
+        setAnalysisProgress(100);
+        const runs = await casesApi.listRuns(caseId);
+        setAnalysisRuns(runs);
+        setActiveTab('analysis');
         const run = await casesApi.getRun(result.run_id);
         setCurrentRun(run);
         setSelectedRun(run);
+        setIsAnalyzing(false);
+        return;
       }
+
+      // For non-cached results, poll for job completion
+      // Start with optimistic progress
+      let progress = 10;
+      const progressInterval = setInterval(() => {
+        progress = Math.min(progress + 5, 85);
+        setAnalysisProgress(progress);
+      }, 1000);
+
+      // Poll jobs to check status
+      const pollInterval = setInterval(async () => {
+        try {
+          const jobs = await documentsApi.listCaseJobs(caseId);
+          const activeJob = jobs.find(j => j.status === 'started' || j.status === 'queued');
+
+          if (activeJob?.progress) {
+            setAnalysisProgress(Math.max(progress, activeJob.progress));
+          }
+
+          // Check if all jobs are done
+          const pendingJobs = jobs.filter(j => j.status === 'queued' || j.status === 'started');
+          if (pendingJobs.length === 0) {
+            clearInterval(pollInterval);
+            clearInterval(progressInterval);
+            setAnalysisProgress(100);
+
+            // Refresh runs and show results
+            const runs = await casesApi.listRuns(caseId);
+            setAnalysisRuns(runs);
+            setActiveTab('analysis');
+
+            if (result.run_id) {
+              const run = await casesApi.getRun(result.run_id);
+              setCurrentRun(run);
+              setSelectedRun(run);
+            } else if (runs.length > 0) {
+              const latestRun = await casesApi.getRun(runs[0].id);
+              setSelectedRun(latestRun);
+            }
+
+            setIsAnalyzing(false);
+          }
+        } catch (err) {
+          console.error('Poll error:', err);
+        }
+      }, 2000);
+
+      // Timeout after 5 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        clearInterval(progressInterval);
+        setAnalysisProgress(100);
+        setIsAnalyzing(false);
+      }, 300000);
+
     } catch (error) {
       console.error('Analysis failed:', error);
-    } finally {
       setIsAnalyzing(false);
     }
   };
@@ -1174,23 +1286,45 @@ export const CaseDetailPage: React.FC = () => {
                     </Card>
 
                     {/* Results Tabs */}
-                    <div className="flex gap-2">
-                      <Button
-                        variant={analysisResultsTab === 'contradictions' ? 'primary' : 'secondary'}
-                        size="sm"
-                        onClick={() => setAnalysisResultsTab('contradictions')}
-                        leftIcon={<AlertTriangle className="w-4 h-4" />}
-                      >
-                        סתירות ({selectedRun.contradictions?.length || 0})
-                      </Button>
-                      <Button
-                        variant={analysisResultsTab === 'questions' ? 'primary' : 'secondary'}
-                        size="sm"
-                        onClick={() => setAnalysisResultsTab('questions')}
-                        leftIcon={<MessageSquare className="w-4 h-4" />}
-                      >
-                        שאלות לחקירה
-                      </Button>
+                    <div className="flex items-center justify-between">
+                      <div className="flex gap-2">
+                        <Button
+                          variant={analysisResultsTab === 'contradictions' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('contradictions')}
+                          leftIcon={<AlertTriangle className="w-4 h-4" />}
+                        >
+                          סתירות ({selectedRun.contradictions?.length || 0})
+                        </Button>
+                        <Button
+                          variant={analysisResultsTab === 'questions' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('questions')}
+                          leftIcon={<MessageSquare className="w-4 h-4" />}
+                        >
+                          שאלות לחקירה
+                        </Button>
+                      </div>
+                      {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
+                        <div className="flex gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleExportContradictions(selectedRun.contradictions || [], 'csv')}
+                            leftIcon={<Download className="w-4 h-4" />}
+                          >
+                            ייצוא CSV
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleExportContradictions(selectedRun.contradictions || [], 'text')}
+                            leftIcon={<FileText className="w-4 h-4" />}
+                          >
+                            ייצוא דוח
+                          </Button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Results Content */}
@@ -1203,27 +1337,134 @@ export const CaseDetailPage: React.FC = () => {
                           exit={{ opacity: 0, x: -20 }}
                           className="space-y-4"
                         >
-                          {!selectedRun.contradictions || selectedRun.contradictions.length === 0 ? (
-                            <Card>
-                              <div className="text-center py-8">
-                                <CheckCircle className="w-12 h-12 text-success-500 mx-auto mb-4" />
-                                <p className="text-lg font-medium text-slate-700">
-                                  לא נמצאו סתירות
-                                </p>
-                                <p className="text-sm text-slate-500 mt-2">
-                                  המסמכים נראים עקביים ללא סתירות ברורות
-                                </p>
+                          {/* Contradiction Filters */}
+                          {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
+                            <Card padding="sm">
+                              <div className="flex flex-wrap gap-3 items-center">
+                                <div className="flex-1 min-w-[200px]">
+                                  <input
+                                    type="text"
+                                    value={contradictionSearchQuery}
+                                    onChange={(e) => setContradictionSearchQuery(e.target.value)}
+                                    placeholder="חיפוש בסתירות..."
+                                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 outline-none"
+                                  />
+                                </div>
+                                <select
+                                  value={contradictionSeverityFilter}
+                                  onChange={(e) => setContradictionSeverityFilter(e.target.value)}
+                                  className="px-3 py-2 text-sm rounded-lg border border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 outline-none"
+                                >
+                                  <option value="">כל החומרות</option>
+                                  <option value="critical">קריטי</option>
+                                  <option value="high">גבוה</option>
+                                  <option value="medium">בינוני</option>
+                                  <option value="low">נמוך</option>
+                                </select>
+                                <select
+                                  value={contradictionStatusFilter}
+                                  onChange={(e) => setContradictionStatusFilter(e.target.value)}
+                                  className="px-3 py-2 text-sm rounded-lg border border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 outline-none"
+                                >
+                                  <option value="">כל הסטטוסים</option>
+                                  <option value="new">חדש</option>
+                                  <option value="reviewed">נבדק</option>
+                                  <option value="confirmed">מאושר</option>
+                                  <option value="dismissed">נדחה</option>
+                                </select>
+                                {(contradictionSearchQuery || contradictionSeverityFilter || contradictionStatusFilter) && (
+                                  <button
+                                    onClick={() => {
+                                      setContradictionSearchQuery('');
+                                      setContradictionSeverityFilter('');
+                                      setContradictionStatusFilter('');
+                                    }}
+                                    className="px-3 py-2 text-sm text-slate-500 hover:text-slate-700"
+                                  >
+                                    נקה סינון
+                                  </button>
+                                )}
                               </div>
                             </Card>
-                          ) : (
-                            selectedRun.contradictions.map((contradiction, index) => (
-                              <ContradictionCard
-                                key={contradiction.id || index}
-                                contradiction={contradiction}
-                                index={index}
-                              />
-                            ))
                           )}
+
+                          {(() => {
+                            // Apply filters to contradictions
+                            const filtered = (selectedRun.contradictions || []).filter((c) => {
+                              // Severity filter
+                              if (contradictionSeverityFilter && c.severity !== contradictionSeverityFilter) {
+                                return false;
+                              }
+                              // Status filter
+                              if (contradictionStatusFilter && c.status !== contradictionStatusFilter) {
+                                return false;
+                              }
+                              // Search query
+                              if (contradictionSearchQuery) {
+                                const query = contradictionSearchQuery.toLowerCase();
+                                const matchText = [
+                                  c.explanation,
+                                  c.quote1,
+                                  c.quote2,
+                                  c.claim1_text,
+                                  c.claim2_text,
+                                  c.category,
+                                  c.type,
+                                ].filter(Boolean).join(' ').toLowerCase();
+                                if (!matchText.includes(query)) {
+                                  return false;
+                                }
+                              }
+                              return true;
+                            });
+
+                            if (!selectedRun.contradictions || selectedRun.contradictions.length === 0) {
+                              return (
+                                <Card>
+                                  <div className="text-center py-8">
+                                    <CheckCircle className="w-12 h-12 text-success-500 mx-auto mb-4" />
+                                    <p className="text-lg font-medium text-slate-700">
+                                      לא נמצאו סתירות
+                                    </p>
+                                    <p className="text-sm text-slate-500 mt-2">
+                                      המסמכים נראים עקביים ללא סתירות ברורות
+                                    </p>
+                                  </div>
+                                </Card>
+                              );
+                            }
+
+                            if (filtered.length === 0) {
+                              return (
+                                <Card>
+                                  <div className="text-center py-8">
+                                    <Search className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                                    <p className="text-lg font-medium text-slate-700">
+                                      אין תוצאות לסינון
+                                    </p>
+                                    <p className="text-sm text-slate-500 mt-2">
+                                      נסה לשנות את הגדרות הסינון
+                                    </p>
+                                  </div>
+                                </Card>
+                              );
+                            }
+
+                            return (
+                              <>
+                                <p className="text-sm text-slate-500">
+                                  מציג {filtered.length} מתוך {selectedRun.contradictions.length} סתירות
+                                </p>
+                                {filtered.map((contradiction, index) => (
+                                  <ContradictionCard
+                                    key={contradiction.id || index}
+                                    contradiction={contradiction}
+                                    index={index}
+                                  />
+                                ))}
+                              </>
+                            );
+                          })()}
                         </motion.div>
                       )}
 
@@ -2126,9 +2367,13 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       'IDENTITY_BASIC': `פרטי הזיהוי בשתי הטענות אינם תואמים.`,
     };
 
-    return explanations[contradiction.contradiction_type] ||
+    const key = contradiction.contradiction_type || contradiction.type || '';
+    return explanations[key] ||
       `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
   };
+
+  const severity = contradiction.severity || 'medium';
+  const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
   return (
     <motion.div
@@ -2144,10 +2389,10 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={getSeverityColor(contradiction.severity) as any}>
-                {getSeverityLabel(contradiction.severity)}
+              <Badge variant={getSeverityColor(severity) as any}>
+                {getSeverityLabel(severity)}
               </Badge>
-              <Badge variant="neutral">{getTypeLabel(contradiction.contradiction_type)}</Badge>
+              <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
             </div>
           </div>
 

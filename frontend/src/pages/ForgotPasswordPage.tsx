@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Mail, ArrowRight, CheckCircle } from 'lucide-react';
 import { Card, Button, Input } from '../components/ui';
-import apiClient from '../api/client';
+import { authApi, handleApiError } from '../api';
 
 export const ForgotPasswordPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -17,10 +17,10 @@ export const ForgotPasswordPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      await apiClient.post('/auth/forgot-password', { email });
+      await authApi.forgotPassword({ email });
       setIsSent(true);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'שגיאה בשליחת הבקשה');
+    } catch (err) {
+      setError(handleApiError(err));
     } finally {
       setIsLoading(false);
     }

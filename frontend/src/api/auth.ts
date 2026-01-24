@@ -14,6 +14,25 @@ export interface UpdateProfileResponse {
   message: string;
 }
 
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+  _dev_token?: string;  // Only in development mode
+  _dev_note?: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  new_password: string;
+}
+
+export interface ResetPasswordResponse {
+  message: string;
+}
+
 export const authApi = {
   // Login with email and password
   login: async (data: LoginRequest): Promise<TokenResponse> => {
@@ -52,6 +71,18 @@ export const authApi = {
   // Logout
   logout: () => {
     clearTokens();
+  },
+
+  // Request password reset
+  forgotPassword: async (data: ForgotPasswordRequest): Promise<ForgotPasswordResponse> => {
+    const response = await apiClient.post<ForgotPasswordResponse>('/auth/forgot-password', data);
+    return response.data;
+  },
+
+  // Reset password with token
+  resetPassword: async (data: ResetPasswordRequest): Promise<ResetPasswordResponse> => {
+    const response = await apiClient.post<ResetPasswordResponse>('/auth/reset-password', data);
+    return response.data;
   },
 };
 

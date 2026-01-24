@@ -166,19 +166,40 @@ export interface Claim {
 
 export interface Contradiction {
   id: string;
-  claim_a_id: string;
-  claim_b_id: string;
+  // Claim IDs (backend uses both naming conventions)
+  claim_a_id?: string;
+  claim_b_id?: string;
+  claim1_id?: string;
+  claim2_id?: string;
+  // Claim objects
   claim_a?: Claim;
   claim_b?: Claim;
-  contradiction_type: string;
-  tier: number;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  confidence: number;
+  // Claim text (from enriched responses)
+  claim1_text?: string;
+  claim2_text?: string;
+  // Type info
+  contradiction_type?: string;
+  type?: string;
+  tier?: number;
+  // Severity and status
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+  status?: 'new' | 'reviewed' | 'confirmed' | 'dismissed';
+  bucket?: string;
+  // Scores
+  confidence?: number;
+  verifier_confidence?: number;
+  verified?: boolean;
+  // Content
   explanation?: string;
   explanation_he?: string;
   evidence?: string;
-  verified?: boolean;
-  verifier_confidence?: number;
+  quote1?: string;
+  quote2?: string;
+  category?: string;
+  // Locators
+  claim1_locator?: Record<string, unknown>;
+  claim2_locator?: Record<string, unknown>;
+  // Timestamps
   created_at?: string;
 }
 

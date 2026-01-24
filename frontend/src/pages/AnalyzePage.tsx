@@ -457,9 +457,13 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       'IDENTITY_BASIC': `פרטי הזיהוי בשתי הטענות אינם תואמים.`,
     };
 
-    return explanations[contradiction.contradiction_type] ||
+    const key = contradiction.contradiction_type || contradiction.type || '';
+    return explanations[key] ||
       `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
   };
+
+  const severity = contradiction.severity || 'medium';
+  const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
   return (
     <motion.div
@@ -475,10 +479,10 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={getSeverityColor(contradiction.severity) as any}>
-                {getSeverityLabel(contradiction.severity)}
+              <Badge variant={getSeverityColor(severity) as any}>
+                {getSeverityLabel(severity)}
               </Badge>
-              <Badge variant="neutral">{getTypeLabel(contradiction.contradiction_type)}</Badge>
+              <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
             </div>
           </div>
 

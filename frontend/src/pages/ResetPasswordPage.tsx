@@ -3,7 +3,7 @@ import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Lock, ArrowRight, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Card, Button, Input } from '../components/ui';
-import apiClient from '../api/client';
+import { authApi, handleApiError } from '../api';
 
 export const ResetPasswordPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -36,16 +36,21 @@ export const ResetPasswordPage: React.FC = () => {
       return;
     }
 
+    if (!token) {
+      setError('טוקן איפוס חסר');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      await apiClient.post('/auth/reset-password', {
+      await authApi.resetPassword({
         token,
         new_password: password,
       });
       setIsSuccess(true);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'שגיאה באיפוס הסיסמה');
+    } catch (err) {
+      setError(handleApiError(err));
     } finally {
       setIsLoading(false);
     }
