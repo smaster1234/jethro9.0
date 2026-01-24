@@ -88,6 +88,13 @@ export const CaseDetailPage: React.FC = () => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [createFolderError, setCreateFolderError] = useState('');
 
+  // Delete folder state
+  const [showDeleteFolderModal, setShowDeleteFolderModal] = useState(false);
+  const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
+  const [deleteFolderError, setDeleteFolderError] = useState('');
+  const [deleteFolderRecursive, setDeleteFolderRecursive] = useState(false);
+
   // Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
@@ -133,6 +140,12 @@ export const CaseDetailPage: React.FC = () => {
   const [newParticipantRole, setNewParticipantRole] = useState('');
   const [isAddingParticipant, setIsAddingParticipant] = useState(false);
   const [addParticipantError, setAddParticipantError] = useState('');
+
+  // Document preview state
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<DocumentType | null>(null);
+  const [previewText, setPreviewText] = useState<string>('');
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   useEffect(() => {
     if (caseId) {
@@ -418,6 +431,36 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const handleDeleteFolderClick = (folderId: string) => {
+    setFolderToDelete(folderId);
+    setDeleteFolderError('');
+    setDeleteFolderRecursive(false);
+    setShowDeleteFolderModal(true);
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!folderToDelete) return;
+
+    setIsDeletingFolder(true);
+    setDeleteFolderError('');
+
+    try {
+      await documentsApi.folders.delete(folderToDelete, deleteFolderRecursive);
+      setShowDeleteFolderModal(false);
+      setFolderToDelete(null);
+      // If we deleted the selected folder, clear selection
+      if (selectedFolderId === folderToDelete) {
+        setSelectedFolderId(undefined);
+      }
+      await fetchFolders();
+      await fetchDocuments();
+    } catch (error) {
+      setDeleteFolderError(handleApiError(error));
+    } finally {
+      setIsDeletingFolder(false);
+    }
+  };
+
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
@@ -458,6 +501,23 @@ export const CaseDetailPage: React.FC = () => {
       setUploadError(handleApiError(error));
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handlePreviewDoc = async (doc: DocumentType) => {
+    setPreviewDoc(doc);
+    setPreviewText('');
+    setShowPreviewModal(true);
+    setIsLoadingPreview(true);
+
+    try {
+      const textData = await documentsApi.getText(doc.id);
+      setPreviewText(textData.text || '');
+    } catch (error) {
+      console.error('Failed to load document text:', error);
+      setPreviewText('שגיאה בטעינת טקסט המסמך');
+    } finally {
+      setIsLoadingPreview(false);
     }
   };
 
@@ -812,6 +872,7 @@ export const CaseDetailPage: React.FC = () => {
                           folder={folder}
                           selectedFolderId={selectedFolderId}
                           onSelect={setSelectedFolderId}
+                          onDelete={handleDeleteFolderClick}
                           level={0}
                         />
                       ))}
@@ -968,14 +1029,24 @@ export const CaseDetailPage: React.FC = () => {
                                 <span>{new Date(doc.created_at).toLocaleDateString('he-IL')}</span>
                               </div>
                             </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => navigate(`/documents/${doc.id}`)}
-                              leftIcon={<Eye className="w-4 h-4" />}
-                            >
-                              צפייה
-                            </Button>
+                            <div className="flex gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handlePreviewDoc(doc)}
+                                leftIcon={<Eye className="w-4 h-4" />}
+                              >
+                                תצוגה מקדימה
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => navigate(`/documents/${doc.id}`)}
+                                leftIcon={<FileText className="w-4 h-4" />}
+                              >
+                                פרטים
+                              </Button>
+                            </div>
                           </div>
                         </motion.div>
                       ))}
@@ -1525,6 +1596,132 @@ export const CaseDetailPage: React.FC = () => {
         </div>
       </Modal>
 
+      {/* Delete Folder Modal */}
+      <Modal
+        isOpen={showDeleteFolderModal}
+        onClose={() => {
+          setShowDeleteFolderModal(false);
+          setFolderToDelete(null);
+          setDeleteFolderError('');
+          setDeleteFolderRecursive(false);
+        }}
+        title="מחיקת תיקייה"
+        description="האם אתה בטוח שברצונך למחוק תיקייה זו?"
+        size="sm"
+      >
+        <div className="space-y-4">
+          {deleteFolderError && (
+            <div className="p-4 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+              {deleteFolderError}
+            </div>
+          )}
+
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+            <p className="text-sm text-amber-800">
+              שים לב: אם התיקייה מכילה מסמכים או תיקיות משנה, תצטרך לסמן את האפשרות למחיקה רקורסיבית.
+            </p>
+          </div>
+
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={deleteFolderRecursive}
+              onChange={(e) => setDeleteFolderRecursive(e.target.checked)}
+              className="w-4 h-4 text-danger-600 rounded focus:ring-danger-500"
+            />
+            <span className="text-sm text-slate-700">
+              מחק תוכן רקורסיבית (כולל מסמכים ותיקיות משנה)
+            </span>
+          </label>
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              variant="danger"
+              onClick={handleDeleteFolder}
+              className="flex-1"
+              isLoading={isDeletingFolder}
+            >
+              מחק תיקייה
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowDeleteFolderModal(false);
+                setFolderToDelete(null);
+              }}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Document Preview Modal */}
+      <Modal
+        isOpen={showPreviewModal}
+        onClose={() => {
+          setShowPreviewModal(false);
+          setPreviewDoc(null);
+          setPreviewText('');
+        }}
+        title={previewDoc?.doc_name || 'תצוגה מקדימה'}
+        description={previewDoc ? `${previewDoc.page_count || 0} עמודים • ${previewDoc.party || 'לא מוגדר'}` : ''}
+        size="lg"
+      >
+        <div className="space-y-4">
+          {/* Document info bar */}
+          {previewDoc && (
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{getFileIcon(previewDoc.mime_type)}</span>
+                <div>
+                  <p className="text-sm font-medium text-slate-900">{previewDoc.doc_name}</p>
+                  <p className="text-xs text-slate-500">
+                    {new Date(previewDoc.created_at).toLocaleDateString('he-IL')}
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setShowPreviewModal(false);
+                  navigate(`/documents/${previewDoc.id}`);
+                }}
+              >
+                פתח בדף מלא
+              </Button>
+            </div>
+          )}
+
+          {/* Text content */}
+          {isLoadingPreview ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner size="lg" />
+              <span className="mr-3 text-slate-600">טוען טקסט...</span>
+            </div>
+          ) : previewText ? (
+            <div className="bg-slate-50 rounded-xl p-6 max-h-[500px] overflow-y-auto">
+              <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700 leading-relaxed" dir="auto">
+                {previewText}
+              </pre>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-slate-500">
+              <FileText className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+              <p>אין טקסט זמין במסמך זה</p>
+            </div>
+          )}
+
+          {/* Character count */}
+          {previewText && (
+            <p className="text-xs text-slate-400 text-left">
+              {previewText.length.toLocaleString()} תווים
+            </p>
+          )}
+        </div>
+      </Modal>
+
       {/* Upload Modal */}
       <Modal
         isOpen={showUploadModal}
@@ -1801,16 +1998,16 @@ const FolderTreeItem: React.FC<{
   folder: FolderType;
   selectedFolderId: string | undefined;
   onSelect: (folderId: string | undefined) => void;
+  onDelete: (folderId: string) => void;
   level: number;
-}> = ({ folder, selectedFolderId, onSelect, level }) => {
+}> = ({ folder, selectedFolderId, onSelect, onDelete, level }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const hasChildren = folder.children && folder.children.length > 0;
 
   return (
     <div>
-      <button
-        onClick={() => onSelect(folder.id)}
-        className={`w-full flex items-center gap-2 p-2 rounded-lg transition-colors ${
+      <div
+        className={`group w-full flex items-center gap-2 p-2 rounded-lg transition-colors ${
           selectedFolderId === folder.id
             ? 'bg-primary-50 text-primary-700'
             : 'hover:bg-slate-50 text-slate-700'
@@ -1832,12 +2029,27 @@ const FolderTreeItem: React.FC<{
             )}
           </button>
         )}
-        <Folder className="w-4 h-4 text-amber-500" />
-        <span className="text-sm font-medium truncate">{folder.name}</span>
-        {folder.document_count !== undefined && folder.document_count > 0 && (
-          <span className="mr-auto text-xs text-slate-400">({folder.document_count})</span>
-        )}
-      </button>
+        <button
+          onClick={() => onSelect(folder.id)}
+          className="flex-1 flex items-center gap-2 min-w-0"
+        >
+          <Folder className="w-4 h-4 text-amber-500 flex-shrink-0" />
+          <span className="text-sm font-medium truncate">{folder.name}</span>
+          {folder.document_count !== undefined && folder.document_count > 0 && (
+            <span className="text-xs text-slate-400">({folder.document_count})</span>
+          )}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(folder.id);
+          }}
+          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-danger-600 rounded transition-all"
+          title="מחק תיקייה"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
       {hasChildren && isExpanded && (
         <div className="space-y-1">
           {folder.children!.map((child) => (
@@ -1846,6 +2058,7 @@ const FolderTreeItem: React.FC<{
               folder={child}
               selectedFolderId={selectedFolderId}
               onSelect={onSelect}
+              onDelete={onDelete}
               level={level + 1}
             />
           ))}
