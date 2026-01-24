@@ -2609,6 +2609,7 @@ async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_
     Refresh an access token using a refresh token.
     """
     from .db.models import TokenBlacklist
+    from .token_blacklist import is_blacklisted as redis_blacklist_check
 
     if not is_jwt_available():
         raise HTTPException(status_code=501, detail="JWT not available")
@@ -2622,11 +2623,19 @@ async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid token type")
 
-    # Check if token is blacklisted
+    # Check if token is blacklisted (Redis first, then database fallback)
     jti = payload.get("jti") or hashlib.sha256(request.refresh_token.encode()).hexdigest()[:32]
-    blacklisted = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
-    if blacklisted:
+
+    # Fast Redis check
+    redis_result = redis_blacklist_check(jti)
+    if redis_result is True:
         raise HTTPException(status_code=401, detail="Token has been revoked")
+
+    # Fallback to database if Redis returned None (not definitive)
+    if redis_result is None:
+        blacklisted = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+        if blacklisted:
+            raise HTTPException(status_code=401, detail="Token has been revoked")
 
     # Get user
     user_id = payload.get("sub")
@@ -2656,6 +2665,7 @@ async def logout(
     """
     import hashlib
     from .db.models import TokenBlacklist
+    from .token_blacklist import add_to_blacklist as redis_blacklist_add
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="No token provided")
@@ -2672,15 +2682,19 @@ async def logout(
     user_id = payload.get("sub")
     exp = payload.get("exp")
     token_type = payload.get("type", "access")
+    expires_at = datetime.utcfromtimestamp(exp) if exp else datetime.utcnow() + timedelta(hours=1)
 
-    # Check if already blacklisted
+    # Add to Redis blacklist (fast) for future checks
+    redis_blacklist_add(jti, expires_at, token_type)
+
+    # Also persist to database (for durability and Redis restart recovery)
     existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
     if not existing:
         blacklist_entry = TokenBlacklist(
             jti=jti,
             token_type=token_type,
             user_id=user_id,
-            expires_at=datetime.utcfromtimestamp(exp) if exp else datetime.utcnow() + timedelta(hours=1)
+            expires_at=expires_at
         )
         db.add(blacklist_entry)
         db.commit()

@@ -32,10 +32,26 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 # JWT configuration
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+_jwt_secret_raw = os.environ.get("JWT_SECRET_KEY", "")
+JWT_SECRET_KEY = _jwt_secret_raw or "dev-secret-key-DO-NOT-USE-IN-PRODUCTION"
 JWT_ALGORITHM = "HS256"
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+# Security: Validate JWT secret in production
+def validate_jwt_secret():
+    """Validate that a proper JWT secret is configured in production."""
+    is_production = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+    if is_production and (not _jwt_secret_raw or "DO-NOT-USE" in JWT_SECRET_KEY or len(_jwt_secret_raw) < 32):
+        raise RuntimeError(
+            "SECURITY ERROR: JWT_SECRET_KEY must be set to a secure value (at least 32 characters) in production! "
+            "Set ENVIRONMENT=development to skip this check during development."
+        )
+    if not _jwt_secret_raw:
+        logger.warning("⚠️  JWT_SECRET_KEY not set - using insecure default. Set JWT_SECRET_KEY for production!")
+
+# Run validation on module load
+validate_jwt_secret()
 
 def _env_truthy(name: str, default: str = "false") -> bool:
     """Parse boolean environment variable values."""

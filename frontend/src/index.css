@@ -226,6 +226,22 @@
     text-wrap: balance;
   }
 
+  /* Toast animations */
+  .animate-slide-in {
+    animation: slide-in 0.3s ease-out;
+  }
+
+  @keyframes slide-in {
+    from {
+      transform: translateX(-100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
   .animation-delay-100 {
     animation-delay: 100ms;
   }
