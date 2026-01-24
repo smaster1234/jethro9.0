@@ -88,6 +88,12 @@ export const CaseDetailPage: React.FC = () => {
   const [isLoadingRun, setIsLoadingRun] = useState(false);
   const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
 
+  // Analysis options modal state
+  const [showAnalysisModal, setShowAnalysisModal] = useState(false);
+  const [analysisMode, setAnalysisMode] = useState<'hybrid' | 'rule_based' | 'llm'>('hybrid');
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [forceReanalyze, setForceReanalyze] = useState(false);
+
   // Polling for jobs
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
 
@@ -261,6 +267,7 @@ export const CaseDetailPage: React.FC = () => {
 
     setIsAnalyzing(true);
     setAnalysisProgress(0);
+    setShowAnalysisModal(false);
 
     try {
       // Simulate progress
@@ -268,10 +275,18 @@ export const CaseDetailPage: React.FC = () => {
         setAnalysisProgress((prev) => Math.min(prev + 10, 90));
       }, 500);
 
-      const result = await casesApi.analyze(caseId, { force: false });
+      const result = await casesApi.analyze(caseId, {
+        force: forceReanalyze,
+        mode: analysisMode,
+        document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
+      });
 
       clearInterval(progressInterval);
       setAnalysisProgress(100);
+
+      // Reset options
+      setForceReanalyze(false);
+      setSelectedDocIds([]);
 
       // Refresh runs
       const runs = await casesApi.listRuns(caseId);
@@ -283,6 +298,7 @@ export const CaseDetailPage: React.FC = () => {
       if (result.run_id) {
         const run = await casesApi.getRun(result.run_id);
         setCurrentRun(run);
+        setSelectedRun(run);
       }
     } catch (error) {
       console.error('Analysis failed:', error);
@@ -375,7 +391,7 @@ export const CaseDetailPage: React.FC = () => {
             העלאת מסמכים
           </Button>
           <Button
-            onClick={handleAnalyze}
+            onClick={() => setShowAnalysisModal(true)}
             isLoading={isAnalyzing}
             leftIcon={<Play className="w-5 h-5" />}
             disabled={documents.length === 0}
@@ -991,6 +1007,145 @@ export const CaseDetailPage: React.FC = () => {
                 setShowUploadModal(false);
                 setUploadFiles([]);
               }}
+            >
+              ביטול
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Analysis Options Modal */}
+      <Modal
+        isOpen={showAnalysisModal}
+        onClose={() => setShowAnalysisModal(false)}
+        title="אפשרויות ניתוח"
+        description="בחרו את סוג הניתוח והמסמכים לניתוח"
+        size="lg"
+      >
+        <div className="space-y-6">
+          {/* Analysis Mode */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-3">
+              מצב ניתוח
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <button
+                onClick={() => setAnalysisMode('hybrid')}
+                className={`p-4 rounded-xl border-2 transition-colors text-center ${
+                  analysisMode === 'hybrid'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <div className="font-medium text-slate-900">היברידי</div>
+                <p className="text-xs text-slate-500 mt-1">חוקים + AI (מומלץ)</p>
+              </button>
+              <button
+                onClick={() => setAnalysisMode('rule_based')}
+                className={`p-4 rounded-xl border-2 transition-colors text-center ${
+                  analysisMode === 'rule_based'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <div className="font-medium text-slate-900">חוקים</div>
+                <p className="text-xs text-slate-500 mt-1">מהיר יותר</p>
+              </button>
+              <button
+                onClick={() => setAnalysisMode('llm')}
+                className={`p-4 rounded-xl border-2 transition-colors text-center ${
+                  analysisMode === 'llm'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <div className="font-medium text-slate-900">AI בלבד</div>
+                <p className="text-xs text-slate-500 mt-1">מדויק יותר</p>
+              </button>
+            </div>
+          </div>
+
+          {/* Document Selection */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-3">
+              מסמכים לניתוח
+            </label>
+            <div className="max-h-48 overflow-y-auto border-2 border-slate-200 rounded-xl p-2 space-y-1">
+              <button
+                onClick={() => setSelectedDocIds([])}
+                className={`w-full text-right p-3 rounded-lg transition-colors ${
+                  selectedDocIds.length === 0
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="font-medium">כל המסמכים ({documents.length})</div>
+              </button>
+              {documents.map((doc) => (
+                <button
+                  key={doc.id}
+                  onClick={() => {
+                    if (selectedDocIds.includes(doc.id)) {
+                      setSelectedDocIds(selectedDocIds.filter(id => id !== doc.id));
+                    } else {
+                      setSelectedDocIds([...selectedDocIds, doc.id]);
+                    }
+                  }}
+                  className={`w-full text-right p-3 rounded-lg transition-colors flex items-center gap-3 ${
+                    selectedDocIds.includes(doc.id)
+                      ? 'bg-primary-50 text-primary-700'
+                      : 'hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDocIds.includes(doc.id)}
+                    onChange={() => {}}
+                    className="w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <div className="flex-1">
+                    <div className="font-medium truncate">{doc.doc_name || doc.original_filename}</div>
+                    <div className="text-xs text-slate-500">{doc.page_count} עמודים</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {selectedDocIds.length > 0 && (
+              <p className="text-sm text-primary-600 mt-2">
+                נבחרו {selectedDocIds.length} מסמכים
+              </p>
+            )}
+          </div>
+
+          {/* Force Reanalyze */}
+          <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+            <div>
+              <p className="font-medium text-slate-900">כפה ניתוח מחדש</p>
+              <p className="text-sm text-slate-500">התעלם מתוצאות קודמות במטמון</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={forceReanalyze}
+                onChange={(e) => setForceReanalyze(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-slate-300 peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
+            </label>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3 pt-4">
+            <Button
+              onClick={handleAnalyze}
+              className="flex-1"
+              leftIcon={<Play className="w-5 h-5" />}
+            >
+              הפעל ניתוח
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowAnalysisModal(false)}
             >
               ביטול
             </Button>
