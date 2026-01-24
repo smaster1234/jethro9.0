@@ -12,6 +12,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { Card, Button, Input, Modal, EmptyState, Spinner } from '../components/ui';
 import { teamsApi } from '../api/teams';
+import { usersApi } from '../api/users';
 import { handleApiError } from '../api';
 import type { Team } from '../types';
 
@@ -83,10 +84,12 @@ export const TeamsPage: React.FC = () => {
     setIsAddingMember(true);
     setAddMemberError('');
     try {
-      // Note: Backend expects user_id, not email. For now we'll use email as user_id
-      // In production, you'd lookup the user by email first
+      // First lookup user by email to get their user_id
+      const user = await usersApi.lookupByEmail(newMemberEmail.trim());
+
+      // Now add the member using their user_id
       await teamsApi.addMember(selectedTeamId, {
-        user_id: newMemberEmail, // Backend should handle email-to-user lookup
+        user_id: user.id,
         team_role: newMemberRole,
       });
       await fetchTeams();
@@ -95,7 +98,12 @@ export const TeamsPage: React.FC = () => {
       setNewMemberRole('team_member');
     } catch (err) {
       console.error('Failed to add member:', err);
-      setAddMemberError(handleApiError(err));
+      const errorMessage = handleApiError(err);
+      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+        setAddMemberError('משתמש עם כתובת דוא״ל זו לא נמצא במערכת');
+      } else {
+        setAddMemberError(errorMessage);
+      }
     } finally {
       setIsAddingMember(false);
     }

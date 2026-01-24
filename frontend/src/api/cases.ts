@@ -8,6 +8,13 @@ export interface AnalyzeCaseOptions {
   rag_top_k?: number;
 }
 
+export interface MemoryItem {
+  id: string;
+  text: string;
+  created_at: string;
+  type?: 'note' | 'finding' | 'todo';
+}
+
 export const casesApi = {
   // List all cases
   list: async (): Promise<Case[]> => {
@@ -69,6 +76,17 @@ export const casesApi = {
   getRun: async (runId: string): Promise<AnalysisRun> => {
     const response = await apiClient.get<AnalysisRun>(`/api/v1/analysis-runs/${runId}`);
     return response.data;
+  },
+
+  // Get case memory/notes
+  getMemory: async (caseId: string): Promise<MemoryItem[]> => {
+    const response = await apiClient.get<{ memory: MemoryItem[] }>(`/cases/${caseId}/memory`);
+    return response.data.memory || [];
+  },
+
+  // Save case memory/notes
+  saveMemory: async (caseId: string, memory: MemoryItem[]): Promise<void> => {
+    await apiClient.post(`/cases/${caseId}/memory`, { memory });
   },
 };
 
