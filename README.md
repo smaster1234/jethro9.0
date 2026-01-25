@@ -128,6 +128,20 @@ POST /api/v1/training/{session_id}/back
 POST /api/v1/training/{session_id}/finish
 ```
 
+---
+
+## Feedback Loop (C3)
+
+תגיות משוב לשלב תובנות/צעדי תכנית:
+- worked
+- not_worked
+- too_risky
+- excellent
+
+הצגה בממשק:
+- “מעולה במשרד” אם excellent ≥ 2
+- “מסוכן מדי” אם too_risky ≥ 2
+
 ### Option 2: Local Development
 
 ```bash
@@ -214,6 +228,13 @@ jethro9.0/
 | `/api/v1/training/{session_id}/turn` | POST | Record training turn |
 | `/api/v1/training/{session_id}/back` | POST | Undo last turn |
 | `/api/v1/training/{session_id}/finish` | POST | Finish + summary |
+
+### Feedback Loop (C3)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/feedback` | POST | Create feedback (insight/plan_step) |
+| `/api/v1/feedback?case_id=...&entity_type=...` | GET | List feedback + aggregates |
 
 ---
 
