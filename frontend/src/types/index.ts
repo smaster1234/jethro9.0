@@ -128,6 +128,45 @@ export interface UploadResponse {
   message: string;
 }
 
+// Witness Types
+export interface WitnessVersion {
+  id: string;
+  witness_id: string;
+  document_id: string;
+  document_name?: string;
+  version_type?: string;
+  version_date?: string;
+  created_at?: string;
+  extra_data?: Record<string, unknown>;
+}
+
+export interface Witness {
+  id: string;
+  case_id: string;
+  name: string;
+  side?: string;
+  created_at?: string;
+  extra_data?: Record<string, unknown>;
+  versions?: WitnessVersion[];
+}
+
+export interface VersionShift {
+  shift_type: string;
+  description: string;
+  similarity?: number;
+  details?: Record<string, unknown>;
+  anchor_a?: EvidenceAnchor;
+  anchor_b?: EvidenceAnchor;
+}
+
+export interface WitnessVersionDiffResponse {
+  witness_id: string;
+  version_a_id: string;
+  version_b_id: string;
+  similarity: number;
+  shifts: VersionShift[];
+}
+
 // Folder Types
 export interface Folder {
   id: string;

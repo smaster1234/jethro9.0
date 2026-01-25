@@ -9,6 +9,7 @@ from .models import (
     Base,
     Firm, User, Team, TeamMember, AdminTeamScope,
     Case, CaseParticipant, CaseTeam,
+    Witness, WitnessVersion,
     Folder,
     Document, DocumentPage, DocumentBlock, DocumentVersion,
     Job, Event,
@@ -25,6 +26,7 @@ __all__ = [
     "Firm", "User", "Team", "TeamMember", "AdminTeamScope",
     # Case Management
     "Case", "CaseParticipant", "CaseTeam",
+    "Witness", "WitnessVersion",
     # Folders
     "Folder",
     # Documents

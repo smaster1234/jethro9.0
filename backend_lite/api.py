@@ -1286,6 +1286,7 @@ def build_claim_outputs(
             party=party,
             role=role,
             author=author,
+            witness_version_id=getattr(claim, "witness_version_id", None),
             locator=locator,
             anchor=anchor,
             features=features
