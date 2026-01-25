@@ -87,3 +87,30 @@ def simulate_plan(plan: Dict[str, Any], persona: str) -> List[Dict[str, Any]]:
             })
 
     return steps_output
+
+
+def simulate_step(step: Dict[str, Any], persona: str, chosen_branch: Optional[str] = None) -> Dict[str, Any]:
+    persona_key = (persona or "cooperative").lower()
+    replies = PERSONA_REPLIES.get(persona_key, PERSONA_REPLIES["cooperative"])
+    step_type = step.get("step_type", "default")
+    reply = replies.get(step_type, replies["default"])
+
+    branch_trigger = None
+    follow_ups: List[str] = []
+    branches = step.get("branches", []) or []
+    if chosen_branch:
+        for branch in branches:
+            if branch.get("trigger") == chosen_branch:
+                branch_trigger = branch.get("trigger")
+                follow_ups = branch.get("follow_up_questions", [])
+                break
+    if not branch_trigger:
+        branch_trigger, follow_ups = _choose_branch(branches, persona_key)
+
+    warnings = _warnings_for_step(step)
+    return {
+        "witness_reply": reply,
+        "chosen_branch_trigger": branch_trigger,
+        "follow_up_questions": follow_ups,
+        "warnings": warnings,
+    }

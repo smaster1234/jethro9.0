@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -30,7 +30,7 @@ import {
   Download,
   ListOrdered,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -59,6 +59,9 @@ import type {
   CrossExamPlanStep,
   WitnessSimulationResponse,
   OrganizationMember,
+  TrainingSession,
+  TrainingTurn,
+  TrainingSummary,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -107,7 +110,7 @@ const anchorFromClaim = (
   };
 };
 
-type Tab = 'documents' | 'analysis' | 'witnesses' | 'notes' | 'team';
+type Tab = 'documents' | 'analysis' | 'witnesses' | 'notes' | 'team' | 'training';
 
 export const CaseDetailPage: React.FC = () => {
   const { caseId } = useParams<{ caseId: string }>();
@@ -221,6 +224,25 @@ export const CaseDetailPage: React.FC = () => {
   const [isAddingParticipant, setIsAddingParticipant] = useState(false);
   const [addParticipantError, setAddParticipantError] = useState('');
 
+  // Training state
+  const [trainingSession, setTrainingSession] = useState<TrainingSession | null>(null);
+  const [trainingTurns, setTrainingTurns] = useState<TrainingTurn[]>([]);
+  const [trainingSummary, setTrainingSummary] = useState<TrainingSummary | null>(null);
+  const [trainingError, setTrainingError] = useState('');
+  const [isStartingTraining, setIsStartingTraining] = useState(false);
+  const [isSendingTrainingTurn, setIsSendingTrainingTurn] = useState(false);
+  const [trainingPersona, setTrainingPersona] = useState('cooperative');
+  const [selectedBranchTrigger, setSelectedBranchTrigger] = useState('');
+
+  const trainingSteps = useMemo(() => {
+    if (!crossExamPlan?.stages) return [];
+    return crossExamPlan.stages.flatMap((stage) =>
+      stage.steps.map((step) => ({ ...step, _stage: stage.stage }))
+    );
+  }, [crossExamPlan]);
+
+  const nextTrainingStep = trainingSteps[trainingTurns.length];
+
   // Document preview state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<DocumentType | null>(null);
@@ -231,6 +253,10 @@ export const CaseDetailPage: React.FC = () => {
     if (caseId) {
       fetchCaseData();
       fetchJobs();
+      setTrainingSession(null);
+      setTrainingTurns([]);
+      setTrainingSummary(null);
+      setTrainingError('');
     }
   }, [caseId]);
 
@@ -455,6 +481,74 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const handleStartTraining = async () => {
+    if (!caseId || !crossExamPlan) return;
+    if (!crossExamPlan.witness_id) {
+      setTrainingError('לא נמצא עד משויך לתכנית החקירה');
+      return;
+    }
+    setIsStartingTraining(true);
+    setTrainingError('');
+    setTrainingSummary(null);
+    setTrainingTurns([]);
+    try {
+      const session = await trainingApi.start(caseId, {
+        plan_id: crossExamPlan.plan_id,
+        witness_id: crossExamPlan.witness_id,
+        persona: trainingPersona,
+      });
+      setTrainingSession(session);
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    } finally {
+      setIsStartingTraining(false);
+    }
+  };
+
+  const handleTrainingTurn = async () => {
+    if (!trainingSession || !nextTrainingStep) return;
+    setIsSendingTrainingTurn(true);
+    setTrainingError('');
+    try {
+      const turn = await trainingApi.turn(trainingSession.session_id, {
+        step_id: nextTrainingStep.id,
+        chosen_branch: selectedBranchTrigger || undefined,
+      });
+      setTrainingTurns((prev) => [...prev, turn]);
+      setSelectedBranchTrigger('');
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    } finally {
+      setIsSendingTrainingTurn(false);
+    }
+  };
+
+  const handleTrainingBack = async () => {
+    if (!trainingSession || trainingTurns.length === 0) return;
+    setTrainingError('');
+    try {
+      const resp = await trainingApi.back(trainingSession.session_id);
+      setTrainingTurns((prev) => prev.slice(0, -1));
+      setTrainingSession((prev) =>
+        prev ? { ...prev, back_remaining: resp.back_remaining } : prev
+      );
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    }
+  };
+
+  const handleTrainingFinish = async () => {
+    if (!trainingSession) return;
+    setTrainingError('');
+    try {
+      const resp = await trainingApi.finish(trainingSession.session_id);
+      setTrainingSummary(resp.summary);
+      setTrainingSession((prev) => (prev ? { ...prev, status: 'finished' } : prev));
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    }
+  };
+
   const handleAddNote = async () => {
     if (!caseId || !newNoteText.trim()) return;
 
@@ -585,6 +679,26 @@ export const CaseDetailPage: React.FC = () => {
     };
     loadPlan();
   }, [selectedRun?.id, analysisResultsTab]);
+
+  useEffect(() => {
+    if (!selectedRun?.id || activeTab !== 'training') {
+      return;
+    }
+    const loadPlan = async () => {
+      setIsLoadingPlan(true);
+      setPlanError('');
+      try {
+        const plan = await crossExamPlanApi.getLatest(selectedRun.id);
+        setCrossExamPlan(plan);
+      } catch (error) {
+        setCrossExamPlan(null);
+        setPlanError(handleApiError(error));
+      } finally {
+        setIsLoadingPlan(false);
+      }
+    };
+    loadPlan();
+  }, [selectedRun?.id, activeTab]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -1070,6 +1184,7 @@ export const CaseDetailPage: React.FC = () => {
           {[
             { id: 'documents', label: 'מסמכים', icon: FileText, count: documents.length },
             { id: 'analysis', label: 'ניתוח', icon: Search, count: analysisRuns.length },
+            { id: 'training', label: 'אימון', icon: Play },
             { id: 'witnesses', label: 'עדים', icon: Users, count: witnesses.length || undefined },
             { id: 'notes', label: 'הערות', icon: StickyNote, count: notes.length || undefined },
             { id: 'team', label: 'צוות', icon: Users, count: participants.length || undefined },
@@ -1879,6 +1994,152 @@ export const CaseDetailPage: React.FC = () => {
                 )}
               </div>
             )}
+          </motion.div>
+        )}
+
+        {activeTab === 'training' && (
+          <motion.div
+            key="training"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
+          >
+            <Card>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-slate-900">אימון חקירה נגדית</h3>
+                  {trainingSession && (
+                    <Badge variant={trainingSession.status === 'active' ? 'primary' : 'neutral'}>
+                      {trainingSession.status === 'active' ? 'פעיל' : 'הסתיים'}
+                    </Badge>
+                  )}
+                </div>
+
+                {trainingError && (
+                  <div className="p-3 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+                    {trainingError}
+                  </div>
+                )}
+
+                {!crossExamPlan && (
+                  <EmptyState
+                    icon={<ListOrdered className="w-10 h-10" />}
+                    title="אין תכנית חקירה זמינה"
+                    description="צרו תכנית חקירה בלשונית הניתוח לפני תחילת אימון."
+                  />
+                )}
+
+                {crossExamPlan && (
+                  <div className="space-y-4">
+                    {!trainingSession && (
+                      <div className="grid grid-cols-2 gap-4 items-end">
+                        <div>
+                          <label className="text-sm text-slate-600">Persona</label>
+                          <select
+                            value={trainingPersona}
+                            onChange={(e) => setTrainingPersona(e.target.value)}
+                            className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                          >
+                            <option value="cooperative">cooperative</option>
+                            <option value="evasive">evasive</option>
+                            <option value="hostile">hostile</option>
+                          </select>
+                        </div>
+                        <Button
+                          onClick={handleStartTraining}
+                          isLoading={isStartingTraining}
+                          leftIcon={<Play className="w-4 h-4" />}
+                          disabled={!crossExamPlan.witness_id}
+                        >
+                          התחל אימון
+                        </Button>
+                      </div>
+                    )}
+
+                    {trainingSession && (
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-600">
+                          Back remaining: {trainingSession.back_remaining}
+                        </div>
+
+                        {trainingTurns.length > 0 && (
+                          <div className="space-y-3">
+                            {trainingTurns.map((turn, idx) => (
+                              <div key={turn.turn_id} className="p-3 rounded-xl border border-slate-200">
+                                <div className="text-xs text-slate-500 mb-1">Turn {idx + 1}</div>
+                                <div className="text-sm font-medium text-slate-900">{turn.question}</div>
+                                <div className="text-sm text-slate-600 mt-1">{turn.witness_reply}</div>
+                                {turn.chosen_branch && (
+                                  <div className="text-xs text-slate-500 mt-1">Branch: {turn.chosen_branch}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {trainingSession.status === 'active' && (
+                          <div className="space-y-3">
+                            {nextTrainingStep ? (
+                              <div className="p-4 rounded-xl bg-slate-50">
+                                <div className="text-xs text-slate-500 mb-1">שאלה הבאה</div>
+                                <div className="text-sm font-medium text-slate-900">{nextTrainingStep.question}</div>
+                                {nextTrainingStep.branches && nextTrainingStep.branches.length > 0 && (
+                                  <div className="mt-3">
+                                    <label className="text-sm text-slate-600">בחר/י הסתעפות</label>
+                                    <select
+                                      value={selectedBranchTrigger}
+                                      onChange={(e) => setSelectedBranchTrigger(e.target.value)}
+                                      className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                                    >
+                                      <option value="">ברירת מחדל</option>
+                                      {nextTrainingStep.branches.map((branch, idx) => (
+                                        <option key={`${branch.trigger}-${idx}`} value={branch.trigger}>
+                                          {branch.trigger}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                                <div className="mt-3 flex gap-2">
+                                  <Button
+                                    onClick={handleTrainingTurn}
+                                    isLoading={isSendingTrainingTurn}
+                                  >
+                                    שלח שאלה
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    onClick={handleTrainingBack}
+                                    disabled={trainingSession.back_remaining <= 0 || trainingTurns.length === 0}
+                                    leftIcon={<RefreshCw className="w-4 h-4" />}
+                                  >
+                                    חזור צעד
+                                  </Button>
+                                  <Button variant="secondary" onClick={handleTrainingFinish}>
+                                    סיים אימון
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-sm text-slate-600">הגעת לסוף התכנית.</div>
+                            )}
+                          </div>
+                        )}
+
+                        {trainingSummary && (
+                          <div className="p-4 rounded-xl border border-slate-200 bg-white">
+                            <div className="text-sm font-medium text-slate-900 mb-2">סיכום אימון</div>
+                            <div className="text-sm text-slate-600">סה״כ תורות: {trainingSummary.total_turns}</div>
+                            <div className="text-sm text-slate-600">אזהרות: {trainingSummary.warnings}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Card>
           </motion.div>
         )}
 

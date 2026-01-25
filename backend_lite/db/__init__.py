@@ -15,8 +15,8 @@ from .models import (
     Document, DocumentPage, DocumentBlock, DocumentVersion,
     Job, Event,
     AnalysisRun, Claim, Issue, IssueLink, Contradiction, Finding,
-    ContradictionInsight, CrossExamPlan,
-    SystemRole, TeamRole, OrganizationRole, InviteStatus, CaseStatus, DocumentParty, DocumentRole,
+    ContradictionInsight, CrossExamPlan, TrainingSession, TrainingTurn,
+    SystemRole, TeamRole, OrganizationRole, InviteStatus, TrainingSessionStatus, CaseStatus, DocumentParty, DocumentRole,
     JobType, JobStatus, EventType, IssueStatus, ContradictionStatus
 )
 from .session import get_db, init_db, get_engine
@@ -37,9 +37,9 @@ __all__ = [
     # Jobs & Events
     "Job", "Event",
     # Analysis
-    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "CrossExamPlan", "Finding",
+    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "CrossExamPlan", "TrainingSession", "TrainingTurn", "Finding",
     # Enums
-    "SystemRole", "TeamRole", "OrganizationRole", "InviteStatus", "CaseStatus", "DocumentParty", "DocumentRole",
+    "SystemRole", "TeamRole", "OrganizationRole", "InviteStatus", "TrainingSessionStatus", "CaseStatus", "DocumentParty", "DocumentRole",
     "JobType", "JobStatus", "EventType", "IssueStatus", "ContradictionStatus",
     # Session
     "get_db", "init_db", "get_engine",

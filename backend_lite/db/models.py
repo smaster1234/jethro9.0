@@ -142,6 +142,13 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class TrainingSessionStatus(str, enum.Enum):
+    """Training session status"""
+    ACTIVE = "active"
+    FINISHED = "finished"
+    CANCELLED = "cancelled"
+
+
 class EventType(str, enum.Enum):
     """Timeline event types"""
     DOCUMENT_ADDED = "document_added"
@@ -867,6 +874,54 @@ class CrossExamPlan(Base):
     case = relationship("Case")
     analysis_run = relationship("AnalysisRun")
     witness = relationship("Witness")
+
+
+class TrainingSession(Base):
+    """Training session for cross-examination practice"""
+    __tablename__ = "training_sessions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(String(36), ForeignKey("cross_exam_plans.id", ondelete="CASCADE"), nullable=False)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="SET NULL"), nullable=True)
+    persona = Column(String(50), nullable=True)
+    status = Column(Enum(TrainingSessionStatus), default=TrainingSessionStatus.ACTIVE, nullable=False)
+    back_remaining = Column(Integer, default=2)
+    summary_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_training_session_case", "case_id"),
+        Index("ix_training_session_plan", "plan_id"),
+    )
+
+    case = relationship("Case")
+    plan = relationship("CrossExamPlan")
+    witness = relationship("Witness")
+    turns = relationship("TrainingTurn", back_populates="session", cascade="all, delete-orphan")
+
+
+class TrainingTurn(Base):
+    """Single turn within a training session"""
+    __tablename__ = "training_turns"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(String(36), ForeignKey("training_sessions.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(String(64), nullable=False)
+    stage = Column(String(50), nullable=True)
+    question = Column(Text, nullable=False)
+    chosen_branch = Column(Text, nullable=True)
+    witness_reply = Column(Text, nullable=True)
+    metadata_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_training_turn_session", "session_id"),
+    )
+
+    session = relationship("TrainingSession", back_populates="turns")
 
 
 class Finding(Base):

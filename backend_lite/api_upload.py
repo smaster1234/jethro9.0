@@ -9,7 +9,7 @@ import os
 import json
 import logging
 import secrets
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,12 @@ from .schemas import (
     OrganizationInviteResponse,
     OrganizationInviteAcceptResponse,
     UserSearchResponse,
+    TrainingStartRequest,
+    TrainingSessionResponse,
+    TrainingTurnRequest,
+    TrainingTurnResponse,
+    TrainingBackResponse,
+    TrainingFinishResponse,
     WitnessCreateRequest,
     WitnessVersionCreateRequest,
     WitnessResponse,
@@ -274,6 +280,22 @@ def _require_case_access(db: Session, auth: AuthContext, case_id: str):
         raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה למשרד זה"})
 
     return case, member
+
+
+def _flatten_plan_steps(plan_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    steps: List[Dict[str, Any]] = []
+    for stage in plan_json.get("stages", []):
+        stage_name = stage.get("stage", "mid")
+        for step in stage.get("steps", []):
+            steps.append({**step, "_stage": stage_name})
+    return steps
+
+
+def _find_plan_step(plan_json: Dict[str, Any], step_id: str) -> Optional[Dict[str, Any]]:
+    for step in _flatten_plan_steps(plan_json):
+        if step.get("id") == step_id:
+            return step
+    return None
 
 
 def get_db_dependency():
@@ -2468,6 +2490,249 @@ async def get_cross_exam_plan(
     except Exception as e:
         logger.exception("Failed to get cross-exam plan")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cases/{case_id}/training/start", response_model=TrainingSessionResponse)
+async def start_training_session(
+    case_id: str,
+    payload: TrainingStartRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Start a training session for a case."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, TrainingSession, TrainingSessionStatus, Witness
+
+        with get_db_session() as db:
+            _require_case_access(db, auth, case_id)
+
+            plan = db.query(CrossExamPlan).filter(
+                CrossExamPlan.id == payload.plan_id,
+                CrossExamPlan.case_id == case_id,
+                CrossExamPlan.firm_id == auth.firm_id,
+            ).first()
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            witness_id = payload.witness_id or plan.witness_id
+            if witness_id:
+                witness = db.query(Witness).filter(
+                    Witness.id == witness_id,
+                    Witness.case_id == case_id,
+                ).first()
+                if not witness:
+                    raise HTTPException(status_code=404, detail="Witness not found")
+
+            session = TrainingSession(
+                firm_id=auth.firm_id,
+                case_id=case_id,
+                plan_id=plan.id,
+                witness_id=witness_id,
+                persona=payload.persona or "cooperative",
+                status=TrainingSessionStatus.ACTIVE,
+                back_remaining=2,
+            )
+            db.add(session)
+            db.flush()
+
+            return TrainingSessionResponse(
+                session_id=session.id,
+                case_id=session.case_id,
+                plan_id=session.plan_id,
+                witness_id=session.witness_id,
+                persona=session.persona,
+                status=session.status.value,
+                back_remaining=session.back_remaining,
+                created_at=session.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to start training session")
+        raise HTTPException(status_code=500, detail="Failed to start training session")
+
+
+@router.post("/training/{session_id}/turn", response_model=TrainingTurnResponse)
+async def training_turn(
+    session_id: str,
+    payload: TrainingTurnRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Record a training turn."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import TrainingSession, TrainingTurn, TrainingSessionStatus, CrossExamPlan
+        from .witness_simulation import simulate_step
+
+        with get_db_session() as db:
+            session = db.query(TrainingSession).filter(
+                TrainingSession.id == session_id,
+                TrainingSession.firm_id == auth.firm_id,
+            ).first()
+            if not session:
+                raise HTTPException(status_code=404, detail="Training session not found")
+
+            _require_case_access(db, auth, session.case_id)
+
+            if session.status != TrainingSessionStatus.ACTIVE:
+                raise HTTPException(status_code=400, detail="Training session is not active")
+
+            plan = db.query(CrossExamPlan).filter(
+                CrossExamPlan.id == session.plan_id
+            ).first()
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            step = _find_plan_step(plan.plan_json or {}, payload.step_id)
+            if not step:
+                raise HTTPException(status_code=404, detail="Plan step not found")
+
+            sim = simulate_step(step, session.persona, payload.chosen_branch)
+            turn = TrainingTurn(
+                session_id=session.id,
+                step_id=payload.step_id,
+                stage=step.get("_stage"),
+                question=step.get("question", ""),
+                chosen_branch=sim.get("chosen_branch_trigger"),
+                witness_reply=sim.get("witness_reply"),
+                metadata_json={
+                    "warnings": sim.get("warnings", []),
+                    "follow_up_questions": sim.get("follow_up_questions", []),
+                },
+            )
+            db.add(turn)
+            db.flush()
+
+            return TrainingTurnResponse(
+                turn_id=turn.id,
+                session_id=session.id,
+                step_id=payload.step_id,
+                stage=turn.stage,
+                question=turn.question,
+                witness_reply=turn.witness_reply,
+                chosen_branch=turn.chosen_branch,
+                follow_up_questions=turn.metadata_json.get("follow_up_questions", []),
+                warnings=turn.metadata_json.get("warnings", []),
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to record training turn")
+        raise HTTPException(status_code=500, detail="Failed to record training turn")
+
+
+@router.post("/training/{session_id}/back", response_model=TrainingBackResponse)
+async def training_back(
+    session_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Undo last training turn (limited)."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import TrainingSession, TrainingTurn, TrainingSessionStatus
+
+        with get_db_session() as db:
+            session = db.query(TrainingSession).filter(
+                TrainingSession.id == session_id,
+                TrainingSession.firm_id == auth.firm_id,
+            ).first()
+            if not session:
+                raise HTTPException(status_code=404, detail="Training session not found")
+
+            _require_case_access(db, auth, session.case_id)
+
+            if session.status != TrainingSessionStatus.ACTIVE:
+                raise HTTPException(status_code=400, detail="Training session is not active")
+            if session.back_remaining <= 0:
+                raise HTTPException(status_code=400, detail="No back steps remaining")
+
+            last_turn = (
+                db.query(TrainingTurn)
+                .filter(TrainingTurn.session_id == session_id)
+                .order_by(TrainingTurn.created_at.desc())
+                .first()
+            )
+            if not last_turn:
+                raise HTTPException(status_code=400, detail="No turns to undo")
+
+            removed_id = last_turn.id
+            db.delete(last_turn)
+            session.back_remaining -= 1
+
+            return TrainingBackResponse(
+                session_id=session.id,
+                back_remaining=session.back_remaining,
+                removed_turn_id=removed_id,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to undo training turn")
+        raise HTTPException(status_code=500, detail="Failed to undo training turn")
+
+
+@router.post("/training/{session_id}/finish", response_model=TrainingFinishResponse)
+async def finish_training(
+    session_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Finish a training session and return summary."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import TrainingSession, TrainingTurn, TrainingSessionStatus
+
+        with get_db_session() as db:
+            session = db.query(TrainingSession).filter(
+                TrainingSession.id == session_id,
+                TrainingSession.firm_id == auth.firm_id,
+            ).first()
+            if not session:
+                raise HTTPException(status_code=404, detail="Training session not found")
+
+            _require_case_access(db, auth, session.case_id)
+
+            turns = (
+                db.query(TrainingTurn)
+                .filter(TrainingTurn.session_id == session_id)
+                .order_by(TrainingTurn.created_at.asc())
+                .all()
+            )
+
+            if session.status == TrainingSessionStatus.FINISHED and session.summary_json:
+                return TrainingFinishResponse(session_id=session.id, summary=session.summary_json)
+
+            stage_counts: Dict[str, int] = {}
+            branch_counts: Dict[str, int] = {}
+            warning_count = 0
+
+            for turn in turns:
+                if turn.stage:
+                    stage_counts[turn.stage] = stage_counts.get(turn.stage, 0) + 1
+                if turn.chosen_branch:
+                    branch_counts[turn.chosen_branch] = branch_counts.get(turn.chosen_branch, 0) + 1
+                warning_count += len(turn.metadata_json.get("warnings", []))
+
+            summary = {
+                "total_turns": len(turns),
+                "stages": stage_counts,
+                "branches": branch_counts,
+                "warnings": warning_count,
+            }
+
+            session.status = TrainingSessionStatus.FINISHED
+            session.finished_at = datetime.utcnow()
+            session.summary_json = summary
+
+            return TrainingFinishResponse(session_id=session.id, summary=summary)
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to finish training session")
+        raise HTTPException(status_code=500, detail="Failed to finish training session")
 
 
 @router.post("/analysis-runs/{run_id}/witness-simulation", response_model=WitnessSimulationResponse)

@@ -410,6 +410,55 @@ class UserSearchResponse(BaseModel):
 
 
 # =============================================================================
+# INPUT/OUTPUT SCHEMAS - Training (C1)
+# =============================================================================
+
+class TrainingStartRequest(BaseModel):
+    plan_id: str = Field(..., description="Cross-exam plan ID")
+    witness_id: Optional[str] = Field(None, description="Witness ID")
+    persona: Optional[str] = Field("cooperative", description="Persona: cooperative/evasive/hostile")
+
+
+class TrainingSessionResponse(BaseModel):
+    session_id: str
+    case_id: str
+    plan_id: str
+    witness_id: Optional[str] = None
+    persona: Optional[str] = None
+    status: str
+    back_remaining: int
+    created_at: Optional[datetime] = None
+
+
+class TrainingTurnRequest(BaseModel):
+    step_id: str = Field(..., description="Plan step ID")
+    chosen_branch: Optional[str] = Field(None, description="Chosen branch trigger")
+
+
+class TrainingTurnResponse(BaseModel):
+    turn_id: str
+    session_id: str
+    step_id: str
+    stage: Optional[str] = None
+    question: str
+    witness_reply: Optional[str] = None
+    chosen_branch: Optional[str] = None
+    follow_up_questions: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class TrainingBackResponse(BaseModel):
+    session_id: str
+    back_remaining: int
+    removed_turn_id: Optional[str] = None
+
+
+class TrainingFinishResponse(BaseModel):
+    session_id: str
+    summary: Dict[str, Any]
+
+
+# =============================================================================
 # INPUT SCHEMAS - Witnesses
 # =============================================================================
 

@@ -266,6 +266,37 @@ export interface WitnessSimulationResponse {
   steps: WitnessSimulationStep[];
 }
 
+// Training Types (C1)
+export interface TrainingSession {
+  session_id: string;
+  case_id: string;
+  plan_id: string;
+  witness_id?: string | null;
+  persona?: string | null;
+  status: 'active' | 'finished' | 'cancelled';
+  back_remaining: number;
+  created_at?: string;
+}
+
+export interface TrainingTurn {
+  turn_id: string;
+  session_id: string;
+  step_id: string;
+  stage?: string | null;
+  question: string;
+  witness_reply?: string | null;
+  chosen_branch?: string | null;
+  follow_up_questions?: string[];
+  warnings?: string[];
+}
+
+export interface TrainingSummary {
+  total_turns: number;
+  stages: Record<string, number>;
+  branches: Record<string, number>;
+  warnings: number;
+}
+
 // Folder Types
 export interface Folder {
   id: string;
