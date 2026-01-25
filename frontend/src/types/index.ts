@@ -64,6 +64,39 @@ export interface TeamMember {
   added_at: string;
 }
 
+// Organization Types (B1)
+export interface Organization {
+  id: string;
+  firm_id: string;
+  name: string;
+  created_at?: string;
+}
+
+export interface OrganizationMember {
+  user_id: string;
+  email: string;
+  name: string;
+  role: 'viewer' | 'intern' | 'lawyer' | 'owner';
+  added_at?: string;
+}
+
+export interface OrganizationInvite {
+  id: string;
+  organization_id: string;
+  email: string;
+  role: 'viewer' | 'intern' | 'lawyer' | 'owner';
+  status: 'pending' | 'accepted' | 'expired' | 'revoked';
+  expires_at: string;
+  token?: string;
+  created_at?: string;
+}
+
+export interface UserSearchResult {
+  id: string;
+  email: string;
+  name: string;
+}
+
 // Case Types
 export interface Case {
   id: string;
@@ -77,6 +110,7 @@ export interface Case {
   status?: 'active' | 'closed' | 'pending';
   tags?: string[];
   firm_id: string;
+  organization_id?: string;
   document_count?: number;
   created_at: string;
   updated_at?: string;
@@ -90,6 +124,7 @@ export interface CreateCaseRequest {
   opponent_name?: string;
   court?: string;
   case_number?: string;
+  organization_id?: string;
 }
 
 // Document Types

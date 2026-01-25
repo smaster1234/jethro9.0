@@ -27,12 +27,10 @@ import {
   Save,
   Users,
   UserPlus,
-  Mail,
   Download,
   ListOrdered,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi } from '../api';
-import { usersApi } from '../api/users';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -60,6 +58,7 @@ import type {
   CrossExamPlanResponse,
   CrossExamPlanStep,
   WitnessSimulationResponse,
+  OrganizationMember,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -215,7 +214,9 @@ export const CaseDetailPage: React.FC = () => {
   const [participants, setParticipants] = useState<CaseParticipant[]>([]);
   const [isLoadingParticipants, setIsLoadingParticipants] = useState(false);
   const [showAddParticipantModal, setShowAddParticipantModal] = useState(false);
-  const [newParticipantEmail, setNewParticipantEmail] = useState('');
+  const [orgMembers, setOrgMembers] = useState<OrganizationMember[]>([]);
+  const [isLoadingOrgMembers, setIsLoadingOrgMembers] = useState(false);
+  const [selectedParticipantId, setSelectedParticipantId] = useState('');
   const [newParticipantRole, setNewParticipantRole] = useState('');
   const [isAddingParticipant, setIsAddingParticipant] = useState(false);
   const [addParticipantError, setAddParticipantError] = useState('');
@@ -266,6 +267,25 @@ export const CaseDetailPage: React.FC = () => {
       fetchParticipants();
     }
   }, [activeTab, caseId]);
+
+  useEffect(() => {
+    if (!showAddParticipantModal || !caseData?.organization_id) {
+      return;
+    }
+    const loadMembers = async () => {
+      setIsLoadingOrgMembers(true);
+      setAddParticipantError('');
+      try {
+        const list = await orgsApi.listMembers(caseData.organization_id);
+        setOrgMembers(list);
+      } catch (error) {
+        setAddParticipantError(handleApiError(error));
+      } finally {
+        setIsLoadingOrgMembers(false);
+      }
+    };
+    loadMembers();
+  }, [showAddParticipantModal, caseData?.organization_id]);
 
   // Poll for job status
   useEffect(() => {
@@ -414,33 +434,22 @@ export const CaseDetailPage: React.FC = () => {
   };
 
   const handleAddParticipant = async () => {
-    if (!caseId || !newParticipantEmail.trim()) return;
+    if (!caseId || !selectedParticipantId) return;
 
     setIsAddingParticipant(true);
     setAddParticipantError('');
 
     try {
-      // First lookup user by email
-      const user = await usersApi.lookupByEmail(newParticipantEmail.trim());
+      await casesApi.addParticipant(caseId, selectedParticipantId, newParticipantRole || undefined);
 
-      // Then add as participant
-      await casesApi.addParticipant(caseId, user.id, newParticipantRole || undefined);
-
-      // Refresh participants list
       await fetchParticipants();
 
-      // Close modal and reset
       setShowAddParticipantModal(false);
-      setNewParticipantEmail('');
+      setSelectedParticipantId('');
       setNewParticipantRole('');
     } catch (error) {
       console.error('Failed to add participant:', error);
-      const errorMessage = handleApiError(error);
-      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
-        setAddParticipantError('משתמש עם כתובת דוא״ל זו לא נמצא במערכת');
-      } else {
-        setAddParticipantError(errorMessage);
-      }
+      setAddParticipantError(handleApiError(error));
     } finally {
       setIsAddingParticipant(false);
     }
@@ -2122,12 +2131,12 @@ export const CaseDetailPage: React.FC = () => {
         isOpen={showAddParticipantModal}
         onClose={() => {
           setShowAddParticipantModal(false);
-          setNewParticipantEmail('');
+          setSelectedParticipantId('');
           setNewParticipantRole('');
           setAddParticipantError('');
         }}
         title="הוספת משתתף לתיק"
-        description="הזינו את כתובת הדוא״ל של המשתמש להוספה לתיק"
+        description="בחרו חבר/ת משרד מהרשימה"
         size="md"
       >
         <div className="space-y-4">
@@ -2137,15 +2146,22 @@ export const CaseDetailPage: React.FC = () => {
             </div>
           )}
 
-          <Input
-            label="כתובת דוא״ל"
-            type="email"
-            value={newParticipantEmail}
-            onChange={(e) => setNewParticipantEmail(e.target.value)}
-            placeholder="user@example.com"
-            leftIcon={<Mail className="w-5 h-5" />}
-            required
-          />
+          <div>
+            <label className="text-sm text-slate-600">חבר/ת משרד</label>
+            <select
+              value={selectedParticipantId}
+              onChange={(e) => setSelectedParticipantId(e.target.value)}
+              className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              disabled={isLoadingOrgMembers}
+            >
+              <option value="">בחר/י משתמש</option>
+              {orgMembers.map((member) => (
+                <option key={member.user_id} value={member.user_id}>
+                  {member.name} · {member.email} ({member.role})
+                </option>
+              ))}
+            </select>
+          </div>
 
           <Input
             label="תפקיד (אופציונלי)"
@@ -2159,7 +2175,7 @@ export const CaseDetailPage: React.FC = () => {
               onClick={handleAddParticipant}
               className="flex-1"
               isLoading={isAddingParticipant}
-              disabled={!newParticipantEmail.trim()}
+              disabled={!selectedParticipantId}
             >
               הוסף לתיק
             </Button>
@@ -2167,7 +2183,7 @@ export const CaseDetailPage: React.FC = () => {
               variant="secondary"
               onClick={() => {
                 setShowAddParticipantModal(false);
-                setNewParticipantEmail('');
+                setSelectedParticipantId('');
                 setNewParticipantRole('');
               }}
             >
