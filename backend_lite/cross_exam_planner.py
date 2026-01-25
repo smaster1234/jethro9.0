@@ -139,15 +139,17 @@ def build_cross_exam_plan(
             counters=(insight.counters_json if insight else []) or [],
         )
 
+        sequence = cross_exam.get("sequence", []) or []
         for idx, template in enumerate(question_set[: len(STEP_TYPES)]):
             question = _fill_template(template, variables)
             step_type = STEP_TYPES[idx] if idx < len(STEP_TYPES) else "follow_up"
+            title = sequence[idx] if idx < len(sequence) else step_type
             stages[stage].append({
                 "id": f"step_{uuid.uuid4().hex[:8]}",
                 "contradiction_id": contr.id,
                 "stage": stage,
                 "step_type": step_type,
-                "title": cross_exam.get("sequence", [step_type])[idx] if cross_exam.get("sequence") else step_type,
+                "title": title,
                 "question": question,
                 "purpose": None,
                 "anchors": anchors,
