@@ -4322,16 +4322,22 @@ async def api_http_exception_handler(request: Request, exc: HTTPException):
         return await http_exception_handler(request, exc)
 
     detail = _sanitize_error_detail(exc.detail)
-    if isinstance(detail, str) and detail:
+    if isinstance(detail, dict):
+        message = detail.get("message") or "שגיאה בבקשה"
+        details = detail.get("details")
+        code = detail.get("code") or _error_code_for_status(exc.status_code)
+    elif isinstance(detail, str) and detail:
         message = detail
         details = None
+        code = _error_code_for_status(exc.status_code)
     else:
         message = "שגיאה בבקשה"
         details = detail
+        code = _error_code_for_status(exc.status_code)
 
     return JSONResponse(
         status_code=exc.status_code,
-        content=_build_error_payload(_error_code_for_status(exc.status_code), message, details),
+        content=_build_error_payload(code, message, details),
     )
 
 

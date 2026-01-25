@@ -188,7 +188,15 @@ def update_job_progress(progress: int, message: str = None):
 
 
 def _sanitize_error_message(error: Exception, fallback: str = "שגיאה בעיבוד המשימה") -> str:
-    message = str(error) if error else fallback
+    try:
+        from ..ingest.base import ParserError
+    except Exception:
+        ParserError = None  # type: ignore
+
+    if ParserError and isinstance(error, ParserError):
+        message = getattr(error, "user_message", fallback)
+    else:
+        message = str(error) if error else fallback
     compact = " ".join(message.split())
     if not compact:
         compact = fallback

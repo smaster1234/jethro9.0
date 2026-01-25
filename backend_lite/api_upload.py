@@ -662,6 +662,7 @@ async def upload_documents(
                 # text/blocks immediately, making the document READY for analysis.
                 if provider == "local":
                     try:
+                        from .ingest.base import ParserError
                         doc.status = DocumentStatus.PROCESSING
                         db.flush()
 
@@ -701,10 +702,16 @@ async def upload_documents(
                                     locator_json=block.to_locator_json(doc_id=doc.id),
                                 )
                                 db.add(db_block)
-                    except Exception as e:
+                    except ParserError as e:
                         doc.status = DocumentStatus.FAILED
                         doc.extra_data = doc.extra_data or {}
-                        doc.extra_data["error"] = str(e)
+                        doc.extra_data["error"] = e.to_dict()
+                        logger.warning("Inline parse failed: %s", e.code)
+                        raise HTTPException(status_code=400, detail=e.to_dict())
+                    except Exception:
+                        doc.status = DocumentStatus.FAILED
+                        doc.extra_data = doc.extra_data or {}
+                        doc.extra_data["error"] = "שגיאה בעיבוד המסמך"
                         logger.exception("Inline parse failed")
                 else:
                     # Enqueue parsing job for shared storage backends (S3, etc.)
