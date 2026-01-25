@@ -86,7 +86,6 @@ def _seed_training_data():
             case_id=case.id,
             name="Witness A",
             side="ours",
-            created_by_user_id=user.id,
         )
         db.add(witness)
         db.flush()
