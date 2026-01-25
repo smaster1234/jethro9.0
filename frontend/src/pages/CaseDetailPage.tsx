@@ -30,7 +30,7 @@ import {
   Download,
   ListOrdered,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -62,6 +62,7 @@ import type {
   TrainingSession,
   TrainingTurn,
   TrainingSummary,
+  EntityUsageSummary,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -77,6 +78,46 @@ const flattenCrossExamQuestions = (
   return (questions as CrossExamQuestionsOutput[]).flatMap(
     (set) => set.questions || []
   );
+};
+
+const formatUsageDate = (value?: string) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('he-IL');
+};
+
+const buildUsageBadge = (summary?: EntityUsageSummary) => {
+  if (!summary) return null;
+  const usage = summary.usage || {};
+  const order = ['export', 'training', 'plan'] as const;
+  const labels: Record<string, string> = {
+    export: 'נכלל בייצוא',
+    training: 'שומש באימון',
+    plan: 'נכלל בתכנית',
+  };
+  const variants: Record<string, string> = {
+    export: 'primary',
+    training: 'warning',
+    plan: 'neutral',
+  };
+
+  const tooltip = [
+    usage.export ? `ייצוא: ${formatUsageDate(usage.export)}` : null,
+    usage.training ? `אימון: ${formatUsageDate(usage.training)}` : null,
+    usage.plan ? `תכנית: ${formatUsageDate(usage.plan)}` : null,
+  ].filter(Boolean).join('\n');
+
+  for (const key of order) {
+    if (usage[key]) {
+      return (
+        <Badge variant={variants[key] as any} title={tooltip}>
+          {labels[key]}
+        </Badge>
+      );
+    }
+  }
+  return null;
 };
 
 const toEvidenceAnchor = (
@@ -234,6 +275,9 @@ export const CaseDetailPage: React.FC = () => {
   const [trainingPersona, setTrainingPersona] = useState('cooperative');
   const [selectedBranchTrigger, setSelectedBranchTrigger] = useState('');
 
+  // Usage tracking
+  const [usageMap, setUsageMap] = useState<Record<string, EntityUsageSummary>>({});
+
   const trainingSteps = useMemo(() => {
     if (!crossExamPlan?.stages) return [];
     return crossExamPlan.stages.flatMap((stage) =>
@@ -242,6 +286,29 @@ export const CaseDetailPage: React.FC = () => {
   }, [crossExamPlan]);
 
   const nextTrainingStep = trainingSteps[trainingTurns.length];
+
+  const usageKey = useCallback((entityType: string, entityId: string) => {
+    return `${entityType}:${entityId}`;
+  }, []);
+
+  const getUsageSummary = useCallback((entityType: string, entityId?: string | null) => {
+    if (!entityId) return undefined;
+    return usageMap[usageKey(entityType, entityId)];
+  }, [usageMap, usageKey]);
+
+  const fetchUsage = useCallback(async () => {
+    if (!caseId) return;
+    try {
+      const list = await usageApi.list(caseId);
+      const map: Record<string, EntityUsageSummary> = {};
+      list.forEach((item) => {
+        map[usageKey(item.entity_type, item.entity_id)] = item;
+      });
+      setUsageMap(map);
+    } catch (error) {
+      console.error('Failed to fetch usage:', error);
+    }
+  }, [caseId, usageKey]);
 
   // Document preview state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -498,6 +565,7 @@ export const CaseDetailPage: React.FC = () => {
         persona: trainingPersona,
       });
       setTrainingSession(session);
+      await fetchUsage();
     } catch (error) {
       setTrainingError(handleApiError(error));
     } finally {
@@ -516,6 +584,7 @@ export const CaseDetailPage: React.FC = () => {
       });
       setTrainingTurns((prev) => [...prev, turn]);
       setSelectedBranchTrigger('');
+      await fetchUsage();
     } catch (error) {
       setTrainingError(handleApiError(error));
     } finally {
@@ -699,6 +768,13 @@ export const CaseDetailPage: React.FC = () => {
     };
     loadPlan();
   }, [selectedRun?.id, activeTab]);
+
+  useEffect(() => {
+    if (!caseId) return;
+    if (activeTab === 'analysis' || activeTab === 'training') {
+      fetchUsage();
+    }
+  }, [caseId, activeTab, fetchUsage]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -891,6 +967,7 @@ export const CaseDetailPage: React.FC = () => {
     try {
       const plan = await crossExamPlanApi.generate(selectedRun.id, {});
       setCrossExamPlan(plan);
+      await fetchUsage();
     } catch (error) {
       setPlanError(handleApiError(error));
     } finally {
@@ -930,6 +1007,7 @@ export const CaseDetailPage: React.FC = () => {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      await fetchUsage();
     } catch (error) {
       setExportError(handleApiError(error));
     }
@@ -1827,6 +1905,9 @@ export const CaseDetailPage: React.FC = () => {
                                     index={index}
                                     onShowEvidence={handleShowEvidence}
                                     insight={insightsByContradiction[contradiction.id || '']}
+                                    usageSummary={
+                                      contradiction.id ? getUsageSummary('insight', contradiction.id) : undefined
+                                    }
                                   />
                                 ))}
                               </>
@@ -1971,6 +2052,7 @@ export const CaseDetailPage: React.FC = () => {
                                           key={step.id}
                                           step={step}
                                           onShowEvidence={handleShowEvidenceAnchors}
+                                          usageSummary={getUsageSummary('plan_step', step.id)}
                                         />
                                       ))}
                                     </div>
@@ -3278,17 +3360,21 @@ const WitnessCard: React.FC<{
 const PlanStepCard: React.FC<{
   step: CrossExamPlanStep;
   onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
-}> = ({ step, onShowEvidence }) => {
+  usageSummary?: EntityUsageSummary;
+}> = ({ step, onShowEvidence, usageSummary }) => {
   const anchors = step.anchors || [];
   const left = anchors[0] || null;
   const right = anchors[1] || null;
   const [showBranches, setShowBranches] = useState(false);
+
+  const usageBadge = buildUsageBadge(usageSummary);
 
   return (
     <div className="border border-slate-200 rounded-xl p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Badge variant="neutral">{step.step_type}</Badge>
+          {usageBadge}
           <span className="text-sm font-medium text-slate-900">{step.title}</span>
         </div>
         {step.do_not_ask_flag && (
@@ -3347,7 +3433,8 @@ const ContradictionCard: React.FC<{
   index: number;
   onShowEvidence: (contradiction: Contradiction) => void;
   insight?: ContradictionInsight;
-}> = ({ contradiction, index, onShowEvidence, insight }) => {
+  usageSummary?: EntityUsageSummary;
+}> = ({ contradiction, index, onShowEvidence, insight, usageSummary }) => {
   const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -3423,6 +3510,8 @@ const ContradictionCard: React.FC<{
     return `${Math.round(value * 100)}%`;
   };
 
+  const usageBadge = buildUsageBadge(usageSummary);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -3437,6 +3526,7 @@ const ContradictionCard: React.FC<{
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
             <div className="flex items-center gap-2">
+              {usageBadge}
               <Badge variant={getSeverityColor(severity) as any}>
                 {getSeverityLabel(severity)}
               </Badge>

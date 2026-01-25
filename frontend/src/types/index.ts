@@ -297,6 +297,13 @@ export interface TrainingSummary {
   warnings: number;
 }
 
+export interface EntityUsageSummary {
+  entity_type: string;
+  entity_id: string;
+  usage: Record<string, string>;
+  latest_used_at?: string | null;
+}
+
 // Folder Types
 export interface Folder {
   id: string;
