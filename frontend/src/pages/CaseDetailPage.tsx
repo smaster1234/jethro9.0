@@ -29,8 +29,10 @@ import {
   UserPlus,
   Download,
   ListOrdered,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi, feedbackApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -63,6 +65,7 @@ import type {
   TrainingTurn,
   TrainingSummary,
   EntityUsageSummary,
+  FeedbackAggregate,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -116,6 +119,25 @@ const buildUsageBadge = (summary?: EntityUsageSummary) => {
         </Badge>
       );
     }
+  }
+  return null;
+};
+
+const feedbackRank = (counts?: Record<string, number>) => {
+  if (!counts) return 0;
+  if ((counts.excellent || 0) >= 2) return 1;
+  if ((counts.too_risky || 0) >= 2) return -1;
+  return 0;
+};
+
+const buildFeedbackTag = (summary?: FeedbackAggregate) => {
+  if (!summary) return null;
+  const counts = summary.counts || {};
+  if ((counts.excellent || 0) >= 2) {
+    return <Badge variant="primary">מעולה במשרד</Badge>;
+  }
+  if ((counts.too_risky || 0) >= 2) {
+    return <Badge variant="danger">מסוכן מדי</Badge>;
   }
   return null;
 };
@@ -278,6 +300,8 @@ export const CaseDetailPage: React.FC = () => {
   // Usage tracking
   const [usageMap, setUsageMap] = useState<Record<string, EntityUsageSummary>>({});
 
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, FeedbackAggregate>>({});
+
   const trainingSteps = useMemo(() => {
     if (!crossExamPlan?.stages) return [];
     return crossExamPlan.stages.flatMap((stage) =>
@@ -309,6 +333,46 @@ export const CaseDetailPage: React.FC = () => {
       console.error('Failed to fetch usage:', error);
     }
   }, [caseId, usageKey]);
+
+  const getFeedbackSummary = useCallback((entityType: string, entityId?: string | null) => {
+    if (!entityId) return undefined;
+    return feedbackMap[usageKey(entityType, entityId)];
+  }, [feedbackMap, usageKey]);
+
+  const fetchFeedback = useCallback(async () => {
+    if (!caseId) return;
+    try {
+      const result = await feedbackApi.list(caseId);
+      const map: Record<string, FeedbackAggregate> = {};
+      result.aggregates.forEach((item) => {
+        map[usageKey(item.entity_type, item.entity_id)] = item;
+      });
+      setFeedbackMap(map);
+    } catch (error) {
+      console.error('Failed to fetch feedback:', error);
+    }
+  }, [caseId, usageKey]);
+
+  const handleSubmitFeedback = useCallback(async (
+    entityType: 'insight' | 'plan_step',
+    entityId: string,
+    label: 'worked' | 'not_worked' | 'too_risky' | 'excellent',
+    note?: string,
+  ) => {
+    if (!caseId || !entityId) return;
+    try {
+      await feedbackApi.create({
+        case_id: caseId,
+        entity_type: entityType,
+        entity_id: entityId,
+        label,
+        note,
+      });
+      await fetchFeedback();
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+    }
+  }, [caseId, fetchFeedback]);
 
   // Document preview state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -773,8 +837,9 @@ export const CaseDetailPage: React.FC = () => {
     if (!caseId) return;
     if (activeTab === 'analysis' || activeTab === 'training') {
       fetchUsage();
+      fetchFeedback();
     }
-  }, [caseId, activeTab, fetchUsage]);
+  }, [caseId, activeTab, fetchUsage, fetchFeedback]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -1858,6 +1923,20 @@ export const CaseDetailPage: React.FC = () => {
                               return true;
                             });
 
+                            const sorted = filtered
+                              .map((item, idx) => ({
+                                item,
+                                idx,
+                                rank: feedbackRank(getFeedbackSummary('insight', item.id)?.counts),
+                              }))
+                              .sort((a, b) => {
+                                if (a.rank !== b.rank) {
+                                  return b.rank - a.rank;
+                                }
+                                return a.idx - b.idx;
+                              })
+                              .map((row) => row.item);
+
                             if (!selectedRun.contradictions || selectedRun.contradictions.length === 0) {
                               return (
                                 <Card>
@@ -1893,12 +1972,12 @@ export const CaseDetailPage: React.FC = () => {
                             return (
                               <>
                                 <p className="text-sm text-slate-500">
-                                  מציג {filtered.length} מתוך {selectedRun.contradictions.length} סתירות
+                                  מציג {sorted.length} מתוך {selectedRun.contradictions.length} סתירות
                                 </p>
                                 {isLoadingInsights && (
                                   <div className="text-xs text-slate-400">טוען דירוג תובנות...</div>
                                 )}
-                                {filtered.map((contradiction, index) => (
+                                {sorted.map((contradiction, index) => (
                                   <ContradictionCard
                                     key={contradiction.id || index}
                                     contradiction={contradiction}
@@ -1908,6 +1987,10 @@ export const CaseDetailPage: React.FC = () => {
                                     usageSummary={
                                       contradiction.id ? getUsageSummary('insight', contradiction.id) : undefined
                                     }
+                                    feedbackSummary={
+                                      contradiction.id ? getFeedbackSummary('insight', contradiction.id) : undefined
+                                    }
+                                    onFeedback={handleSubmitFeedback}
                                   />
                                 ))}
                               </>
@@ -2046,15 +2129,29 @@ export const CaseDetailPage: React.FC = () => {
                                         {stage.steps.length} צעדים
                                       </Badge>
                                     </div>
-                                    <div className="space-y-3">
-                                      {stage.steps.map((step) => (
-                                        <PlanStepCard
-                                          key={step.id}
-                                          step={step}
-                                          onShowEvidence={handleShowEvidenceAnchors}
-                                          usageSummary={getUsageSummary('plan_step', step.id)}
-                                        />
-                                      ))}
+                                  <div className="space-y-3">
+                                      {stage.steps
+                                        .map((step, idx) => ({
+                                          step,
+                                          idx,
+                                          rank: feedbackRank(getFeedbackSummary('plan_step', step.id)?.counts),
+                                        }))
+                                        .sort((a, b) => {
+                                          if (a.rank !== b.rank) {
+                                            return b.rank - a.rank;
+                                          }
+                                          return a.idx - b.idx;
+                                        })
+                                        .map(({ step }) => (
+                                          <PlanStepCard
+                                            key={step.id}
+                                            step={step}
+                                            onShowEvidence={handleShowEvidenceAnchors}
+                                            usageSummary={getUsageSummary('plan_step', step.id)}
+                                            feedbackSummary={getFeedbackSummary('plan_step', step.id)}
+                                            onFeedback={handleSubmitFeedback}
+                                          />
+                                        ))}
                                     </div>
                                   </div>
                                 </Card>
@@ -3361,13 +3458,17 @@ const PlanStepCard: React.FC<{
   step: CrossExamPlanStep;
   onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
   usageSummary?: EntityUsageSummary;
-}> = ({ step, onShowEvidence, usageSummary }) => {
+  feedbackSummary?: FeedbackAggregate;
+  onFeedback?: (entityType: 'insight' | 'plan_step', entityId: string, label: 'worked' | 'not_worked' | 'too_risky' | 'excellent', note?: string) => void;
+}> = ({ step, onShowEvidence, usageSummary, feedbackSummary, onFeedback }) => {
   const anchors = step.anchors || [];
   const left = anchors[0] || null;
   const right = anchors[1] || null;
   const [showBranches, setShowBranches] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState<'worked' | 'not_worked' | 'too_risky' | 'excellent'>('worked');
 
   const usageBadge = buildUsageBadge(usageSummary);
+  const feedbackTag = buildFeedbackTag(feedbackSummary);
 
   return (
     <div className="border border-slate-200 rounded-xl p-3 space-y-2">
@@ -3375,6 +3476,7 @@ const PlanStepCard: React.FC<{
         <div className="flex items-center gap-2">
           <Badge variant="neutral">{step.step_type}</Badge>
           {usageBadge}
+          {feedbackTag}
           <span className="text-sm font-medium text-slate-900">{step.title}</span>
         </div>
         {step.do_not_ask_flag && (
@@ -3416,6 +3518,41 @@ const PlanStepCard: React.FC<{
             ))}
         </div>
       )}
+      {onFeedback && step.id && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => onFeedback('plan_step', step.id, 'worked')}
+          >
+            <ThumbsUp className="w-4 h-4" />
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={() => onFeedback('plan_step', step.id, 'not_worked')}
+          >
+            <ThumbsDown className="w-4 h-4" />
+          </Button>
+          <select
+            value={selectedLabel}
+            onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)}
+            className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs"
+          >
+            <option value="worked">worked</option>
+            <option value="not_worked">not_worked</option>
+            <option value="too_risky">too_risky</option>
+            <option value="excellent">excellent</option>
+          </select>
+          <Button
+            size="xs"
+            variant="secondary"
+            onClick={() => onFeedback('plan_step', step.id, selectedLabel)}
+          >
+            שמור
+          </Button>
+        </div>
+      )}
       {(left || right) && (
         <div className="flex justify-end">
           <Button size="sm" variant="secondary" onClick={() => onShowEvidence(left, right)}>
@@ -3434,7 +3571,9 @@ const ContradictionCard: React.FC<{
   onShowEvidence: (contradiction: Contradiction) => void;
   insight?: ContradictionInsight;
   usageSummary?: EntityUsageSummary;
-}> = ({ contradiction, index, onShowEvidence, insight, usageSummary }) => {
+  feedbackSummary?: FeedbackAggregate;
+  onFeedback?: (entityType: 'insight' | 'plan_step', entityId: string, label: 'worked' | 'not_worked' | 'too_risky' | 'excellent', note?: string) => void;
+}> = ({ contradiction, index, onShowEvidence, insight, usageSummary, feedbackSummary, onFeedback }) => {
   const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -3511,6 +3650,8 @@ const ContradictionCard: React.FC<{
   };
 
   const usageBadge = buildUsageBadge(usageSummary);
+  const feedbackTag = buildFeedbackTag(feedbackSummary);
+  const [selectedLabel, setSelectedLabel] = useState<'worked' | 'not_worked' | 'too_risky' | 'excellent'>('worked');
 
   return (
     <motion.div
@@ -3527,6 +3668,7 @@ const ContradictionCard: React.FC<{
             </div>
             <div className="flex items-center gap-2">
               {usageBadge}
+              {feedbackTag}
               <Badge variant={getSeverityColor(severity) as any}>
                 {getSeverityLabel(severity)}
               </Badge>
@@ -3623,6 +3765,42 @@ const ContradictionCard: React.FC<{
                 onClick={() => onShowEvidence(contradiction)}
               >
                 השווה ראיות
+              </Button>
+            </div>
+          )}
+
+          {onFeedback && contradiction.id && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => onFeedback('insight', contradiction.id as string, 'worked')}
+              >
+                <ThumbsUp className="w-4 h-4" />
+              </Button>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => onFeedback('insight', contradiction.id as string, 'not_worked')}
+              >
+                <ThumbsDown className="w-4 h-4" />
+              </Button>
+              <select
+                value={selectedLabel}
+                onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)}
+                className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs"
+              >
+                <option value="worked">worked</option>
+                <option value="not_worked">not_worked</option>
+                <option value="too_risky">too_risky</option>
+                <option value="excellent">excellent</option>
+              </select>
+              <Button
+                size="xs"
+                variant="secondary"
+                onClick={() => onFeedback('insight', contradiction.id as string, selectedLabel)}
+              >
+                שמור
               </Button>
             </div>
           )}

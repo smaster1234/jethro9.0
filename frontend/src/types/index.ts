@@ -304,6 +304,30 @@ export interface EntityUsageSummary {
   latest_used_at?: string | null;
 }
 
+export interface FeedbackItem {
+  id: string;
+  org_id?: string | null;
+  case_id: string;
+  entity_type: 'insight' | 'plan_step';
+  entity_id: string;
+  label: 'worked' | 'not_worked' | 'too_risky' | 'excellent';
+  note?: string | null;
+  created_at?: string;
+  created_by: string;
+}
+
+export interface FeedbackAggregate {
+  entity_type: 'insight' | 'plan_step';
+  entity_id: string;
+  counts: Record<string, number>;
+  latest_at?: string;
+}
+
+export interface FeedbackListResponse {
+  items: FeedbackItem[];
+  aggregates: FeedbackAggregate[];
+}
+
 // Folder Types
 export interface Folder {
   id: string;
