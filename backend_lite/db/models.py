@@ -732,6 +732,36 @@ class Contradiction(Base):
 
     # Relationships
     analysis_run = relationship("AnalysisRun", back_populates="contradictions")
+    insight = relationship("ContradictionInsight", back_populates="contradiction", uselist=False, cascade="all, delete-orphan")
+
+
+class ContradictionInsight(Base):
+    """Derived insight for contradiction scoring and planning"""
+    __tablename__ = "contradiction_insights"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    contradiction_id = Column(String(36), ForeignKey("contradictions.id", ondelete="CASCADE"), nullable=False)
+
+    impact_score = Column(Float, default=0.0)
+    risk_score = Column(Float, default=0.0)
+    verifiability_score = Column(Float, default=0.0)
+    stage_recommendation = Column(String(20), nullable=True)  # early/mid/late
+
+    prerequisites_json = Column(JSONB, default=list)
+    evasions_json = Column(JSONB, default=list)
+    counters_json = Column(JSONB, default=list)
+    do_not_ask = Column(Boolean, default=False)
+    do_not_ask_reason = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("contradiction_id", name="uq_contradiction_insight_contradiction"),
+        Index("ix_contradiction_insight_contradiction", "contradiction_id"),
+    )
+
+    # Relationships
+    contradiction = relationship("Contradiction", back_populates="insight")
 
 
 class Finding(Base):

@@ -948,6 +948,25 @@ class WitnessVersionDiffResponse(BaseModel):
     shifts: List[VersionShift] = Field(default_factory=list)
 
 
+# =============================================================================
+# OUTPUT SCHEMAS - Contradiction Insights
+# =============================================================================
+
+class ContradictionInsightResponse(BaseModel):
+    """Contradiction insight response"""
+    contradiction_id: str
+    impact_score: float
+    risk_score: float
+    verifiability_score: float
+    stage_recommendation: Optional[str] = None
+    prerequisites: List[str] = Field(default_factory=list)
+    expected_evasions: List[str] = Field(default_factory=list)
+    best_counter_questions: List[str] = Field(default_factory=list)
+    do_not_ask_flag: bool = False
+    do_not_ask_reason: Optional[str] = None
+    composite_score: Optional[float] = None
+
+
 # OUTPUT SCHEMAS - Health & Errors
 # =============================================================================
 
