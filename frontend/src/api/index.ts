@@ -10,6 +10,7 @@ export { default as insightsApi } from './insights';
 export { default as crossExamPlanApi } from './crossExamPlan';
 export { default as trainingApi } from './training';
 export { default as usageApi } from './usage';
+export { default as feedbackApi } from './feedback';
 
 // Health check
 import apiClient from './client';

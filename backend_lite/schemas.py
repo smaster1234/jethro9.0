@@ -470,6 +470,42 @@ class EntityUsageSummary(BaseModel):
 
 
 # =============================================================================
+# INPUT/OUTPUT SCHEMAS - Feedback (C3)
+# =============================================================================
+
+class FeedbackCreateRequest(BaseModel):
+    case_id: str = Field(..., description="Case ID")
+    entity_type: str = Field(..., description="insight/plan_step")
+    entity_id: str = Field(..., description="Entity ID")
+    label: str = Field(..., description="worked/not_worked/too_risky/excellent")
+    note: Optional[str] = Field(None, description="Optional note")
+
+
+class FeedbackItemResponse(BaseModel):
+    id: str
+    org_id: Optional[str]
+    case_id: str
+    entity_type: str
+    entity_id: str
+    label: str
+    note: Optional[str] = None
+    created_at: Optional[datetime] = None
+    created_by: str
+
+
+class FeedbackAggregateResponse(BaseModel):
+    entity_type: str
+    entity_id: str
+    counts: Dict[str, int]
+    latest_at: Optional[datetime] = None
+
+
+class FeedbackListResponse(BaseModel):
+    items: List[FeedbackItemResponse]
+    aggregates: List[FeedbackAggregateResponse]
+
+
+# =============================================================================
 # INPUT SCHEMAS - Witnesses
 # =============================================================================
 
