@@ -293,6 +293,7 @@ class CreateCaseRequest(BaseModel):
     court: Optional[str] = Field(None, description="Court name")
     case_number: Optional[str] = Field(None, description="Official case number")
     description: Optional[str] = Field(None, description="Case description")
+    organization_id: Optional[str] = Field(None, description="Organization ID")
 
     class Config:
         json_schema_extra = {
@@ -303,7 +304,8 @@ class CreateCaseRequest(BaseModel):
                 "opponent_name": "דוד לוי",
                 "court": "שלום תל אביב",
                 "case_number": "12345-01-24",
-                "description": "תביעה בגין הפרת חוזה"
+                "description": "תביעה בגין הפרת חוזה",
+                "organization_id": "org_123"
             }
         }
 
@@ -348,6 +350,63 @@ class AnalyzeCaseRequest(BaseModel):
                 "rag_top_k": 8
             }
         }
+
+
+# =============================================================================
+# INPUT/OUTPUT SCHEMAS - Organizations (B1)
+# =============================================================================
+
+class OrganizationCreateRequest(BaseModel):
+    name: str = Field(..., description="Organization name")
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    user_id: str = Field(..., description="Existing user ID")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+
+
+class OrganizationInviteCreateRequest(BaseModel):
+    email: str = Field(..., description="Invitee email")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+    expires_in_days: int = Field(7, ge=1, le=60, description="Invite expiry in days")
+
+
+class OrganizationResponse(BaseModel):
+    id: str
+    firm_id: str
+    name: str
+    created_at: Optional[datetime] = None
+
+
+class OrganizationMemberResponse(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    role: str
+    added_at: Optional[datetime] = None
+
+
+class OrganizationInviteResponse(BaseModel):
+    id: str
+    organization_id: str
+    email: str
+    role: str
+    status: str
+    expires_at: datetime
+    token: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class OrganizationInviteAcceptResponse(BaseModel):
+    organization_id: str
+    role: str
+    status: str
+
+
+class UserSearchResponse(BaseModel):
+    id: str
+    email: str
+    name: str
 
 
 # =============================================================================

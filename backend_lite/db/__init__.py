@@ -8,6 +8,7 @@ Production-grade database layer for legal case management.
 from .models import (
     Base,
     Firm, User, Team, TeamMember, AdminTeamScope,
+    Organization, OrganizationMember, OrganizationInvite,
     Case, CaseParticipant, CaseTeam,
     Witness, WitnessVersion,
     Folder,
@@ -15,7 +16,7 @@ from .models import (
     Job, Event,
     AnalysisRun, Claim, Issue, IssueLink, Contradiction, Finding,
     ContradictionInsight, CrossExamPlan,
-    SystemRole, TeamRole, CaseStatus, DocumentParty, DocumentRole,
+    SystemRole, TeamRole, OrganizationRole, InviteStatus, CaseStatus, DocumentParty, DocumentRole,
     JobType, JobStatus, EventType, IssueStatus, ContradictionStatus
 )
 from .session import get_db, init_db, get_engine
@@ -25,6 +26,7 @@ __all__ = [
     "Base",
     # Organization
     "Firm", "User", "Team", "TeamMember", "AdminTeamScope",
+    "Organization", "OrganizationMember", "OrganizationInvite",
     # Case Management
     "Case", "CaseParticipant", "CaseTeam",
     "Witness", "WitnessVersion",
@@ -37,7 +39,7 @@ __all__ = [
     # Analysis
     "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "CrossExamPlan", "Finding",
     # Enums
-    "SystemRole", "TeamRole", "CaseStatus", "DocumentParty", "DocumentRole",
+    "SystemRole", "TeamRole", "OrganizationRole", "InviteStatus", "CaseStatus", "DocumentParty", "DocumentRole",
     "JobType", "JobStatus", "EventType", "IssueStatus", "ContradictionStatus",
     # Session
     "get_db", "init_db", "get_engine",

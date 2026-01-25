@@ -347,6 +347,45 @@ def _case_status_for_ui(db: Session, case_id: str) -> str:
     return "active"
 
 
+def _accessible_org_ids(db: Session, auth: Optional[AuthContext]) -> Optional[List[str]]:
+    if not auth:
+        return []
+    if auth.system_role in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+        return None
+
+    from .orgs import ensure_default_org, list_user_org_ids
+
+    org_ids = list_user_org_ids(db, auth.firm_id, auth.user_id)
+    if not org_ids:
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        db.flush()
+        org_ids = [org.id]
+    return org_ids
+
+
+def _require_case_access(db: Session, auth: AuthContext, case_id: str) -> Case:
+    case = db.query(Case).filter(
+        Case.id == case_id,
+        Case.firm_id == auth.firm_id
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    org_ids = _accessible_org_ids(db, auth)
+    if case.organization_id is None:
+        from .orgs import ensure_default_org
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        case.organization_id = org.id
+        db.flush()
+        if org_ids is not None and org.id not in org_ids:
+            org_ids.append(org.id)
+
+    if org_ids is not None and case.organization_id not in org_ids:
+        raise HTTPException(status_code=403, detail="Case not accessible")
+
+    return case
+
+
 @frontend_router.get("/healthz")
 async def api_healthz():
     return {"status": "ok", "service": "backend_lite"}
@@ -371,8 +410,12 @@ async def api_auth_me():
 async def api_cases_recent(
     limit: int = Query(default=5, ge=1, le=50),
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case)
+    q = db.query(Case).filter(Case.firm_id == auth.firm_id)
+    org_ids = _accessible_org_ids(db, auth)
+    if org_ids is not None:
+        q = q.filter(Case.organization_id.in_(org_ids))
     cases = q.order_by(Case.updated_at.desc()).limit(limit).all()
     return [
         {
@@ -389,8 +432,12 @@ async def api_cases_recent(
 @frontend_router.get("/cases")
 async def api_list_cases(
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case)
+    q = db.query(Case).filter(Case.firm_id == auth.firm_id)
+    org_ids = _accessible_org_ids(db, auth)
+    if org_ids is not None:
+        q = q.filter(Case.organization_id.in_(org_ids))
     cases = q.order_by(Case.updated_at.desc()).all()
     out = []
     for c in cases:
@@ -413,11 +460,9 @@ async def api_list_cases(
 async def api_get_case(
     case_id: str,
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case).filter(Case.id == case_id)
-    c = q.first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+    c = _require_case_access(db, auth, case_id)
 
     docs = (
         db.query(Document)
@@ -462,6 +507,7 @@ async def api_get_case(
         "case_type": "case",
         "description": c.description,
         "case_number": c.case_number,
+        "organization_id": c.organization_id,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         "files": files,
@@ -472,11 +518,10 @@ async def api_get_case(
 async def api_list_case_files(
     case_id: str,
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    case = db.query(Case).filter(Case.id == case_id).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    return {"files": (await api_get_case(case_id=case_id, db=db)).get("files", [])}
+    _require_case_access(db, auth, case_id)
+    return {"files": (await api_get_case(case_id=case_id, db=db, auth=auth)).get("files", [])}
 
 
 @frontend_router.post("/cases/{case_id}/files")
@@ -488,6 +533,7 @@ async def api_upload_case_files(
     opponent_lawyer_names: str = Form(default="[]"),
     files: List[UploadFile] = File(...),
     auth: AuthContext = Depends(get_auth_context),  # reuse upload auth (X-User-Email / Authorization)
+    db: Session = Depends(get_db_dependency),
 ):
     """
     React FileManager upload contract.
@@ -519,6 +565,8 @@ async def api_upload_case_files(
                 "author": opp or None,
             }
         )
+
+    _require_case_access(db, auth, case_id)
 
     # Call upload router function directly (keeps DB/storage logic centralized)
     from .api_upload import upload_documents as _upload_documents
@@ -568,6 +616,7 @@ async def api_update_file_source(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db_dependency),
 ):
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
@@ -585,6 +634,7 @@ async def api_delete_file(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db_dependency),
 ):
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         return {"ok": True}
@@ -602,6 +652,7 @@ async def api_download_file(
 ):
     from .storage import get_storage
 
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
@@ -621,6 +672,7 @@ async def api_reanalyze_case(
     case_id: str,
     payload: Dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db_dependency),
 ):
     """
     React calls this after uploads. Map to the real analysis job under `/api/v1`.
@@ -630,13 +682,19 @@ async def api_reanalyze_case(
     mode = payload.get("mode") or "full"
     if AnalyzeCaseRequest is None:
         raise HTTPException(status_code=503, detail="Upload/analysis system is not enabled")
+    _require_case_access(db, auth, case_id)
     req = AnalyzeCaseRequest(document_ids=None, mode=mode)
     return await _analyze_case(case_id=case_id, request=req, auth=auth)
 
 
 @frontend_router.get("/cases/{case_id}/analysis-status")
-async def api_case_analysis_status(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_analysis_status(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     from .db.models import AnalysisRun
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -656,7 +714,11 @@ async def api_case_analysis_status(case_id: str, db: Session = Depends(get_db_de
 
 
 @frontend_router.get("/cases/{case_id}/analysis")
-async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_analysis(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Minimal analysis payload for React UI.
     - `status`: completed/analyzing/ready/failed
@@ -665,6 +727,7 @@ async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependenc
     """
     from .db.models import AnalysisRun, Contradiction
 
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -714,12 +777,17 @@ async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependenc
 
 
 @frontend_router.get("/cases/{case_id}/claims")
-async def api_case_claims(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_claims(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Legacy claims endpoint used by LegalNotebookPanel.
     Returns: { claims: [...] }
     """
     from .db.models import AnalysisRun
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -827,17 +895,32 @@ async def api_ui_microcopy():
 
 
 @frontend_router.get("/cases/{case_id}/capabilities")
-async def api_case_capabilities(case_id: str):
+async def api_case_capabilities(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return (await api_capabilities_root()).get("capabilities", [])
 
 
 @frontend_router.get("/cases/{case_id}/state")
-async def api_case_state(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_state(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"case_id": case_id, "status": _case_status_for_ui(db, case_id)}
 
 
 @frontend_router.get("/cases/{case_id}/jobs")
-async def api_case_jobs(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_jobs(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     jobs = db.query(Job).filter(Job.case_id == case_id).order_by(Job.created_at.desc()).all()
     return {
         "jobs": [
@@ -855,10 +938,15 @@ async def api_case_jobs(case_id: str, db: Session = Depends(get_db_dependency)):
 
 
 @frontend_router.get("/cases/{case_id}/snapshot")
-async def api_case_snapshot(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_snapshot(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Notebook snapshot is a composite; provide minimal structure.
-    case = await api_get_case(case_id=case_id, db=db)
-    analysis = await api_case_analysis(case_id=case_id, db=db)
+    _require_case_access(db, auth, case_id)
+    case = await api_get_case(case_id=case_id, db=db, auth=auth)
+    analysis = await api_case_analysis(case_id=case_id, db=db, auth=auth)
     return {
         "case": case,
         "analysis": analysis,
@@ -867,19 +955,24 @@ async def api_case_snapshot(case_id: str, db: Session = Depends(get_db_dependenc
 
 
 @frontend_router.get("/cases/{case_id}/memory")
-async def api_case_memory_get(case_id: str, db: Session = Depends(get_db_dependency)):
-    c = db.query(Case).filter(Case.id == case_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+async def api_case_memory_get(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    c = _require_case_access(db, auth, case_id)
     mem = (c.extra_data or {}).get("memory", [])
     return {"memory": mem}
 
 
 @frontend_router.post("/cases/{case_id}/memory")
-async def api_case_memory_post(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict), db: Session = Depends(get_db_dependency)):
-    c = db.query(Case).filter(Case.id == case_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+async def api_case_memory_post(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    c = _require_case_access(db, auth, case_id)
     ed = c.extra_data or {}
     items = payload.get("memory") or payload.get("items") or payload
     ed["memory"] = items
@@ -889,10 +982,15 @@ async def api_case_memory_post(case_id: str, payload: Dict[str, Any] = Body(defa
 
 
 @frontend_router.get("/files/{file_id}/info")
-async def api_file_info(file_id: str, db: Session = Depends(get_db_dependency)):
+async def api_file_info(
+    file_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     doc = db.query(Document).filter(Document.id == file_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_case_access(db, auth, doc.case_id)
     return {
         "id": doc.id,
         "filename": doc.doc_name,
@@ -903,10 +1001,15 @@ async def api_file_info(file_id: str, db: Session = Depends(get_db_dependency)):
 
 
 @frontend_router.get("/files/{file_id}/content")
-async def api_file_content(file_id: str, db: Session = Depends(get_db_dependency)):
+async def api_file_content(
+    file_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     doc = db.query(Document).filter(Document.id == file_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_case_access(db, auth, doc.case_id)
     return {"text": doc.full_text or "", "id": doc.id}
 
 
@@ -929,56 +1032,107 @@ async def api_subscription_me():
 
 
 @frontend_router.get("/cases/{case_id}/ai-summary")
-async def api_case_ai_summary(case_id: str):
+async def api_case_ai_summary(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Optional enhancement endpoint; UI can fall back to deterministic summaries.
+    _require_case_access(db, auth, case_id)
     return {"exists": False, "summary": None}
 
 
 @frontend_router.get("/cases/{case_id}/capabilities-manifest")
-async def api_case_capabilities_manifest(case_id: str):
+async def api_case_capabilities_manifest(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Placeholder manifest for notebook UX
-    return {"case_id": case_id, "capabilities": (await api_case_capabilities(case_id)).copy()}
+    _require_case_access(db, auth, case_id)
+    return {"case_id": case_id, "capabilities": (await api_case_capabilities(case_id, db=db, auth=auth)).copy()}
 
 
 @frontend_router.get("/cases/{case_id}/context")
-async def api_case_context_get(case_id: str):
+async def api_case_context_get(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"has_context": False, "context": None}
 
 
 @frontend_router.post("/cases/{case_id}/context")
-async def api_case_context_post(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict)):
+async def api_case_context_post(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"ok": True, "has_context": True, "context": payload}
 
 
 @frontend_router.patch("/cases/{case_id}/context")
-async def api_case_context_patch(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict)):
+async def api_case_context_patch(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"ok": True, "has_context": True, "context": payload}
 
 
 @frontend_router.get("/cases/{case_id}/progress")
-async def api_case_progress(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_progress(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     st = _case_status_for_ui(db, case_id)
     return {"case_id": case_id, "status": st, "progress": 0 if st in ("ready", "completed") else 50, "current_stage": st}
 
 
 @frontend_router.get("/cases/{case_id}/progress/refresh")
-async def api_case_progress_refresh(case_id: str, db: Session = Depends(get_db_dependency)):
-    return await api_case_progress(case_id=case_id, db=db)
+async def api_case_progress_refresh(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    return await api_case_progress(case_id=case_id, db=db, auth=auth)
 
 
 @frontend_router.get("/cases/{case_id}/intelligence-status")
-async def api_case_intelligence_status(case_id: str):
+async def api_case_intelligence_status(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"has_intelligence": False, "is_running": False, "can_run_intelligence": False, "progress": None}
 
 
 @frontend_router.post("/cases/{case_id}/run-intelligence")
-async def api_case_run_intelligence(case_id: str):
+async def api_case_run_intelligence(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Not supported in backend_lite; keep contract stable.
+    _require_case_access(db, auth, case_id)
     return {"status": "not_supported"}
 
 
 @frontend_router.get("/cases/{case_id}/intelligence")
-async def api_case_intelligence(case_id: str):
+async def api_case_intelligence(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"intelligence": None}
 
 
@@ -987,10 +1141,12 @@ async def api_case_analyze_on_demand(
     case_id: str,
     payload: Dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db_dependency),
 ):
     # Alias for reanalyze/full analysis
     mode = payload.get("mode") or "full"
-    return await api_reanalyze_case(case_id=case_id, payload={"mode": mode}, auth=auth)
+    _require_case_access(db, auth, case_id)
+    return await api_reanalyze_case(case_id=case_id, payload={"mode": mode}, auth=auth, db=db)
 
 
 # Register routers
@@ -2761,6 +2917,18 @@ async def create_case(
         if not auth or not auth.firm_id:
             raise HTTPException(status_code=401, detail="Authentication required to create cases")
 
+        from .orgs import ensure_default_org, get_org_member
+
+        org_id = request.organization_id
+        if org_id:
+            if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+                member = get_org_member(db, org_id, auth.user_id)
+                if not member:
+                    raise HTTPException(status_code=403, detail="No access to organization")
+        else:
+            org = ensure_default_org(db, auth.firm_id, auth.user_id)
+            org_id = org.id
+
         case = Case(
             name=request.name,
             description=request.description,
@@ -2771,6 +2939,7 @@ async def create_case(
             case_number=request.case_number,
             firm_id=auth.firm_id,
             created_by_user_id=auth.user_id,
+            organization_id=org_id,
             status=CaseStatus.ACTIVE
         )
         db.add(case)
@@ -2787,6 +2956,7 @@ async def create_case(
             "case_number": case.case_number,
             "description": case.description,
             "firm_id": case.firm_id,
+            "organization_id": case.organization_id,
             "created_at": case.created_at.isoformat() if case.created_at else None
         }
     except HTTPException:
@@ -2798,14 +2968,15 @@ async def create_case(
 
 @app.get("/cases", tags=["Cases"], summary="List all cases")
 async def list_cases(
-    auth: Optional[AuthContext] = Depends(get_current_user),
+    auth: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db_dependency)
 ):
     """List all legal cases (filtered by firm if authenticated)"""
     try:
-        query = db.query(Case)
-        if auth and auth.firm_id:
-            query = query.filter(Case.firm_id == auth.firm_id)
+        query = db.query(Case).filter(Case.firm_id == auth.firm_id)
+        org_ids = _accessible_org_ids(db, auth)
+        if org_ids is not None:
+            query = query.filter(Case.organization_id.in_(org_ids))
         cases = query.all()
 
         result = []
@@ -2821,6 +2992,7 @@ async def list_cases(
                 "description": c.description,
                 "document_count": doc_count,
                 "firm_id": c.firm_id,
+                "organization_id": c.organization_id,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else None
             })
@@ -2831,12 +3003,14 @@ async def list_cases(
 
 
 @app.get("/cases/{case_id}", tags=["Cases"], summary="Get case details")
-async def get_case(case_id: str, db: Session = Depends(get_db_dependency)):
+async def get_case(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(require_auth),
+):
     """Get case by ID"""
     try:
-        case = db.query(Case).filter(Case.id == case_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         return {
             "id": case.id,
@@ -2850,7 +3024,8 @@ async def get_case(case_id: str, db: Session = Depends(get_db_dependency)):
             "tags": case.tags or [],
             "created_at": case.created_at.isoformat() if case.created_at else None,
             "updated_at": case.updated_at.isoformat() if case.updated_at else None,
-            "extra_data": case.extra_data or {}
+            "extra_data": case.extra_data or {},
+            "organization_id": case.organization_id,
         }
     except HTTPException:
         raise
@@ -3918,9 +4093,7 @@ async def assign_case_to_team(
     """Assign a case to a team"""
     try:
         # Verify case exists and user has access
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Verify team exists and is in same firm
         team = db.query(Team).filter(Team.id == team_id, Team.firm_id == auth.firm_id).first()
@@ -3981,9 +4154,7 @@ async def list_case_teams(
     """List all teams assigned to a case"""
     try:
         # Verify case exists and user has access
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Get teams assigned to the case
         case_teams = db.query(CaseTeam).filter(CaseTeam.case_id == case_id).all()
@@ -4020,9 +4191,7 @@ async def add_case_participant(
     """Add a user as participant to a case"""
     try:
         # Verify case exists and is in user's firm
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Only team leaders or admins can add participants
         if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
@@ -4097,9 +4266,7 @@ async def list_case_participants(
     """List all participants in a case"""
     try:
         # Verify case exists and is in user's firm
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Get participants with user info
         participants = db.query(CaseParticipant, User).join(
@@ -4155,6 +4322,9 @@ async def list_my_cases(
 
         # Start with cases in the user's firm
         base_query = db.query(Case).filter(Case.firm_id == auth.firm_id)
+        org_ids = _accessible_org_ids(db, auth)
+        if org_ids is not None:
+            base_query = base_query.filter(Case.organization_id.in_(org_ids))
 
         # Apply status filter if provided
         if status_enum:
@@ -4204,6 +4374,7 @@ async def list_my_cases(
                 "court": case.court,
                 "description": case.description,
                 "document_count": doc_count,
+                "organization_id": case.organization_id,
                 "created_at": case.created_at.isoformat() if case.created_at else None,
                 "updated_at": case.updated_at.isoformat() if case.updated_at else None
             })

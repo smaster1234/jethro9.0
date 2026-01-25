@@ -83,6 +83,7 @@ def init_db():
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
     _ensure_phase2_schema(engine)
+    _ensure_b1_schema(engine)
 
 
 def _ensure_phase2_schema(engine) -> None:
@@ -97,6 +98,20 @@ def _ensure_phase2_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE claims ADD COLUMN witness_version_id VARCHAR(36)"))
     except Exception:
         # Non-fatal: avoid breaking startup if ALTER isn't supported
+        pass
+
+
+def _ensure_b1_schema(engine) -> None:
+    """
+    Ensure B1 columns exist (lightweight migration).
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("cases")}
+        if "organization_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE cases ADD COLUMN organization_id VARCHAR(36)"))
+    except Exception:
         pass
 
 

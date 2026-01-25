@@ -54,6 +54,22 @@ class TeamRole(str, enum.Enum):
     TEAM_MEMBER = "team_member"
 
 
+class OrganizationRole(str, enum.Enum):
+    """Organization-level roles"""
+    VIEWER = "viewer"
+    INTERN = "intern"
+    LAWYER = "lawyer"
+    OWNER = "owner"
+
+
+class InviteStatus(str, enum.Enum):
+    """Invite lifecycle status"""
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
 class CaseStatus(str, enum.Enum):
     """Case lifecycle status"""
     ACTIVE = "active"
@@ -186,11 +202,69 @@ class Firm(Base):
     users = relationship("User", back_populates="firm", cascade="all, delete-orphan")
     teams = relationship("Team", back_populates="firm", cascade="all, delete-orphan")
     cases = relationship("Case", back_populates="firm", cascade="all, delete-orphan")
+    organizations = relationship("Organization", back_populates="firm", cascade="all, delete-orphan")
     folders = relationship("Folder", back_populates="firm", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="firm", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="firm", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="firm", cascade="all, delete-orphan")
     witnesses = relationship("Witness", back_populates="firm", cascade="all, delete-orphan")
+
+
+class Organization(Base):
+    """Organization / משרד"""
+    __tablename__ = "organizations"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    extra_data = Column(JSONB, default=dict)
+
+    __table_args__ = (
+        Index("ix_organization_firm", "firm_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm", back_populates="organizations")
+    members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
+    invites = relationship("OrganizationInvite", back_populates="organization", cascade="all, delete-orphan")
+    cases = relationship("Case", back_populates="organization")
+
+
+class OrganizationMember(Base):
+    """Organization membership"""
+    __tablename__ = "organization_members"
+
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role = Column(Enum(OrganizationRole), default=OrganizationRole.VIEWER, nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    added_by_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    organization = relationship("Organization", back_populates="members")
+    user = relationship("User", back_populates="organization_memberships", foreign_keys=[user_id])
+
+
+class OrganizationInvite(Base):
+    """Organization invite"""
+    __tablename__ = "organization_invites"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    email = Column(String(255), nullable=False)
+    token = Column(String(64), nullable=False, unique=True)
+    status = Column(Enum(InviteStatus), default=InviteStatus.PENDING, nullable=False)
+    role = Column(Enum(OrganizationRole), default=OrganizationRole.VIEWER, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_organization_invite_org", "organization_id"),
+        Index("ix_organization_invite_email", "email"),
+    )
+
+    organization = relationship("Organization", back_populates="invites")
 
 
 class User(Base):
@@ -220,6 +294,7 @@ class User(Base):
     admin_scopes = relationship("AdminTeamScope", back_populates="admin_user", cascade="all, delete-orphan", foreign_keys="AdminTeamScope.admin_user_id")
     case_participations = relationship("CaseParticipant", back_populates="user", cascade="all, delete-orphan", foreign_keys="CaseParticipant.user_id")
     responsible_cases = relationship("Case", back_populates="responsible_user", foreign_keys="Case.responsible_user_id")
+    organization_memberships = relationship("OrganizationMember", back_populates="user", cascade="all, delete-orphan", foreign_keys="OrganizationMember.user_id")
 
 
 class Team(Base):
@@ -280,6 +355,7 @@ class Case(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     responsible_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -294,12 +370,17 @@ class Case(Base):
     case_number = Column(String(100), nullable=True)
     tags = Column(JSONB, default=list)
 
+    __table_args__ = (
+        Index("ix_case_org", "organization_id"),
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     extra_data = Column(JSONB, default=dict)  # Note: 'metadata' is reserved by SQLAlchemy
 
     # Relationships
     firm = relationship("Firm", back_populates="cases")
+    organization = relationship("Organization", back_populates="cases")
     responsible_user = relationship("User", back_populates="responsible_cases", foreign_keys=[responsible_user_id])
     participants = relationship("CaseParticipant", back_populates="case", cascade="all, delete-orphan")
     case_teams = relationship("CaseTeam", back_populates="case", cascade="all, delete-orphan")

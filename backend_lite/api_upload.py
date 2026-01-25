@@ -8,8 +8,10 @@ FastAPI router for document upload and folder management.
 import os
 import json
 import logging
+import secrets
 from typing import List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header, Response
 from fastapi.responses import JSONResponse
@@ -17,6 +19,14 @@ from pydantic import BaseModel, Field
 
 from .schemas import (
     EvidenceAnchor,
+    OrganizationCreateRequest,
+    OrganizationResponse,
+    OrganizationMemberAddRequest,
+    OrganizationMemberResponse,
+    OrganizationInviteCreateRequest,
+    OrganizationInviteResponse,
+    OrganizationInviteAcceptResponse,
+    UserSearchResponse,
     WitnessCreateRequest,
     WitnessVersionCreateRequest,
     WitnessResponse,
@@ -218,6 +228,54 @@ def _storage_provider_name() -> str:
     return (os.environ.get("STORAGE_BACKEND") or os.environ.get("STORAGE_TYPE") or "local").strip().lower() or "local"
 
 
+def _is_firm_admin(auth: AuthContext) -> bool:
+    return auth.system_role in ("admin", "super_admin")
+
+
+def _require_org_role(db: Session, auth: AuthContext, org_id: str, allowed_roles: Optional[List[str]] = None):
+    from .orgs import get_org_member
+    from .db.models import OrganizationRole
+
+    if _is_firm_admin(auth):
+        return None
+
+    member = get_org_member(db, org_id, auth.user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה למשרד זה"})
+
+    if allowed_roles:
+        if member.role.value not in allowed_roles:
+            raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה לפעולה זו"})
+
+    return member
+
+
+def _require_case_access(db: Session, auth: AuthContext, case_id: str):
+    from .db.models import Case
+    from .orgs import ensure_default_org, get_org_member
+
+    case = db.query(Case).filter(
+        Case.id == case_id,
+        Case.firm_id == auth.firm_id
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not case.organization_id:
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        case.organization_id = org.id
+        db.flush()
+
+    if _is_firm_admin(auth):
+        return case, None
+
+    member = get_org_member(db, case.organization_id, auth.user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה למשרד זה"})
+
+    return case, member
+
+
 def get_db_dependency():
     """Get database session for FastAPI dependency injection"""
     db = next(get_db())
@@ -277,6 +335,351 @@ async def get_auth_context(
 
 
 # =============================================================================
+# ORGANIZATIONS (B1)
+# =============================================================================
+
+@router.post("/orgs", response_model=OrganizationResponse)
+async def create_org(
+    payload: OrganizationCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Create a new organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization, OrganizationMember, OrganizationRole
+
+        with get_db_session() as db:
+            org = Organization(
+                firm_id=auth.firm_id,
+                name=payload.name.strip(),
+            )
+            db.add(org)
+            db.flush()
+
+            db.add(OrganizationMember(
+                organization_id=org.id,
+                user_id=auth.user_id,
+                role=OrganizationRole.OWNER,
+                added_by_user_id=auth.user_id,
+            ))
+
+            return OrganizationResponse(
+                id=org.id,
+                firm_id=org.firm_id,
+                name=org.name,
+                created_at=org.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create organization")
+        raise HTTPException(status_code=500, detail="Failed to create organization")
+
+
+@router.get("/orgs", response_model=List[OrganizationResponse])
+async def list_orgs(
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List organizations for the current user."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization, OrganizationMember
+
+        with get_db_session() as db:
+            query = db.query(Organization).filter(Organization.firm_id == auth.firm_id)
+            if not _is_firm_admin(auth):
+                query = query.join(
+                    OrganizationMember,
+                    OrganizationMember.organization_id == Organization.id
+                ).filter(OrganizationMember.user_id == auth.user_id)
+
+            orgs = query.order_by(Organization.created_at.asc()).all()
+            return [
+                OrganizationResponse(
+                    id=org.id,
+                    firm_id=org.firm_id,
+                    name=org.name,
+                    created_at=org.created_at,
+                )
+                for org in orgs
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list organizations")
+        raise HTTPException(status_code=500, detail="Failed to list organizations")
+
+
+@router.get("/orgs/{org_id}", response_model=OrganizationResponse)
+async def get_org(
+    org_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Get organization details."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization
+
+        with get_db_session() as db:
+            org = db.query(Organization).filter(
+                Organization.id == org_id,
+                Organization.firm_id == auth.firm_id
+            ).first()
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found")
+
+            _require_org_role(db, auth, org_id)
+            return OrganizationResponse(
+                id=org.id,
+                firm_id=org.firm_id,
+                name=org.name,
+                created_at=org.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to fetch organization")
+        raise HTTPException(status_code=500, detail="Failed to fetch organization")
+
+
+@router.get("/orgs/{org_id}/members", response_model=List[OrganizationMemberResponse])
+async def list_org_members(
+    org_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List organization members."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationMember, User
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id)
+            members = (
+                db.query(OrganizationMember, User)
+                .join(User, User.id == OrganizationMember.user_id)
+                .filter(OrganizationMember.organization_id == org_id)
+                .order_by(User.name.asc())
+                .all()
+            )
+            return [
+                OrganizationMemberResponse(
+                    user_id=user.id,
+                    email=user.email,
+                    name=user.name,
+                    role=member.role.value if hasattr(member.role, "value") else str(member.role),
+                    added_at=member.added_at,
+                )
+                for member, user in members
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list organization members")
+        raise HTTPException(status_code=500, detail="Failed to list organization members")
+
+
+@router.post("/orgs/{org_id}/members", response_model=OrganizationMemberResponse)
+async def add_org_member(
+    org_id: str,
+    payload: OrganizationMemberAddRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Add existing user to organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationMember, OrganizationRole, User
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id, allowed_roles=["owner"])
+
+            user = db.query(User).filter(
+                User.id == payload.user_id,
+                User.firm_id == auth.firm_id
+            ).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            existing = (
+                db.query(OrganizationMember)
+                .filter(
+                    OrganizationMember.organization_id == org_id,
+                    OrganizationMember.user_id == user.id,
+                )
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="User already in organization")
+
+            try:
+                role = OrganizationRole(payload.role)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid role")
+            member = OrganizationMember(
+                organization_id=org_id,
+                user_id=user.id,
+                role=role,
+                added_by_user_id=auth.user_id,
+            )
+            db.add(member)
+
+            return OrganizationMemberResponse(
+                user_id=user.id,
+                email=user.email,
+                name=user.name,
+                role=role.value,
+                added_at=member.added_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to add organization member")
+        raise HTTPException(status_code=500, detail="Failed to add organization member")
+
+
+@router.post("/orgs/{org_id}/invites", response_model=OrganizationInviteResponse)
+async def create_org_invite(
+    org_id: str,
+    payload: OrganizationInviteCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Invite a user by email to an organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationInvite, InviteStatus, OrganizationRole
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id, allowed_roles=["owner"])
+
+            token = secrets.token_urlsafe(24)
+            expires_at = datetime.utcnow() + timedelta(days=payload.expires_in_days)
+            try:
+                role = OrganizationRole(payload.role)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid role")
+
+            invite = OrganizationInvite(
+                organization_id=org_id,
+                email=payload.email.strip().lower(),
+                token=token,
+                status=InviteStatus.PENDING,
+                role=role,
+                expires_at=expires_at,
+                created_by_user_id=auth.user_id,
+            )
+            db.add(invite)
+            db.flush()
+
+            return OrganizationInviteResponse(
+                id=invite.id,
+                organization_id=invite.organization_id,
+                email=invite.email,
+                role=role.value,
+                status=invite.status.value,
+                expires_at=invite.expires_at,
+                token=invite.token,
+                created_at=invite.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create invite")
+        raise HTTPException(status_code=500, detail="Failed to create invite")
+
+
+@router.post("/invites/{token}/accept", response_model=OrganizationInviteAcceptResponse)
+async def accept_org_invite(
+    token: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Accept an organization invite."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationInvite, InviteStatus, OrganizationMember
+
+        with get_db_session() as db:
+            invite = db.query(OrganizationInvite).filter(
+                OrganizationInvite.token == token
+            ).first()
+            if not invite:
+                raise HTTPException(status_code=404, detail="Invite not found")
+
+            if invite.status != InviteStatus.PENDING:
+                raise HTTPException(status_code=400, detail="Invite already used or invalid")
+
+            if invite.expires_at < datetime.utcnow():
+                invite.status = InviteStatus.EXPIRED
+                db.commit()
+                raise HTTPException(status_code=400, detail="Invite expired")
+
+            if invite.email.lower() != (auth.email or "").lower():
+                raise HTTPException(status_code=403, detail="Invite email mismatch")
+
+            existing = db.query(OrganizationMember).filter(
+                OrganizationMember.organization_id == invite.organization_id,
+                OrganizationMember.user_id == auth.user_id,
+            ).first()
+            if not existing:
+                db.add(OrganizationMember(
+                    organization_id=invite.organization_id,
+                    user_id=auth.user_id,
+                    role=invite.role,
+                    added_by_user_id=auth.user_id,
+                ))
+
+            invite.status = InviteStatus.ACCEPTED
+
+            return OrganizationInviteAcceptResponse(
+                organization_id=invite.organization_id,
+                role=invite.role.value,
+                status=invite.status.value,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to accept invite")
+        raise HTTPException(status_code=500, detail="Failed to accept invite")
+
+
+@router.get("/users/search", response_model=List[UserSearchResponse])
+async def search_users(
+    q: str = Query(..., min_length=2, max_length=100),
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Search users within firm by name or email."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import User
+
+        with get_db_session() as db:
+            query = db.query(User).filter(User.firm_id == auth.firm_id, User.is_active == True)
+            like = f"%{q.strip()}%"
+            query = query.filter((User.email.ilike(like)) | (User.name.ilike(like)))
+            users = query.order_by(User.name.asc()).limit(20).all()
+
+            return [
+                UserSearchResponse(
+                    id=user.id,
+                    email=user.email,
+                    name=user.name,
+                )
+                for user in users
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to search users")
+        raise HTTPException(status_code=500, detail="Failed to search users")
+
+
+# =============================================================================
 # FOLDER ENDPOINTS
 # =============================================================================
 
@@ -295,13 +698,7 @@ async def create_folder(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Check for duplicate name under parent
             existing = db.query(Folder).filter(
@@ -359,13 +756,7 @@ async def get_folder_tree(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Get all folders for case
             folders = db.query(Folder).filter(
@@ -562,13 +953,7 @@ async def upload_documents(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             storage = get_storage()
             document_ids = []
@@ -766,13 +1151,7 @@ async def upload_zip(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
         # Read and store ZIP
         data = await file.read()
@@ -829,13 +1208,7 @@ async def list_documents(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Build query
             query = db.query(Document).filter(
@@ -1437,12 +1810,7 @@ async def list_witnesses(
         from .db.models import Case, Witness, WitnessVersion, Document
 
         with get_db_session() as db:
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             witnesses = (
                 db.query(Witness)
@@ -1505,12 +1873,7 @@ async def create_witness(
         from .db.models import Case, Witness
 
         with get_db_session() as db:
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             witness = Witness(
                 firm_id=auth.firm_id,
@@ -1764,9 +2127,7 @@ async def list_analysis_runs(
         from .db.models import Case, AnalysisRun, Claim, Contradiction
 
         with get_db_session() as db:
-            case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             runs = (
                 db.query(AnalysisRun)
@@ -2201,9 +2562,9 @@ async def export_cross_exam_plan(
             if not run:
                 raise HTTPException(status_code=404, detail="Analysis run not found")
 
-            case = db.query(Case).filter(Case.id == run.case_id).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, member = _require_case_access(db, auth, run.case_id)
+            if case.organization_id and member and member.role.value not in ("lawyer", "owner"):
+                raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה לייצוא"})
 
             plan = (
                 db.query(CrossExamPlan)
@@ -2395,13 +2756,7 @@ async def list_case_jobs(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             query = db.query(Job).filter(
                 Job.case_id == case_id,
@@ -2453,13 +2808,7 @@ async def analyze_case(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
         if request is None:
             request = AnalyzeCaseRequest()
