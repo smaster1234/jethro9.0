@@ -11,7 +11,7 @@ import logging
 from typing import List, Optional, Dict
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,8 @@ from .schemas import (
     CrossExamPlanStage,
     CrossExamPlanStep,
     CrossExamPlanBranch,
+    WitnessSimulationResponse,
+    WitnessSimulationStep,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,12 @@ class CrossExamPlanRequest(BaseModel):
     """Request to generate a cross-exam plan"""
     contradiction_ids: Optional[List[str]] = None
     witness_id: Optional[str] = None
+
+
+class WitnessSimulationRequest(BaseModel):
+    """Request to simulate witness responses"""
+    persona: str = Field("cooperative", description="cooperative/evasive/hostile")
+    plan_id: Optional[str] = None
 
 
 # =============================================================================
@@ -2073,6 +2081,135 @@ async def get_cross_exam_plan(
         raise
     except Exception as e:
         logger.exception("Failed to get cross-exam plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analysis-runs/{run_id}/witness-simulation", response_model=WitnessSimulationResponse)
+async def simulate_witness(
+    run_id: str,
+    payload: WitnessSimulationRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Simulate witness responses based on latest cross-exam plan."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, AnalysisRun
+        from .witness_simulation import simulate_plan
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            if payload.plan_id:
+                plan = db.query(CrossExamPlan).filter(
+                    CrossExamPlan.id == payload.plan_id,
+                    CrossExamPlan.run_id == run_id
+                ).first()
+            else:
+                plan = (
+                    db.query(CrossExamPlan)
+                    .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                    .order_by(CrossExamPlan.created_at.desc())
+                    .first()
+                )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            steps = simulate_plan(plan.plan_json or {}, payload.persona)
+            return WitnessSimulationResponse(
+                run_id=run_id,
+                plan_id=plan.id,
+                persona=payload.persona,
+                steps=[
+                    WitnessSimulationStep(
+                        step_id=s.get("step_id", ""),
+                        stage=s.get("stage", ""),
+                        question=s.get("question", ""),
+                        witness_reply=s.get("witness_reply", ""),
+                        chosen_branch_trigger=s.get("chosen_branch_trigger"),
+                        follow_up_questions=s.get("follow_up_questions", []),
+                        warnings=s.get("warnings", []),
+                    )
+                    for s in steps
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to simulate witness")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analysis-runs/{run_id}/export/cross-exam")
+async def export_cross_exam_plan(
+    run_id: str,
+    format: str = Query(default="docx", pattern="^(docx|pdf)$"),
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Export cross-examination plan to DOCX/PDF."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, AnalysisRun, Document, Case
+        from .exporter import build_cross_exam_docx, build_cross_exam_pdf
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            case = db.query(Case).filter(Case.id == run.case_id).first()
+            if not case:
+                raise HTTPException(status_code=404, detail="Case not found")
+
+            plan = (
+                db.query(CrossExamPlan)
+                .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                .order_by(CrossExamPlan.created_at.desc())
+                .first()
+            )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            doc_ids = []
+            for stage in (plan.plan_json or {}).get("stages", []):
+                for step in stage.get("steps", []):
+                    for anchor in step.get("anchors", []):
+                        if anchor.get("doc_id"):
+                            doc_ids.append(anchor["doc_id"])
+            doc_ids = list(dict.fromkeys(doc_ids))
+            docs = db.query(Document).filter(Document.id.in_(doc_ids)).all() if doc_ids else []
+            doc_lookup = {d.id: d for d in docs}
+
+            plan_payload = plan.plan_json or {}
+            if format == "pdf":
+                content = build_cross_exam_pdf(plan_payload, case.name, run_id, doc_lookup)
+                filename = f"cross_exam_plan_{case.name}_{run_id}.pdf"
+                media_type = "application/pdf"
+            else:
+                content = build_cross_exam_docx(plan_payload, case.name, run_id, doc_lookup)
+                filename = f"cross_exam_plan_{case.name}_{run_id}.docx"
+                media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+            return Response(
+                content=content,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to export cross-exam plan")
         raise HTTPException(status_code=500, detail=str(e))
 
 

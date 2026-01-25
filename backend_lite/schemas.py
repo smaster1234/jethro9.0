@@ -1008,6 +1008,29 @@ class CrossExamPlanResponse(BaseModel):
     stages: List[CrossExamPlanStage] = Field(default_factory=list)
 
 
+# =============================================================================
+# OUTPUT SCHEMAS - Witness Simulation
+# =============================================================================
+
+class WitnessSimulationStep(BaseModel):
+    """Single simulated witness response"""
+    step_id: str
+    stage: str
+    question: str
+    witness_reply: str
+    chosen_branch_trigger: Optional[str] = None
+    follow_up_questions: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class WitnessSimulationResponse(BaseModel):
+    """Witness simulation response"""
+    run_id: str
+    plan_id: str
+    persona: str
+    steps: List[WitnessSimulationStep] = Field(default_factory=list)
+
+
 # OUTPUT SCHEMAS - Health & Errors
 # =============================================================================
 

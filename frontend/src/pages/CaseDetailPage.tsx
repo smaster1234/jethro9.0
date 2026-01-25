@@ -59,6 +59,7 @@ import type {
   ContradictionInsight,
   CrossExamPlanResponse,
   CrossExamPlanStep,
+  WitnessSimulationResponse,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -157,6 +158,10 @@ export const CaseDetailPage: React.FC = () => {
   const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
   const [isLoadingPlan, setIsLoadingPlan] = useState(false);
   const [planError, setPlanError] = useState('');
+  const [simulationPersona, setSimulationPersona] = useState<'cooperative' | 'evasive' | 'hostile'>('cooperative');
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simulationResult, setSimulationResult] = useState<WitnessSimulationResponse | null>(null);
+  const [isSimulationModalOpen, setIsSimulationModalOpen] = useState(false);
 
   // Witnesses state
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
@@ -764,6 +769,40 @@ export const CaseDetailPage: React.FC = () => {
       setPlanError(handleApiError(error));
     } finally {
       setIsLoadingPlan(false);
+    }
+  };
+
+  const handleSimulateWitness = async () => {
+    if (!selectedRun?.id) return;
+    setIsSimulating(true);
+    try {
+      const result = await crossExamPlanApi.simulateWitness(selectedRun.id, {
+        persona: simulationPersona,
+        plan_id: crossExamPlan?.plan_id,
+      });
+      setSimulationResult(result);
+      setIsSimulationModalOpen(true);
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsSimulating(false);
+    }
+  };
+
+  const handleExportPlan = async (format: 'docx' | 'pdf') => {
+    if (!selectedRun?.id) return;
+    try {
+      const blob = await crossExamPlanApi.exportPlan(selectedRun.id, format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cross_exam_plan_${selectedRun.id}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setPlanError(handleApiError(error));
     }
   };
 
@@ -1731,6 +1770,37 @@ export const CaseDetailPage: React.FC = () => {
                             >
                               צור תכנית חקירה
                             </Button>
+                            <select
+                              value={simulationPersona}
+                              onChange={(e) => setSimulationPersona(e.target.value as typeof simulationPersona)}
+                              className="px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                            >
+                              <option value="cooperative">עד משתף פעולה</option>
+                              <option value="evasive">עד מתחמק</option>
+                              <option value="hostile">עד עוין</option>
+                            </select>
+                            <Button
+                              onClick={handleSimulateWitness}
+                              isLoading={isSimulating}
+                              variant="secondary"
+                              disabled={!crossExamPlan}
+                            >
+                              סימולציית עד
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('docx')}
+                              variant="ghost"
+                              disabled={!crossExamPlan}
+                            >
+                              ייצוא DOCX
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('pdf')}
+                              variant="ghost"
+                              disabled={!crossExamPlan}
+                            >
+                              ייצוא PDF
+                            </Button>
                             {planError && (
                               <span className="text-sm text-danger-600">{planError}</span>
                             )}
@@ -2563,6 +2633,57 @@ export const CaseDetailPage: React.FC = () => {
         leftAnchor={evidenceLeftAnchor}
         rightAnchor={evidenceRightAnchor}
       />
+
+      <Modal
+        isOpen={isSimulationModalOpen}
+        onClose={() => setIsSimulationModalOpen(false)}
+        title="סימולציית עד"
+        size="lg"
+      >
+        {simulationResult ? (
+          <div className="space-y-4">
+            <div className="text-sm text-slate-500">
+              פרסונה: {simulationResult.persona}
+            </div>
+            {simulationResult.steps.map((step, idx) => (
+              <Card key={`${step.step_id}_${idx}`}>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="neutral">{step.stage}</Badge>
+                    <span className="text-slate-700">{step.question}</span>
+                  </div>
+                  <div className="text-slate-900 font-medium">תשובת העד: {step.witness_reply}</div>
+                  {step.chosen_branch_trigger && (
+                    <div className="text-xs text-slate-500">
+                      הסתעפות: {step.chosen_branch_trigger}
+                    </div>
+                  )}
+                  {step.follow_up_questions && step.follow_up_questions.length > 0 && (
+                    <ul className="list-disc list-inside text-xs text-slate-600">
+                      {step.follow_up_questions.map((q, qIdx) => (
+                        <li key={`${qIdx}-${q}`}>{q}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {step.warnings && step.warnings.length > 0 && (
+                    <div className="text-xs text-danger-600 space-y-1">
+                      {step.warnings.map((w, wIdx) => (
+                        <div key={`${wIdx}-${w}`}>{w}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<MessageSquare className="w-12 h-12" />}
+            title="אין סימולציה"
+            description="צור תכנית ואז הפעל סימולציה."
+          />
+        )}
+      </Modal>
     </div>
   );
 };

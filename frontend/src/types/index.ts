@@ -214,6 +214,23 @@ export interface CrossExamPlanResponse {
   stages: CrossExamPlanStage[];
 }
 
+export interface WitnessSimulationStep {
+  step_id: string;
+  stage: string;
+  question: string;
+  witness_reply: string;
+  chosen_branch_trigger?: string | null;
+  follow_up_questions?: string[];
+  warnings?: string[];
+}
+
+export interface WitnessSimulationResponse {
+  run_id: string;
+  plan_id: string;
+  persona: string;
+  steps: WitnessSimulationStep[];
+}
+
 // Folder Types
 export interface Folder {
   id: string;
