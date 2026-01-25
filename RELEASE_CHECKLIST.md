@@ -39,3 +39,11 @@
   צעדי שחזור: לבצע Export → לפתוח DOCX → לוודא ציטוטים מול עוגנים במסמכים.
 - **PASS** — מבנה היצוא כולל: פרטי תיק, סתירות מדורגות, סטיות גרסה, תכנית חקירה, נספח.  
   בדיקה: `backend_lite/tests/test_phase5_export.py::test_export_docx_and_pdf_bytes`
+
+## E2E Validation — Post A1/B1/C1
+- **FAIL** — Golden Path (PDF).  
+  פקודה: `DOC1=/tmp/gp_doc1.pdf DOC2=/tmp/gp_doc2.pdf ./scripts/golden_path.sh`  
+  שגיאה: `Docker Compose לא נמצא (נדרש docker compose או docker-compose)`
+- **FAIL** — Golden Path (DOCX).  
+  פקודה: `DOC1=/tmp/gp_doc1.docx DOC2=/tmp/gp_doc2.docx ./scripts/golden_path.sh`  
+  שגיאה: `Docker Compose לא נמצא (נדרש docker compose או docker-compose)`
