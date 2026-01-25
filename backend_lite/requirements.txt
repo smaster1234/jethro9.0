@@ -18,6 +18,10 @@ pyyaml>=6.0
 # HTTP client for LLM APIs
 httpx>=0.26.0
 
+# PDF export
+reportlab>=4.1.0
+python-bidi>=0.4.2
+
 # Database (PostgreSQL)
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.9

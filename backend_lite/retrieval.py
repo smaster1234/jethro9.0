@@ -13,12 +13,17 @@ Key Features:
 """
 
 import math
+import os
 import re
+import time
+import logging
 from collections import Counter
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 
 from .models import Paragraph
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -288,15 +293,22 @@ class CandidatePairGenerator:
     which are more likely to contain contradictions.
     """
 
-    def __init__(self, top_k: int = 8, min_score: float = 0.1):
+    def __init__(self, top_k: int = 8, min_score: float = 0.1, max_pairs: Optional[int] = None):
         self.top_k = top_k
         self.min_score = min_score
+        self.max_pairs = max_pairs or int(os.environ.get("MAX_CANDIDATE_PAIRS", "5000"))
         self.index = BM25Index()
+        self._fingerprint: Optional[int] = None
+
+    def _compute_fingerprint(self, paragraphs: List[Paragraph]) -> int:
+        ids = tuple(p.id for p in paragraphs)
+        return hash(ids)
 
     def build_index(self, paragraphs: List[Paragraph]):
         """Build BM25 index from paragraphs"""
         self.index = BM25Index()
         self.index.add_paragraphs(paragraphs)
+        self._fingerprint = self._compute_fingerprint(paragraphs)
 
     def generate_candidates(
         self,
@@ -314,11 +326,14 @@ class CandidatePairGenerator:
             List of (para1, para2, similarity_score) tuples
         """
         # Build index if needed
-        if self.index.n_docs != len(paragraphs):
+        fingerprint = self._compute_fingerprint(paragraphs)
+        if self.index.n_docs != len(paragraphs) or self._fingerprint != fingerprint:
             self.build_index(paragraphs)
 
         candidates = []
         seen_pairs = set()
+        start_time = time.time()
+        reached_cap = False
 
         for para in paragraphs:
             # Find similar paragraphs
@@ -347,9 +362,24 @@ class CandidatePairGenerator:
                 other_para = self.index.paragraphs.get(result.paragraph_id)
                 if other_para:
                     candidates.append((para, other_para, result.score))
+                    if len(candidates) >= self.max_pairs:
+                        reached_cap = True
+                        break
+            if reached_cap:
+                break
 
         # Sort by similarity score descending
         candidates.sort(key=lambda x: x[2], reverse=True)
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.debug(
+            "Candidate pairs generated: total=%s cap=%s paragraphs=%s top_k=%s elapsed_ms=%s",
+            len(candidates),
+            self.max_pairs,
+            len(paragraphs),
+            self.top_k,
+            elapsed_ms,
+        )
 
         return candidates
 

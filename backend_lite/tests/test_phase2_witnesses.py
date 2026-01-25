@@ -189,3 +189,8 @@ def test_witness_endpoints_and_diff(sqlalchemy_db):
     diff = diff_resp.json()
     assert diff["similarity"] >= 0.0
     assert isinstance(diff["shifts"], list)
+    for shift in diff["shifts"]:
+        assert shift.get("anchor_a") is not None
+        assert shift.get("anchor_b") is not None
+        assert shift["anchor_a"].get("doc_id")
+        assert shift["anchor_b"].get("doc_id")

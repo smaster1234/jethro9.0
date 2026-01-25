@@ -159,13 +159,16 @@ def compute_insights_for_run(db: Any, run_id: str) -> List[ContradictionInsight]
     if not contradictions:
         return []
 
-    contr_ids = [c.id for c in contradictions]
-    db.query(ContradictionInsight).filter(
-        ContradictionInsight.contradiction_id.in_(contr_ids)
-    ).delete(synchronize_session=False)
+    contr_ids = [c.id for c in contradictions if c.id]
+    if contr_ids:
+        db.query(ContradictionInsight).filter(
+            ContradictionInsight.contradiction_id.in_(contr_ids)
+        ).delete(synchronize_session=False)
 
     insights = []
     for contr in contradictions:
+        if not contr.id:
+            continue
         data = compute_insight(contr)
         insight = ContradictionInsight(
             contradiction_id=contr.id,

@@ -8,15 +8,25 @@ FastAPI router for document upload and folder management.
 import os
 import json
 import logging
+import secrets
 from typing import List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .schemas import (
     EvidenceAnchor,
+    OrganizationCreateRequest,
+    OrganizationResponse,
+    OrganizationMemberAddRequest,
+    OrganizationMemberResponse,
+    OrganizationInviteCreateRequest,
+    OrganizationInviteResponse,
+    OrganizationInviteAcceptResponse,
+    UserSearchResponse,
     WitnessCreateRequest,
     WitnessVersionCreateRequest,
     WitnessResponse,
@@ -24,11 +34,20 @@ from .schemas import (
     WitnessVersionDiffResponse,
     VersionShift,
     ContradictionInsightResponse,
+    CrossExamPlanResponse,
+    CrossExamPlanStage,
+    CrossExamPlanStep,
+    CrossExamPlanBranch,
+    WitnessSimulationResponse,
+    WitnessSimulationStep,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["upload"])
+
+# Upload limits (shared with ZIP validation defaults)
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))
 
 
 # =============================================================================
@@ -163,6 +182,18 @@ class WitnessVersionDiffRequest(BaseModel):
     version_b_id: str
 
 
+class CrossExamPlanRequest(BaseModel):
+    """Request to generate a cross-exam plan"""
+    contradiction_ids: Optional[List[str]] = None
+    witness_id: Optional[str] = None
+
+
+class WitnessSimulationRequest(BaseModel):
+    """Request to simulate witness responses"""
+    persona: str = Field("cooperative", description="cooperative/evasive/hostile")
+    plan_id: Optional[str] = None
+
+
 # =============================================================================
 # DEPENDENCY - AUTH CONTEXT (Unified from auth.py)
 # =============================================================================
@@ -195,6 +226,54 @@ def _normalize_party(party: Optional[str]) -> Optional[str]:
 
 def _storage_provider_name() -> str:
     return (os.environ.get("STORAGE_BACKEND") or os.environ.get("STORAGE_TYPE") or "local").strip().lower() or "local"
+
+
+def _is_firm_admin(auth: AuthContext) -> bool:
+    return auth.system_role in ("admin", "super_admin")
+
+
+def _require_org_role(db: Session, auth: AuthContext, org_id: str, allowed_roles: Optional[List[str]] = None):
+    from .orgs import get_org_member
+    from .db.models import OrganizationRole
+
+    if _is_firm_admin(auth):
+        return None
+
+    member = get_org_member(db, org_id, auth.user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה למשרד זה"})
+
+    if allowed_roles:
+        if member.role.value not in allowed_roles:
+            raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה לפעולה זו"})
+
+    return member
+
+
+def _require_case_access(db: Session, auth: AuthContext, case_id: str):
+    from .db.models import Case
+    from .orgs import ensure_default_org, get_org_member
+
+    case = db.query(Case).filter(
+        Case.id == case_id,
+        Case.firm_id == auth.firm_id
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if not case.organization_id:
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        case.organization_id = org.id
+        db.flush()
+
+    if _is_firm_admin(auth):
+        return case, None
+
+    member = get_org_member(db, case.organization_id, auth.user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה למשרד זה"})
+
+    return case, member
 
 
 def get_db_dependency():
@@ -256,6 +335,351 @@ async def get_auth_context(
 
 
 # =============================================================================
+# ORGANIZATIONS (B1)
+# =============================================================================
+
+@router.post("/orgs", response_model=OrganizationResponse)
+async def create_org(
+    payload: OrganizationCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Create a new organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization, OrganizationMember, OrganizationRole
+
+        with get_db_session() as db:
+            org = Organization(
+                firm_id=auth.firm_id,
+                name=payload.name.strip(),
+            )
+            db.add(org)
+            db.flush()
+
+            db.add(OrganizationMember(
+                organization_id=org.id,
+                user_id=auth.user_id,
+                role=OrganizationRole.OWNER,
+                added_by_user_id=auth.user_id,
+            ))
+
+            return OrganizationResponse(
+                id=org.id,
+                firm_id=org.firm_id,
+                name=org.name,
+                created_at=org.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create organization")
+        raise HTTPException(status_code=500, detail="Failed to create organization")
+
+
+@router.get("/orgs", response_model=List[OrganizationResponse])
+async def list_orgs(
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List organizations for the current user."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization, OrganizationMember
+
+        with get_db_session() as db:
+            query = db.query(Organization).filter(Organization.firm_id == auth.firm_id)
+            if not _is_firm_admin(auth):
+                query = query.join(
+                    OrganizationMember,
+                    OrganizationMember.organization_id == Organization.id
+                ).filter(OrganizationMember.user_id == auth.user_id)
+
+            orgs = query.order_by(Organization.created_at.asc()).all()
+            return [
+                OrganizationResponse(
+                    id=org.id,
+                    firm_id=org.firm_id,
+                    name=org.name,
+                    created_at=org.created_at,
+                )
+                for org in orgs
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list organizations")
+        raise HTTPException(status_code=500, detail="Failed to list organizations")
+
+
+@router.get("/orgs/{org_id}", response_model=OrganizationResponse)
+async def get_org(
+    org_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Get organization details."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Organization
+
+        with get_db_session() as db:
+            org = db.query(Organization).filter(
+                Organization.id == org_id,
+                Organization.firm_id == auth.firm_id
+            ).first()
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found")
+
+            _require_org_role(db, auth, org_id)
+            return OrganizationResponse(
+                id=org.id,
+                firm_id=org.firm_id,
+                name=org.name,
+                created_at=org.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to fetch organization")
+        raise HTTPException(status_code=500, detail="Failed to fetch organization")
+
+
+@router.get("/orgs/{org_id}/members", response_model=List[OrganizationMemberResponse])
+async def list_org_members(
+    org_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List organization members."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationMember, User
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id)
+            members = (
+                db.query(OrganizationMember, User)
+                .join(User, User.id == OrganizationMember.user_id)
+                .filter(OrganizationMember.organization_id == org_id)
+                .order_by(User.name.asc())
+                .all()
+            )
+            return [
+                OrganizationMemberResponse(
+                    user_id=user.id,
+                    email=user.email,
+                    name=user.name,
+                    role=member.role.value if hasattr(member.role, "value") else str(member.role),
+                    added_at=member.added_at,
+                )
+                for member, user in members
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list organization members")
+        raise HTTPException(status_code=500, detail="Failed to list organization members")
+
+
+@router.post("/orgs/{org_id}/members", response_model=OrganizationMemberResponse)
+async def add_org_member(
+    org_id: str,
+    payload: OrganizationMemberAddRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Add existing user to organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationMember, OrganizationRole, User
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id, allowed_roles=["owner"])
+
+            user = db.query(User).filter(
+                User.id == payload.user_id,
+                User.firm_id == auth.firm_id
+            ).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            existing = (
+                db.query(OrganizationMember)
+                .filter(
+                    OrganizationMember.organization_id == org_id,
+                    OrganizationMember.user_id == user.id,
+                )
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="User already in organization")
+
+            try:
+                role = OrganizationRole(payload.role)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid role")
+            member = OrganizationMember(
+                organization_id=org_id,
+                user_id=user.id,
+                role=role,
+                added_by_user_id=auth.user_id,
+            )
+            db.add(member)
+
+            return OrganizationMemberResponse(
+                user_id=user.id,
+                email=user.email,
+                name=user.name,
+                role=role.value,
+                added_at=member.added_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to add organization member")
+        raise HTTPException(status_code=500, detail="Failed to add organization member")
+
+
+@router.post("/orgs/{org_id}/invites", response_model=OrganizationInviteResponse)
+async def create_org_invite(
+    org_id: str,
+    payload: OrganizationInviteCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Invite a user by email to an organization."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationInvite, InviteStatus, OrganizationRole
+
+        with get_db_session() as db:
+            _require_org_role(db, auth, org_id, allowed_roles=["owner"])
+
+            token = secrets.token_urlsafe(24)
+            expires_at = datetime.utcnow() + timedelta(days=payload.expires_in_days)
+            try:
+                role = OrganizationRole(payload.role)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid role")
+
+            invite = OrganizationInvite(
+                organization_id=org_id,
+                email=payload.email.strip().lower(),
+                token=token,
+                status=InviteStatus.PENDING,
+                role=role,
+                expires_at=expires_at,
+                created_by_user_id=auth.user_id,
+            )
+            db.add(invite)
+            db.flush()
+
+            return OrganizationInviteResponse(
+                id=invite.id,
+                organization_id=invite.organization_id,
+                email=invite.email,
+                role=role.value,
+                status=invite.status.value,
+                expires_at=invite.expires_at,
+                token=invite.token,
+                created_at=invite.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create invite")
+        raise HTTPException(status_code=500, detail="Failed to create invite")
+
+
+@router.post("/invites/{token}/accept", response_model=OrganizationInviteAcceptResponse)
+async def accept_org_invite(
+    token: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Accept an organization invite."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import OrganizationInvite, InviteStatus, OrganizationMember
+
+        with get_db_session() as db:
+            invite = db.query(OrganizationInvite).filter(
+                OrganizationInvite.token == token
+            ).first()
+            if not invite:
+                raise HTTPException(status_code=404, detail="Invite not found")
+
+            if invite.status != InviteStatus.PENDING:
+                raise HTTPException(status_code=400, detail="Invite already used or invalid")
+
+            if invite.expires_at < datetime.utcnow():
+                invite.status = InviteStatus.EXPIRED
+                db.commit()
+                raise HTTPException(status_code=400, detail="Invite expired")
+
+            if invite.email.lower() != (auth.email or "").lower():
+                raise HTTPException(status_code=403, detail="Invite email mismatch")
+
+            existing = db.query(OrganizationMember).filter(
+                OrganizationMember.organization_id == invite.organization_id,
+                OrganizationMember.user_id == auth.user_id,
+            ).first()
+            if not existing:
+                db.add(OrganizationMember(
+                    organization_id=invite.organization_id,
+                    user_id=auth.user_id,
+                    role=invite.role,
+                    added_by_user_id=auth.user_id,
+                ))
+
+            invite.status = InviteStatus.ACCEPTED
+
+            return OrganizationInviteAcceptResponse(
+                organization_id=invite.organization_id,
+                role=invite.role.value,
+                status=invite.status.value,
+            )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to accept invite")
+        raise HTTPException(status_code=500, detail="Failed to accept invite")
+
+
+@router.get("/users/search", response_model=List[UserSearchResponse])
+async def search_users(
+    q: str = Query(..., min_length=2, max_length=100),
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Search users within firm by name or email."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import User
+
+        with get_db_session() as db:
+            query = db.query(User).filter(User.firm_id == auth.firm_id, User.is_active == True)
+            like = f"%{q.strip()}%"
+            query = query.filter((User.email.ilike(like)) | (User.name.ilike(like)))
+            users = query.order_by(User.name.asc()).limit(20).all()
+
+            return [
+                UserSearchResponse(
+                    id=user.id,
+                    email=user.email,
+                    name=user.name,
+                )
+                for user in users
+            ]
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to search users")
+        raise HTTPException(status_code=500, detail="Failed to search users")
+
+
+# =============================================================================
 # FOLDER ENDPOINTS
 # =============================================================================
 
@@ -274,13 +698,7 @@ async def create_folder(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Check for duplicate name under parent
             existing = db.query(Folder).filter(
@@ -338,13 +756,7 @@ async def get_folder_tree(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Get all folders for case
             folders = db.query(Folder).filter(
@@ -541,13 +953,7 @@ async def upload_documents(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             storage = get_storage()
             document_ids = []
@@ -555,22 +961,32 @@ async def upload_documents(
             provider = _storage_provider_name()
 
             for idx, up in enumerate(all_files):
+                safe_filename = os.path.basename(up.filename or "")
+                if not safe_filename:
+                    raise HTTPException(status_code=400, detail="Invalid filename")
+
                 # Read file
                 data = await up.read()
 
                 if not data:
                     continue
 
+                if len(data) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB)",
+                    )
+
                 # Detect MIME type
-                mime_type = detect_mime_type(up.filename, data)
+                mime_type = detect_mime_type(safe_filename, data)
 
                 if not is_supported(mime_type):
-                    logger.warning(f"Skipping unsupported file: {up.filename} ({mime_type})")
+                    logger.warning(f"Skipping unsupported file: {safe_filename} ({mime_type})")
                     continue
 
                 # Store file
                 storage_key = storage.generate_key(
-                    auth.firm_id, case_id, up.filename
+                    auth.firm_id, case_id, safe_filename
                 )
                 storage_meta = storage.put(storage_key, data, mime_type)
 
@@ -593,8 +1009,8 @@ async def upload_documents(
                     firm_id=auth.firm_id,
                     case_id=case_id,
                     folder_id=folder_id,
-                    doc_name=up.filename,
-                    original_filename=up.filename,
+                    doc_name=safe_filename,
+                    original_filename=safe_filename,
                     mime_type=mime_type,
                     party=normalized_party,
                     role=file_meta.get('role'),
@@ -631,12 +1047,13 @@ async def upload_documents(
                 # text/blocks immediately, making the document READY for analysis.
                 if provider == "local":
                     try:
+                        from .ingest.base import ParserError
                         doc.status = DocumentStatus.PROCESSING
                         db.flush()
 
                         parsed = parse_document(
                             data=data,
-                            filename=up.filename,
+                            filename=safe_filename,
                             mime_type=mime_type,
                             force_ocr=False,
                         )
@@ -670,10 +1087,16 @@ async def upload_documents(
                                     locator_json=block.to_locator_json(doc_id=doc.id),
                                 )
                                 db.add(db_block)
-                    except Exception as e:
+                    except ParserError as e:
                         doc.status = DocumentStatus.FAILED
                         doc.extra_data = doc.extra_data or {}
-                        doc.extra_data["error"] = str(e)
+                        doc.extra_data["error"] = e.to_dict()
+                        logger.warning("Inline parse failed: %s", e.code)
+                        raise HTTPException(status_code=400, detail=e.to_dict())
+                    except Exception:
+                        doc.status = DocumentStatus.FAILED
+                        doc.extra_data = doc.extra_data or {}
+                        doc.extra_data["error"] = "שגיאה בעיבוד המסמך"
                         logger.exception("Inline parse failed")
                 else:
                     # Enqueue parsing job for shared storage backends (S3, etc.)
@@ -728,13 +1151,7 @@ async def upload_zip(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
         # Read and store ZIP
         data = await file.read()
@@ -791,13 +1208,7 @@ async def list_documents(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             # Build query
             query = db.query(Document).filter(
@@ -1399,12 +1810,7 @@ async def list_witnesses(
         from .db.models import Case, Witness, WitnessVersion, Document
 
         with get_db_session() as db:
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             witnesses = (
                 db.query(Witness)
@@ -1467,12 +1873,7 @@ async def create_witness(
         from .db.models import Case, Witness
 
         with get_db_session() as db:
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             witness = Witness(
                 firm_id=auth.firm_id,
@@ -1726,9 +2127,7 @@ async def list_analysis_runs(
         from .db.models import Case, AnalysisRun, Claim, Contradiction
 
         with get_db_session() as db:
-            case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             runs = (
                 db.query(AnalysisRun)
@@ -1896,6 +2295,452 @@ async def list_contradiction_insights(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/analysis-runs/{run_id}/cross-exam-plan", response_model=CrossExamPlanResponse)
+async def generate_cross_exam_plan(
+    run_id: str,
+    payload: CrossExamPlanRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Generate a cross-exam plan for a run."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import AnalysisRun, Contradiction, ContradictionInsight, CrossExamPlan
+        from .insights import compute_insights_for_run
+        from .cross_exam_planner import build_cross_exam_plan
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            query = db.query(Contradiction).filter(Contradiction.run_id == run_id)
+            if payload.contradiction_ids:
+                query = query.filter(Contradiction.id.in_(payload.contradiction_ids))
+            contradictions = query.all()
+
+            if not contradictions:
+                raise HTTPException(status_code=400, detail="No contradictions found for plan")
+
+            # Ensure insights exist
+            existing_insights = db.query(ContradictionInsight).filter(
+                ContradictionInsight.contradiction_id.in_([c.id for c in contradictions])
+            ).count()
+            if existing_insights == 0:
+                compute_insights_for_run(db, run_id)
+
+            insight_map = {
+                i.contradiction_id: i
+                for i in db.query(ContradictionInsight).filter(
+                    ContradictionInsight.contradiction_id.in_([c.id for c in contradictions])
+                ).all()
+            }
+
+            pairs = [(c, insight_map.get(c.id)) for c in contradictions]
+            stages = build_cross_exam_plan(pairs)
+            for stage in stages:
+                stage["steps"] = [s for s in stage.get("steps", []) if s.get("anchors")]
+
+            if not any(stage.get("steps") for stage in stages):
+                raise HTTPException(status_code=400, detail="No anchored plan steps available")
+
+            plan = CrossExamPlan(
+                firm_id=auth.firm_id,
+                case_id=run.case_id,
+                run_id=run_id,
+                witness_id=payload.witness_id,
+                plan_json={"stages": stages},
+            )
+            db.add(plan)
+            db.flush()
+
+            return CrossExamPlanResponse(
+                plan_id=plan.id,
+                case_id=plan.case_id,
+                run_id=plan.run_id,
+                witness_id=plan.witness_id,
+                created_at=plan.created_at,
+                stages=[
+                    CrossExamPlanStage(
+                        stage=stage["stage"],
+                        steps=[
+                            CrossExamPlanStep(
+                                id=step["id"],
+                                contradiction_id=step.get("contradiction_id"),
+                                stage=step["stage"],
+                                step_type=step["step_type"],
+                                title=step["title"],
+                                question=step["question"],
+                                purpose=step.get("purpose"),
+                                anchors=step.get("anchors", []),
+                                branches=[
+                                    CrossExamPlanBranch(
+                                        trigger=b.get("trigger", ""),
+                                        follow_up_questions=b.get("follow_up_questions", []),
+                                    )
+                                    for b in step.get("branches", [])
+                                ],
+                                do_not_ask_flag=step.get("do_not_ask_flag", False),
+                                do_not_ask_reason=step.get("do_not_ask_reason"),
+                            )
+                            for step in stage.get("steps", [])
+                        ],
+                    )
+                    for stage in stages
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to generate cross-exam plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analysis-runs/{run_id}/cross-exam-plan", response_model=CrossExamPlanResponse)
+async def get_cross_exam_plan(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Get the latest cross-exam plan for a run."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, AnalysisRun
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            plan = (
+                db.query(CrossExamPlan)
+                .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                .order_by(CrossExamPlan.created_at.desc())
+                .first()
+            )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            stages = (plan.plan_json or {}).get("stages", [])
+            return CrossExamPlanResponse(
+                plan_id=plan.id,
+                case_id=plan.case_id,
+                run_id=plan.run_id,
+                witness_id=plan.witness_id,
+                created_at=plan.created_at,
+                stages=[
+                    CrossExamPlanStage(
+                        stage=stage.get("stage"),
+                        steps=[
+                            CrossExamPlanStep(
+                                id=step.get("id"),
+                                contradiction_id=step.get("contradiction_id"),
+                                stage=step.get("stage"),
+                                step_type=step.get("step_type"),
+                                title=step.get("title"),
+                                question=step.get("question"),
+                                purpose=step.get("purpose"),
+                                anchors=step.get("anchors", []),
+                                branches=[
+                                    CrossExamPlanBranch(
+                                        trigger=b.get("trigger", ""),
+                                        follow_up_questions=b.get("follow_up_questions", []),
+                                    )
+                                    for b in step.get("branches", [])
+                                ],
+                                do_not_ask_flag=step.get("do_not_ask_flag", False),
+                                do_not_ask_reason=step.get("do_not_ask_reason"),
+                            )
+                            for step in stage.get("steps", [])
+                        ],
+                    )
+                    for stage in stages
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get cross-exam plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analysis-runs/{run_id}/witness-simulation", response_model=WitnessSimulationResponse)
+async def simulate_witness(
+    run_id: str,
+    payload: WitnessSimulationRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Simulate witness responses based on latest cross-exam plan."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, AnalysisRun
+        from .witness_simulation import simulate_plan
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            if payload.plan_id:
+                plan = db.query(CrossExamPlan).filter(
+                    CrossExamPlan.id == payload.plan_id,
+                    CrossExamPlan.run_id == run_id
+                ).first()
+            else:
+                plan = (
+                    db.query(CrossExamPlan)
+                    .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                    .order_by(CrossExamPlan.created_at.desc())
+                    .first()
+                )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            steps = simulate_plan(plan.plan_json or {}, payload.persona)
+            return WitnessSimulationResponse(
+                run_id=run_id,
+                plan_id=plan.id,
+                persona=payload.persona,
+                steps=[
+                    WitnessSimulationStep(
+                        step_id=s.get("step_id", ""),
+                        stage=s.get("stage", ""),
+                        question=s.get("question", ""),
+                        witness_reply=s.get("witness_reply", ""),
+                        chosen_branch_trigger=s.get("chosen_branch_trigger"),
+                        follow_up_questions=s.get("follow_up_questions", []),
+                        warnings=s.get("warnings", []),
+                    )
+                    for s in steps
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to simulate witness")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analysis-runs/{run_id}/export/cross-exam")
+async def export_cross_exam_plan(
+    run_id: str,
+    format: str = Query(default="docx", pattern="^(docx|pdf)$"),
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Export cross-examination plan to DOCX/PDF."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import (
+            CrossExamPlan,
+            AnalysisRun,
+            Document,
+            Case,
+            Contradiction,
+            ContradictionInsight,
+            Witness,
+            WitnessVersion,
+        )
+        from .exporter import build_cross_exam_docx, build_cross_exam_pdf
+        from .insights import compute_insights_for_run
+        from .witness_diff import diff_witness_versions
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            case, member = _require_case_access(db, auth, run.case_id)
+            if case.organization_id and member and member.role.value not in ("lawyer", "owner"):
+                raise HTTPException(status_code=403, detail={"code": "org_forbidden", "message": "אין הרשאה לייצוא"})
+
+            plan = (
+                db.query(CrossExamPlan)
+                .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                .order_by(CrossExamPlan.created_at.desc())
+                .first()
+            )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            contradictions = (
+                db.query(Contradiction)
+                .filter(Contradiction.run_id == run_id)
+                .order_by(Contradiction.created_at.asc())
+                .all()
+            )
+            if not contradictions:
+                raise HTTPException(status_code=400, detail="No contradictions available for export")
+
+            if contradictions:
+                insight_count = (
+                    db.query(ContradictionInsight)
+                    .filter(ContradictionInsight.contradiction_id.in_([c.id for c in contradictions if c.id]))
+                    .count()
+                )
+                if insight_count == 0:
+                    compute_insights_for_run(db, run_id)
+
+            insight_map = {
+                i.contradiction_id: i
+                for i in db.query(ContradictionInsight).filter(
+                    ContradictionInsight.contradiction_id.in_([c.id for c in contradictions if c.id])
+                )
+            }
+            if contradictions and not insight_map:
+                raise HTTPException(status_code=400, detail="Insights not available for export")
+
+            ranked = []
+            for contr in contradictions:
+                insight = insight_map.get(contr.id)
+                scores = {
+                    "impact": float(insight.impact_score) if insight else None,
+                    "risk": float(insight.risk_score) if insight else None,
+                    "verifiability": float(insight.verifiability_score) if insight else None,
+                }
+                if insight:
+                    scores["composite"] = round(
+                        (insight.impact_score or 0.0)
+                        * (insight.risk_score or 0.0)
+                        * (insight.verifiability_score or 0.0),
+                        4,
+                    )
+
+                anchors = []
+                if contr.locator1_json and contr.locator1_json.get("doc_id"):
+                    anchors.append(contr.locator1_json)
+                if contr.locator2_json and contr.locator2_json.get("doc_id"):
+                    anchors.append(contr.locator2_json)
+
+                ranked.append({
+                    "contradiction_id": contr.id,
+                    "type": contr.contradiction_type,
+                    "severity": contr.severity,
+                    "category": contr.category,
+                    "quote1": contr.quote1,
+                    "quote2": contr.quote2,
+                    "anchors": anchors,
+                    "scores": scores,
+                    "stage": insight.stage_recommendation if insight else None,
+                })
+
+            ranked.sort(
+                key=lambda item: item.get("scores", {}).get("composite") or 0.0,
+                reverse=True,
+            )
+
+            version_shifts = []
+            witnesses = (
+                db.query(Witness)
+                .filter(Witness.case_id == run.case_id, Witness.firm_id == auth.firm_id)
+                .order_by(Witness.created_at.asc())
+                .all()
+            )
+            for witness in witnesses:
+                versions = (
+                    db.query(WitnessVersion)
+                    .filter(WitnessVersion.witness_id == witness.id)
+                    .order_by(WitnessVersion.created_at.asc())
+                    .all()
+                )
+                if len(versions) < 2:
+                    continue
+                shifts = []
+                for idx in range(len(versions) - 1):
+                    diff = diff_witness_versions(db, versions[idx], versions[idx + 1])
+                    for shift in diff.get("shifts", []):
+                        shifts.append({
+                            "shift_type": shift.get("shift_type"),
+                            "description": shift.get("description"),
+                            "anchor_a": shift.get("anchor_a"),
+                            "anchor_b": shift.get("anchor_b"),
+                        })
+                if shifts:
+                    version_shifts.append({
+                        "witness_id": witness.id,
+                        "witness_name": witness.name,
+                        "shifts": shifts,
+                    })
+
+            doc_ids = []
+            for stage in (plan.plan_json or {}).get("stages", []):
+                for step in stage.get("steps", []):
+                    for anchor in step.get("anchors", []):
+                        if anchor.get("doc_id"):
+                            doc_ids.append(anchor["doc_id"])
+            doc_ids = list(dict.fromkeys(doc_ids))
+            docs = db.query(Document).filter(Document.id.in_(doc_ids)).all() if doc_ids else []
+            doc_lookup = {d.id: d for d in docs}
+
+            appendix_anchors = []
+            seen = set()
+            for item in ranked:
+                for anchor in item.get("anchors", []):
+                    key = (anchor.get("doc_id"), anchor.get("char_start"), anchor.get("char_end"), anchor.get("snippet"))
+                    if key in seen or not anchor.get("doc_id"):
+                        continue
+                    seen.add(key)
+                    appendix_anchors.append(anchor)
+            for stage in (plan.plan_json or {}).get("stages", []):
+                for step in stage.get("steps", []):
+                    for anchor in step.get("anchors", []):
+                        key = (anchor.get("doc_id"), anchor.get("char_start"), anchor.get("char_end"), anchor.get("snippet"))
+                        if key in seen or not anchor.get("doc_id"):
+                            continue
+                        seen.add(key)
+                        appendix_anchors.append(anchor)
+
+            plan_payload = dict(plan.plan_json or {})
+            plan_payload["case_settings"] = {
+                "case_number": case.case_number,
+                "court": case.court,
+                "our_side": case.our_side,
+                "client_name": case.client_name,
+                "opponent_name": case.opponent_name,
+                "case_type": (case.extra_data or {}).get("case_type"),
+                "court_level": (case.extra_data or {}).get("court_level"),
+                "language": (case.extra_data or {}).get("language"),
+            }
+            plan_payload["ranked_contradictions"] = ranked
+            plan_payload["version_shifts"] = version_shifts
+            plan_payload["appendix_anchors"] = appendix_anchors
+
+            if format == "pdf":
+                content = build_cross_exam_pdf(plan_payload, case.name, run_id, doc_lookup)
+                filename = f"cross_exam_plan_{case.name}_{run_id}.pdf"
+                media_type = "application/pdf"
+            else:
+                content = build_cross_exam_docx(plan_payload, case.name, run_id, doc_lookup)
+                filename = f"cross_exam_plan_{case.name}_{run_id}.docx"
+                media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+            return Response(
+                content=content,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to export cross-exam plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/cases/{case_id}/jobs")
 async def list_case_jobs(
     case_id: str,
@@ -1911,13 +2756,7 @@ async def list_case_jobs(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
             query = db.query(Job).filter(
                 Job.case_id == case_id,
@@ -1969,13 +2808,7 @@ async def analyze_case(
 
         with get_db_session() as db:
             # Verify case access
-            case = db.query(Case).filter(
-                Case.id == case_id,
-                Case.firm_id == auth.firm_id
-            ).first()
-
-            if not case:
-                raise HTTPException(status_code=404, detail="Case not found")
+            case, _ = _require_case_access(db, auth, case_id)
 
         if request is None:
             request = AnalyzeCaseRequest()

@@ -172,8 +172,15 @@ apiClient.interceptors.response.use(
 export const handleApiError = (error: unknown): string => {
   if (axios.isAxiosError(error)) {
     const axiosError = error as AxiosError<ApiError>;
-    if (axiosError.response?.data?.detail) {
-      return axiosError.response.data.detail;
+    const apiError = axiosError.response?.data;
+    if (apiError?.error?.message) {
+      return apiError.error.message;
+    }
+    if (apiError?.detail) {
+      return apiError.detail;
+    }
+    if (apiError?.message) {
+      return apiError.message;
     }
     if (axiosError.message) {
       return axiosError.message;

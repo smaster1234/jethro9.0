@@ -55,8 +55,9 @@ def build_anchor_from_block(block: Any, snippet: Optional[str] = None) -> Dict[s
 def find_anchor_for_snippet(db: Any, document_id: str, snippet: str) -> Optional[Dict[str, Any]]:
     """
     Find a block containing a snippet and build an anchor.
+    Falls back to the first block when snippet is empty or not found.
     """
-    if not document_id or not snippet:
+    if not document_id:
         return None
 
     from .db.models import DocumentBlock
@@ -67,6 +68,11 @@ def find_anchor_for_snippet(db: Any, document_id: str, snippet: str) -> Optional
         .order_by(DocumentBlock.block_index.asc())
         .all()
     )
+
+    if not snippet:
+        if blocks:
+            return build_anchor_from_block(blocks[0])
+        return None
 
     for block in blocks:
         text = block.text or ""

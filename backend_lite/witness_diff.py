@@ -69,6 +69,10 @@ def _extract_negations(text: str) -> Set[str]:
     return found
 
 
+def _anchor_or_fallback(db: Any, document_id: str, snippet: Optional[str]) -> Optional[Dict[str, Any]]:
+    return find_anchor_for_snippet(db, document_id, snippet or "")
+
+
 def diff_witness_versions(
     db: Any,
     version_a: Any,
@@ -95,8 +99,8 @@ def diff_witness_versions(
             "description": "דמיון נמוך בין הגרסאות (שינוי נרטיבי רחב).",
             "similarity": similarity,
             "details": {"threshold": 0.35},
-            "anchor_a": find_anchor_for_snippet(db, version_a.document_id, snippet_a) if snippet_a else None,
-            "anchor_b": find_anchor_for_snippet(db, version_b.document_id, snippet_b) if snippet_b else None,
+            "anchor_a": _anchor_or_fallback(db, version_a.document_id, snippet_a),
+            "anchor_b": _anchor_or_fallback(db, version_b.document_id, snippet_b),
         })
 
     # 2) Time changes
@@ -108,13 +112,17 @@ def diff_witness_versions(
         anchor_a = None
         anchor_b = None
         if removed:
-            anchor_a = find_anchor_for_snippet(db, version_a.document_id, removed[0])
+            anchor_a = _anchor_or_fallback(db, version_a.document_id, removed[0])
         elif dates_a_raw:
-            anchor_a = find_anchor_for_snippet(db, version_a.document_id, dates_a_raw[0])
+            anchor_a = _anchor_or_fallback(db, version_a.document_id, dates_a_raw[0])
+        else:
+            anchor_a = _anchor_or_fallback(db, version_a.document_id, "")
         if added:
-            anchor_b = find_anchor_for_snippet(db, version_b.document_id, added[0])
+            anchor_b = _anchor_or_fallback(db, version_b.document_id, added[0])
         elif dates_b_raw:
-            anchor_b = find_anchor_for_snippet(db, version_b.document_id, dates_b_raw[0])
+            anchor_b = _anchor_or_fallback(db, version_b.document_id, dates_b_raw[0])
+        else:
+            anchor_b = _anchor_or_fallback(db, version_b.document_id, "")
 
         shifts.append({
             "shift_type": "time_change",
@@ -131,8 +139,8 @@ def diff_witness_versions(
     if entities_a != entities_b:
         added = sorted(list(entities_b - entities_a))[:5]
         removed = sorted(list(entities_a - entities_b))[:5]
-        anchor_a = find_anchor_for_snippet(db, version_a.document_id, removed[0]) if removed else None
-        anchor_b = find_anchor_for_snippet(db, version_b.document_id, added[0]) if added else None
+        anchor_a = _anchor_or_fallback(db, version_a.document_id, removed[0]) if removed else _anchor_or_fallback(db, version_a.document_id, "")
+        anchor_b = _anchor_or_fallback(db, version_b.document_id, added[0]) if added else _anchor_or_fallback(db, version_b.document_id, "")
         shifts.append({
             "shift_type": "entity_change",
             "description": "שינוי במונחים/ישויות מרכזיות בין הגרסאות.",
@@ -153,8 +161,8 @@ def diff_witness_versions(
             "description": "שינוי קוטביות/שלילה בין הגרסאות.",
             "similarity": similarity,
             "details": {"negations_a": sorted(list(neg_a)), "negations_b": sorted(list(neg_b))},
-            "anchor_a": find_anchor_for_snippet(db, version_a.document_id, marker_a) if marker_a else None,
-            "anchor_b": find_anchor_for_snippet(db, version_b.document_id, marker_b) if marker_b else None,
+            "anchor_a": _anchor_or_fallback(db, version_a.document_id, marker_a),
+            "anchor_b": _anchor_or_fallback(db, version_b.document_id, marker_b),
         })
 
     return {

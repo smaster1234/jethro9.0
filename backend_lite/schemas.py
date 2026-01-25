@@ -293,6 +293,7 @@ class CreateCaseRequest(BaseModel):
     court: Optional[str] = Field(None, description="Court name")
     case_number: Optional[str] = Field(None, description="Official case number")
     description: Optional[str] = Field(None, description="Case description")
+    organization_id: Optional[str] = Field(None, description="Organization ID")
 
     class Config:
         json_schema_extra = {
@@ -303,7 +304,8 @@ class CreateCaseRequest(BaseModel):
                 "opponent_name": "דוד לוי",
                 "court": "שלום תל אביב",
                 "case_number": "12345-01-24",
-                "description": "תביעה בגין הפרת חוזה"
+                "description": "תביעה בגין הפרת חוזה",
+                "organization_id": "org_123"
             }
         }
 
@@ -348,6 +350,63 @@ class AnalyzeCaseRequest(BaseModel):
                 "rag_top_k": 8
             }
         }
+
+
+# =============================================================================
+# INPUT/OUTPUT SCHEMAS - Organizations (B1)
+# =============================================================================
+
+class OrganizationCreateRequest(BaseModel):
+    name: str = Field(..., description="Organization name")
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    user_id: str = Field(..., description="Existing user ID")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+
+
+class OrganizationInviteCreateRequest(BaseModel):
+    email: str = Field(..., description="Invitee email")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+    expires_in_days: int = Field(7, ge=1, le=60, description="Invite expiry in days")
+
+
+class OrganizationResponse(BaseModel):
+    id: str
+    firm_id: str
+    name: str
+    created_at: Optional[datetime] = None
+
+
+class OrganizationMemberResponse(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    role: str
+    added_at: Optional[datetime] = None
+
+
+class OrganizationInviteResponse(BaseModel):
+    id: str
+    organization_id: str
+    email: str
+    role: str
+    status: str
+    expires_at: datetime
+    token: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class OrganizationInviteAcceptResponse(BaseModel):
+    organization_id: str
+    role: str
+    status: str
+
+
+class UserSearchResponse(BaseModel):
+    id: str
+    email: str
+    name: str
 
 
 # =============================================================================
@@ -967,6 +1026,70 @@ class ContradictionInsightResponse(BaseModel):
     composite_score: Optional[float] = None
 
 
+# =============================================================================
+# OUTPUT SCHEMAS - Cross-Examination Plan
+# =============================================================================
+
+class CrossExamPlanBranch(BaseModel):
+    """Branching follow-up for an evasion or trap"""
+    trigger: str
+    follow_up_questions: List[str] = Field(default_factory=list)
+
+
+class CrossExamPlanStep(BaseModel):
+    """Single step in a cross-exam plan"""
+    id: str
+    contradiction_id: Optional[str] = None
+    stage: str
+    step_type: str
+    title: str
+    question: str
+    purpose: Optional[str] = None
+    anchors: List[EvidenceAnchor] = Field(default_factory=list)
+    branches: List[CrossExamPlanBranch] = Field(default_factory=list)
+    do_not_ask_flag: bool = False
+    do_not_ask_reason: Optional[str] = None
+
+
+class CrossExamPlanStage(BaseModel):
+    """Stage in a cross-exam plan"""
+    stage: str
+    steps: List[CrossExamPlanStep] = Field(default_factory=list)
+
+
+class CrossExamPlanResponse(BaseModel):
+    """Cross-examination plan response"""
+    plan_id: str
+    case_id: str
+    run_id: str
+    witness_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    stages: List[CrossExamPlanStage] = Field(default_factory=list)
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Witness Simulation
+# =============================================================================
+
+class WitnessSimulationStep(BaseModel):
+    """Single simulated witness response"""
+    step_id: str
+    stage: str
+    question: str
+    witness_reply: str
+    chosen_branch_trigger: Optional[str] = None
+    follow_up_questions: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class WitnessSimulationResponse(BaseModel):
+    """Witness simulation response"""
+    run_id: str
+    plan_id: str
+    persona: str
+    steps: List[WitnessSimulationStep] = Field(default_factory=list)
+
+
 # OUTPUT SCHEMAS - Health & Errors
 # =============================================================================
 
@@ -978,11 +1101,16 @@ class HealthResponse(BaseModel):
     timestamp: datetime = Field(..., description="Current timestamp")
 
 
+class ErrorDetail(BaseModel):
+    """Structured error detail"""
+    code: str = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[Any] = Field(None, description="Optional error details")
+
+
 class ErrorResponse(BaseModel):
-    """Error response"""
-    error: str = Field(..., description="Error message")
-    detail: Optional[str] = Field(None, description="Detailed error info")
-    validation_flags: List[str] = Field(default_factory=list, description="Validation warnings")
+    """Structured error response"""
+    error: ErrorDetail
 
 
 # =============================================================================

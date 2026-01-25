@@ -64,6 +64,39 @@ export interface TeamMember {
   added_at: string;
 }
 
+// Organization Types (B1)
+export interface Organization {
+  id: string;
+  firm_id: string;
+  name: string;
+  created_at?: string;
+}
+
+export interface OrganizationMember {
+  user_id: string;
+  email: string;
+  name: string;
+  role: 'viewer' | 'intern' | 'lawyer' | 'owner';
+  added_at?: string;
+}
+
+export interface OrganizationInvite {
+  id: string;
+  organization_id: string;
+  email: string;
+  role: 'viewer' | 'intern' | 'lawyer' | 'owner';
+  status: 'pending' | 'accepted' | 'expired' | 'revoked';
+  expires_at: string;
+  token?: string;
+  created_at?: string;
+}
+
+export interface UserSearchResult {
+  id: string;
+  email: string;
+  name: string;
+}
+
 // Case Types
 export interface Case {
   id: string;
@@ -77,6 +110,7 @@ export interface Case {
   status?: 'active' | 'closed' | 'pending';
   tags?: string[];
   firm_id: string;
+  organization_id?: string;
   document_count?: number;
   created_at: string;
   updated_at?: string;
@@ -90,6 +124,7 @@ export interface CreateCaseRequest {
   opponent_name?: string;
   court?: string;
   case_number?: string;
+  organization_id?: string;
 }
 
 // Document Types
@@ -179,6 +214,56 @@ export interface ContradictionInsight {
   do_not_ask_flag?: boolean;
   do_not_ask_reason?: string | null;
   composite_score?: number;
+}
+
+export interface CrossExamPlanBranch {
+  trigger: string;
+  follow_up_questions: string[];
+}
+
+export interface CrossExamPlanStep {
+  id: string;
+  contradiction_id?: string;
+  stage: string;
+  step_type: string;
+  title: string;
+  question: string;
+  purpose?: string;
+  anchors?: EvidenceAnchor[];
+  branches?: CrossExamPlanBranch[];
+  do_not_ask_flag?: boolean;
+  do_not_ask_reason?: string | null;
+}
+
+export interface CrossExamPlanStage {
+  stage: string;
+  steps: CrossExamPlanStep[];
+}
+
+export interface CrossExamPlanResponse {
+  plan_id: string;
+  case_id: string;
+  run_id: string;
+  witness_id?: string;
+  created_at?: string;
+  stages: CrossExamPlanStage[];
+}
+
+export interface WitnessSimulationStep {
+  step_id: string;
+  stage: string;
+  question: string;
+  witness_reply: string;
+  chosen_branch_trigger?: string | null;
+  follow_up_questions?: string[];
+  warnings?: string[];
+}
+
+export interface WitnessSimulationResponse {
+  run_id: string;
+  plan_id: string;
+  persona: string;
+  steps: WitnessSimulationStep[];
 }
 
 // Folder Types
@@ -348,8 +433,16 @@ export interface HealthResponse {
 }
 
 // API Error
+export interface ApiErrorDetail {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
 export interface ApiError {
-  detail: string;
+  error?: ApiErrorDetail;
+  detail?: string;
+  message?: string;
   status?: number;
 }
 

@@ -12,7 +12,36 @@ from dataclasses import dataclass, field
 
 class ParserError(Exception):
     """Base exception for parser errors"""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "parser_error",
+        user_message: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.user_message = user_message or "שגיאה בעיבוד המסמך"
+        self.details = details or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.user_message,
+            "details": self.details,
+        }
+
+
+class DocxTrackChangesError(ParserError):
+    """DOCX contains track changes (not supported)"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            message="DOCX contains track changes",
+            code="docx_track_changes",
+            user_message="המסמך כולל מעקב שינויים. נא לקבל/לדחות שינויים ולשמור מחדש.",
+        )
 
 
 class UnsupportedFormatError(ParserError):

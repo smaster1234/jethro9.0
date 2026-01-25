@@ -27,11 +27,10 @@ import {
   Save,
   Users,
   UserPlus,
-  Mail,
   Download,
+  ListOrdered,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi } from '../api';
-import { usersApi } from '../api/users';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -56,6 +55,10 @@ import type {
   Witness,
   WitnessVersionDiffResponse,
   ContradictionInsight,
+  CrossExamPlanResponse,
+  CrossExamPlanStep,
+  WitnessSimulationResponse,
+  OrganizationMember,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -148,9 +151,19 @@ export const CaseDetailPage: React.FC = () => {
   // Analysis results view state
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
-  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions' | 'plan'>('contradictions');
   const [insightsByContradiction, setInsightsByContradiction] = useState<Record<string, ContradictionInsight>>({});
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
+  const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const [planError, setPlanError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf' | null>(null);
+  const [exportError, setExportError] = useState('');
+  const [simulationPersona, setSimulationPersona] = useState<'cooperative' | 'evasive' | 'hostile'>('cooperative');
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simulationResult, setSimulationResult] = useState<WitnessSimulationResponse | null>(null);
+  const [isSimulationModalOpen, setIsSimulationModalOpen] = useState(false);
 
   // Witnesses state
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
@@ -201,7 +214,9 @@ export const CaseDetailPage: React.FC = () => {
   const [participants, setParticipants] = useState<CaseParticipant[]>([]);
   const [isLoadingParticipants, setIsLoadingParticipants] = useState(false);
   const [showAddParticipantModal, setShowAddParticipantModal] = useState(false);
-  const [newParticipantEmail, setNewParticipantEmail] = useState('');
+  const [orgMembers, setOrgMembers] = useState<OrganizationMember[]>([]);
+  const [isLoadingOrgMembers, setIsLoadingOrgMembers] = useState(false);
+  const [selectedParticipantId, setSelectedParticipantId] = useState('');
   const [newParticipantRole, setNewParticipantRole] = useState('');
   const [isAddingParticipant, setIsAddingParticipant] = useState(false);
   const [addParticipantError, setAddParticipantError] = useState('');
@@ -252,6 +267,25 @@ export const CaseDetailPage: React.FC = () => {
       fetchParticipants();
     }
   }, [activeTab, caseId]);
+
+  useEffect(() => {
+    if (!showAddParticipantModal || !caseData?.organization_id) {
+      return;
+    }
+    const loadMembers = async () => {
+      setIsLoadingOrgMembers(true);
+      setAddParticipantError('');
+      try {
+        const list = await orgsApi.listMembers(caseData.organization_id);
+        setOrgMembers(list);
+      } catch (error) {
+        setAddParticipantError(handleApiError(error));
+      } finally {
+        setIsLoadingOrgMembers(false);
+      }
+    };
+    loadMembers();
+  }, [showAddParticipantModal, caseData?.organization_id]);
 
   // Poll for job status
   useEffect(() => {
@@ -400,33 +434,22 @@ export const CaseDetailPage: React.FC = () => {
   };
 
   const handleAddParticipant = async () => {
-    if (!caseId || !newParticipantEmail.trim()) return;
+    if (!caseId || !selectedParticipantId) return;
 
     setIsAddingParticipant(true);
     setAddParticipantError('');
 
     try {
-      // First lookup user by email
-      const user = await usersApi.lookupByEmail(newParticipantEmail.trim());
+      await casesApi.addParticipant(caseId, selectedParticipantId, newParticipantRole || undefined);
 
-      // Then add as participant
-      await casesApi.addParticipant(caseId, user.id, newParticipantRole || undefined);
-
-      // Refresh participants list
       await fetchParticipants();
 
-      // Close modal and reset
       setShowAddParticipantModal(false);
-      setNewParticipantEmail('');
+      setSelectedParticipantId('');
       setNewParticipantRole('');
     } catch (error) {
       console.error('Failed to add participant:', error);
-      const errorMessage = handleApiError(error);
-      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
-        setAddParticipantError('משתמש עם כתובת דוא״ל זו לא נמצא במערכת');
-      } else {
-        setAddParticipantError(errorMessage);
-      }
+      setAddParticipantError(handleApiError(error));
     } finally {
       setIsAddingParticipant(false);
     }
@@ -509,6 +532,8 @@ export const CaseDetailPage: React.FC = () => {
     try {
       const fullRun = await casesApi.getRun(run.id);
       setSelectedRun(fullRun);
+      setCrossExamPlan(null);
+      setPlanError('');
     } catch (error) {
       console.error('Failed to fetch run details:', error);
       // Still show basic run info
@@ -540,6 +565,26 @@ export const CaseDetailPage: React.FC = () => {
     };
     fetchInsights();
   }, [selectedRun?.id]);
+
+  useEffect(() => {
+    if (!selectedRun?.id || analysisResultsTab !== 'plan') {
+      return;
+    }
+    const loadPlan = async () => {
+      setIsLoadingPlan(true);
+      setPlanError('');
+      try {
+        const plan = await crossExamPlanApi.getLatest(selectedRun.id);
+        setCrossExamPlan(plan);
+      } catch (error) {
+        setCrossExamPlan(null);
+        setPlanError(handleApiError(error));
+      } finally {
+        setIsLoadingPlan(false);
+      }
+    };
+    loadPlan();
+  }, [selectedRun?.id, analysisResultsTab]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -724,6 +769,61 @@ export const CaseDetailPage: React.FC = () => {
     setEvidenceRightAnchor(right || null);
     setIsEvidenceViewerOpen(true);
   }, []);
+
+  const handleGeneratePlan = async () => {
+    if (!selectedRun?.id) return;
+    setIsLoadingPlan(true);
+    setPlanError('');
+    try {
+      const plan = await crossExamPlanApi.generate(selectedRun.id, {});
+      setCrossExamPlan(plan);
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsLoadingPlan(false);
+    }
+  };
+
+  const handleSimulateWitness = async () => {
+    if (!selectedRun?.id) return;
+    setIsSimulating(true);
+    try {
+      const result = await crossExamPlanApi.simulateWitness(selectedRun.id, {
+        persona: simulationPersona,
+        plan_id: crossExamPlan?.plan_id,
+      });
+      setSimulationResult(result);
+      setIsSimulationModalOpen(true);
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsSimulating(false);
+    }
+  };
+
+  const handleExportPlan = async (format: 'docx' | 'pdf') => {
+    if (!selectedRun?.id) return;
+    setIsExporting(true);
+    setExportFormat(format);
+    setExportError('');
+    try {
+      const blob = await crossExamPlanApi.exportPlan(selectedRun.id, format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cross_exam_plan_${selectedRun.id}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setExportError(handleApiError(error));
+    }
+    finally {
+      setIsExporting(false);
+      setExportFormat(null);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!caseId) return;
@@ -1443,6 +1543,14 @@ export const CaseDetailPage: React.FC = () => {
                         >
                           שאלות לחקירה
                         </Button>
+                        <Button
+                          variant={analysisResultsTab === 'plan' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('plan')}
+                          leftIcon={<ListOrdered className="w-4 h-4" />}
+                        >
+                          תכנית חקירה
+                        </Button>
                       </div>
                       {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
                         <div className="flex gap-2">
@@ -1662,6 +1770,108 @@ export const CaseDetailPage: React.FC = () => {
                               />
                             ));
                           })()}
+                        </motion.div>
+                      )}
+
+                      {analysisResultsTab === 'plan' && (
+                        <motion.div
+                          key="plan"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Button
+                              onClick={handleGeneratePlan}
+                              isLoading={isLoadingPlan}
+                              variant="primary"
+                            >
+                              צור תכנית חקירה
+                            </Button>
+                            <select
+                              value={simulationPersona}
+                              onChange={(e) => setSimulationPersona(e.target.value as typeof simulationPersona)}
+                              className="px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                            >
+                              <option value="cooperative">עד משתף פעולה</option>
+                              <option value="evasive">עד מתחמק</option>
+                              <option value="hostile">עד עוין</option>
+                            </select>
+                            <Button
+                              onClick={handleSimulateWitness}
+                              isLoading={isSimulating}
+                              variant="secondary"
+                              disabled={!crossExamPlan}
+                            >
+                              סימולציית עד
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('docx')}
+                              variant="ghost"
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'docx'}
+                            >
+                              {isExporting && exportFormat === 'docx' ? 'מייצא DOCX...' : 'ייצוא DOCX'}
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('pdf')}
+                              variant="ghost"
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'pdf'}
+                            >
+                              {isExporting && exportFormat === 'pdf' ? 'מייצא PDF...' : 'ייצוא PDF'}
+                            </Button>
+                            {planError && (
+                              <span className="text-sm text-danger-600">{planError}</span>
+                            )}
+                            {exportError && (
+                              <span className="text-sm text-danger-600">{exportError}</span>
+                            )}
+                          </div>
+
+                          {isLoadingPlan && (
+                            <div className="flex items-center gap-2 text-sm text-slate-500">
+                              <Spinner size="sm" />
+                              טוען תכנית...
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && crossExamPlan && (
+                            <div className="space-y-4">
+                              {crossExamPlan.stages.map((stage) => (
+                                <Card key={stage.stage}>
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="font-semibold text-slate-900">
+                                        שלב {stage.stage}
+                                      </h4>
+                                      <Badge variant="neutral">
+                                        {stage.steps.length} צעדים
+                                      </Badge>
+                                    </div>
+                                    <div className="space-y-3">
+                                      {stage.steps.map((step) => (
+                                        <PlanStepCard
+                                          key={step.id}
+                                          step={step}
+                                          onShowEvidence={handleShowEvidenceAnchors}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+                                </Card>
+                              ))}
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && !crossExamPlan && !planError && (
+                            <EmptyState
+                              icon={<ListOrdered className="w-12 h-12" />}
+                              title="אין תכנית חקירה"
+                              description="לחץ על יצירת תכנית כדי לבנות תכנית מדורגת"
+                            />
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1921,12 +2131,12 @@ export const CaseDetailPage: React.FC = () => {
         isOpen={showAddParticipantModal}
         onClose={() => {
           setShowAddParticipantModal(false);
-          setNewParticipantEmail('');
+          setSelectedParticipantId('');
           setNewParticipantRole('');
           setAddParticipantError('');
         }}
         title="הוספת משתתף לתיק"
-        description="הזינו את כתובת הדוא״ל של המשתמש להוספה לתיק"
+        description="בחרו חבר/ת משרד מהרשימה"
         size="md"
       >
         <div className="space-y-4">
@@ -1936,15 +2146,22 @@ export const CaseDetailPage: React.FC = () => {
             </div>
           )}
 
-          <Input
-            label="כתובת דוא״ל"
-            type="email"
-            value={newParticipantEmail}
-            onChange={(e) => setNewParticipantEmail(e.target.value)}
-            placeholder="user@example.com"
-            leftIcon={<Mail className="w-5 h-5" />}
-            required
-          />
+          <div>
+            <label className="text-sm text-slate-600">חבר/ת משרד</label>
+            <select
+              value={selectedParticipantId}
+              onChange={(e) => setSelectedParticipantId(e.target.value)}
+              className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              disabled={isLoadingOrgMembers}
+            >
+              <option value="">בחר/י משתמש</option>
+              {orgMembers.map((member) => (
+                <option key={member.user_id} value={member.user_id}>
+                  {member.name} · {member.email} ({member.role})
+                </option>
+              ))}
+            </select>
+          </div>
 
           <Input
             label="תפקיד (אופציונלי)"
@@ -1958,7 +2175,7 @@ export const CaseDetailPage: React.FC = () => {
               onClick={handleAddParticipant}
               className="flex-1"
               isLoading={isAddingParticipant}
-              disabled={!newParticipantEmail.trim()}
+              disabled={!selectedParticipantId}
             >
               הוסף לתיק
             </Button>
@@ -1966,7 +2183,7 @@ export const CaseDetailPage: React.FC = () => {
               variant="secondary"
               onClick={() => {
                 setShowAddParticipantModal(false);
-                setNewParticipantEmail('');
+                setSelectedParticipantId('');
                 setNewParticipantRole('');
               }}
             >
@@ -2447,6 +2664,57 @@ export const CaseDetailPage: React.FC = () => {
         leftAnchor={evidenceLeftAnchor}
         rightAnchor={evidenceRightAnchor}
       />
+
+      <Modal
+        isOpen={isSimulationModalOpen}
+        onClose={() => setIsSimulationModalOpen(false)}
+        title="סימולציית עד"
+        size="lg"
+      >
+        {simulationResult ? (
+          <div className="space-y-4">
+            <div className="text-sm text-slate-500">
+              פרסונה: {simulationResult.persona}
+            </div>
+            {simulationResult.steps.map((step, idx) => (
+              <Card key={`${step.step_id}_${idx}`}>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="neutral">{step.stage}</Badge>
+                    <span className="text-slate-700">{step.question}</span>
+                  </div>
+                  <div className="text-slate-900 font-medium">תשובת העד: {step.witness_reply}</div>
+                  {step.chosen_branch_trigger && (
+                    <div className="text-xs text-slate-500">
+                      הסתעפות: {step.chosen_branch_trigger}
+                    </div>
+                  )}
+                  {step.follow_up_questions && step.follow_up_questions.length > 0 && (
+                    <ul className="list-disc list-inside text-xs text-slate-600">
+                      {step.follow_up_questions.map((q, qIdx) => (
+                        <li key={`${qIdx}-${q}`}>{q}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {step.warnings && step.warnings.length > 0 && (
+                    <div className="text-xs text-danger-600 space-y-1">
+                      {step.warnings.map((w, wIdx) => (
+                        <div key={`${wIdx}-${w}`}>{w}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<MessageSquare className="w-12 h-12" />}
+            title="אין סימולציה"
+            description="צור תכנית ואז הפעל סימולציה."
+          />
+        )}
+      </Modal>
     </div>
   );
 };
@@ -2743,6 +3011,72 @@ const WitnessCard: React.FC<{
         )}
       </div>
     </Card>
+  );
+};
+
+const PlanStepCard: React.FC<{
+  step: CrossExamPlanStep;
+  onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
+}> = ({ step, onShowEvidence }) => {
+  const anchors = step.anchors || [];
+  const left = anchors[0] || null;
+  const right = anchors[1] || null;
+  const [showBranches, setShowBranches] = useState(false);
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant="neutral">{step.step_type}</Badge>
+          <span className="text-sm font-medium text-slate-900">{step.title}</span>
+        </div>
+        {step.do_not_ask_flag && (
+          <Badge variant="danger">DON'T ASK</Badge>
+        )}
+      </div>
+      {step.do_not_ask_flag && step.do_not_ask_reason && (
+        <div className="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-2">
+          {step.do_not_ask_reason}
+        </div>
+      )}
+      <div className="text-sm text-slate-700">{step.question}</div>
+      {step.branches && step.branches.length > 0 && (
+        <div className="text-xs text-slate-600 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="font-medium text-slate-700">הסתעפויות:</div>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => setShowBranches((prev) => !prev)}
+            >
+              {showBranches ? 'הסתר' : 'הצג'}
+            </Button>
+          </div>
+          {showBranches &&
+            step.branches.map((branch, idx) => (
+              <div key={`${branch.trigger}_${idx}`} className="pl-3 border-r-2 border-slate-200">
+                <div>{branch.trigger}</div>
+                {branch.follow_up_questions?.length > 0 && (
+                  <ul className="list-disc list-inside mt-1">
+                    {branch.follow_up_questions.map((q, qIdx) => (
+                      <li key={`${qIdx}-${q}`} className="text-slate-600">
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
+      {(left || right) && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="secondary" onClick={() => onShowEvidence(left, right)}>
+            הצג ראיות
+          </Button>
+        </div>
+      )}
+    </div>
   );
 };
 

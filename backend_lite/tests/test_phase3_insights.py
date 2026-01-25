@@ -44,3 +44,18 @@ def test_insight_do_not_ask_for_low_verifiability_high_risk():
     assert insight["verifiability_score"] < 0.4
     assert insight["risk_score"] >= 0.7
     assert insight["do_not_ask"]
+
+
+def test_insight_scoring_is_deterministic():
+    contr = Contradiction(
+        contradiction_type="quant_amount_conflict",
+        status=ContradictionStatus.LIKELY,
+        severity="medium",
+        category="hard_contradiction",
+        locator1_json={"doc_id": "d1", "char_start": 5, "char_end": 15},
+        locator2_json={"doc_id": "d2", "char_start": 25, "char_end": 35},
+    )
+
+    insight_a = compute_insight(contr)
+    insight_b = compute_insight(contr)
+    assert insight_a == insight_b
