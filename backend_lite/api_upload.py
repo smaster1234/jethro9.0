@@ -15,6 +15,8 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Q
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .schemas import EvidenceAnchor
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["upload"])
@@ -120,6 +122,30 @@ class SnippetResponse(BaseModel):
     text: str
     context_before: Optional[str] = None
     context_after: Optional[str] = None
+
+
+class AnchorResolveRequest(BaseModel):
+    """Resolve an evidence anchor to a snippet"""
+    anchor: EvidenceAnchor
+    context: int = Field(default=1, ge=0, le=3, description="Context blocks before/after")
+
+
+class AnchorResolveResponse(BaseModel):
+    """Resolved anchor snippet with highlight offsets"""
+    doc_id: str
+    doc_name: str
+    page_no: Optional[int]
+    block_index: Optional[int]
+    paragraph_index: Optional[int]
+    char_start: Optional[int]
+    char_end: Optional[int]
+    text: str
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
+    highlight_start: Optional[int] = None
+    highlight_end: Optional[int] = None
+    highlight_text: Optional[str] = None
+    bbox: Optional[dict] = None
 
 
 # =============================================================================
@@ -626,7 +652,7 @@ async def upload_documents(
                                     char_start=block.char_start,
                                     char_end=block.char_end,
                                     paragraph_index=block.paragraph_index,
-                                    locator_json=block.to_locator_json(),
+                                    locator_json=block.to_locator_json(doc_id=doc.id),
                                 )
                                 db.add(db_block)
                     except Exception as e:
@@ -1189,6 +1215,156 @@ async def get_document_snippet(
         raise
     except Exception as e:
         logger.exception("Failed to get snippet")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/anchors/resolve", response_model=AnchorResolveResponse)
+async def resolve_anchor(
+    payload: AnchorResolveRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """
+    Resolve an evidence anchor into a snippet with highlight offsets.
+    """
+    try:
+        from .db.session import get_db_session
+        from .db.models import Document, DocumentBlock
+        from .anchors import normalize_anchor_input
+
+        anchor = normalize_anchor_input(payload.anchor.model_dump())
+
+        if not anchor.get("doc_id"):
+            raise HTTPException(status_code=400, detail="anchor.doc_id is required")
+
+        with get_db_session() as db:
+            doc = db.query(Document).filter(
+                Document.id == anchor["doc_id"],
+                Document.firm_id == auth.firm_id
+            ).first()
+
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            block = None
+            page_no = anchor.get("page_no")
+            block_index = anchor.get("block_index")
+            paragraph_index = anchor.get("paragraph_index")
+
+            if page_no is not None and block_index is not None:
+                block = db.query(DocumentBlock).filter(
+                    DocumentBlock.document_id == doc.id,
+                    DocumentBlock.page_no == page_no,
+                    DocumentBlock.block_index == block_index
+                ).first()
+
+            if block is None and block_index is not None:
+                block = db.query(DocumentBlock).filter(
+                    DocumentBlock.document_id == doc.id,
+                    DocumentBlock.block_index == block_index
+                ).first()
+
+            if block is None and paragraph_index is not None:
+                block = db.query(DocumentBlock).filter(
+                    DocumentBlock.document_id == doc.id,
+                    DocumentBlock.paragraph_index == paragraph_index
+                ).first()
+
+            # Fallback: find block by char offsets
+            if block is None and anchor.get("char_start") is not None:
+                block = db.query(DocumentBlock).filter(
+                    DocumentBlock.document_id == doc.id,
+                    DocumentBlock.char_start <= int(anchor["char_start"]),
+                    DocumentBlock.char_end >= int(anchor["char_start"])
+                ).order_by(DocumentBlock.block_index.asc()).first()
+
+            context_before = None
+            context_after = None
+            highlight_start = None
+            highlight_end = None
+            highlight_text = None
+
+            if block:
+                text = block.text or ""
+
+                # Context blocks (by block index)
+                if payload.context > 0 and block.block_index is not None:
+                    prev_block = db.query(DocumentBlock).filter(
+                        DocumentBlock.document_id == doc.id,
+                        DocumentBlock.block_index == block.block_index - 1
+                    ).first()
+                    if prev_block:
+                        context_before = prev_block.text
+
+                    next_block = db.query(DocumentBlock).filter(
+                        DocumentBlock.document_id == doc.id,
+                        DocumentBlock.block_index == block.block_index + 1
+                    ).first()
+                    if next_block:
+                        context_after = next_block.text
+
+                # Highlight offsets from char positions
+                if anchor.get("char_start") is not None and anchor.get("char_end") is not None:
+                    if block.char_start is not None:
+                        highlight_start = max(0, int(anchor["char_start"]) - int(block.char_start))
+                        highlight_end = max(
+                            highlight_start,
+                            min(len(text), int(anchor["char_end"]) - int(block.char_start))
+                        )
+                # Fallback highlight by snippet match
+                if highlight_start is None and anchor.get("snippet"):
+                    idx = text.find(anchor["snippet"])
+                    if idx != -1:
+                        highlight_start = idx
+                        highlight_end = idx + len(anchor["snippet"])
+
+                if highlight_start is not None and highlight_end is not None:
+                    highlight_text = text[highlight_start:highlight_end]
+
+                return AnchorResolveResponse(
+                    doc_id=doc.id,
+                    doc_name=doc.doc_name,
+                    page_no=block.page_no,
+                    block_index=block.block_index,
+                    paragraph_index=block.paragraph_index,
+                    char_start=anchor.get("char_start"),
+                    char_end=anchor.get("char_end"),
+                    text=text,
+                    context_before=context_before,
+                    context_after=context_after,
+                    highlight_start=highlight_start,
+                    highlight_end=highlight_end,
+                    highlight_text=highlight_text,
+                    bbox=block.bbox_json,
+                )
+
+            # Fallback: return full text (no block)
+            full_text = doc.full_text or ""
+            if anchor.get("char_start") is not None and anchor.get("char_end") is not None:
+                highlight_start = max(0, int(anchor["char_start"]))
+                highlight_end = min(len(full_text), int(anchor["char_end"]))
+                highlight_text = full_text[highlight_start:highlight_end]
+
+            return AnchorResolveResponse(
+                doc_id=doc.id,
+                doc_name=doc.doc_name,
+                page_no=page_no,
+                block_index=block_index,
+                paragraph_index=paragraph_index,
+                char_start=anchor.get("char_start"),
+                char_end=anchor.get("char_end"),
+                text=full_text,
+                context_before=None,
+                context_after=None,
+                highlight_start=highlight_start,
+                highlight_end=highlight_end,
+                highlight_text=highlight_text,
+                bbox=anchor.get("bbox"),
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to resolve anchor")
         raise HTTPException(status_code=500, detail=str(e))
 
 

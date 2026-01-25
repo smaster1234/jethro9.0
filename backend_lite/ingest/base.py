@@ -36,9 +36,9 @@ class BlockContent:
     bbox: Optional[Dict[str, float]] = None  # {x, y, width, height}
     confidence: Optional[float] = None  # OCR confidence
 
-    def to_locator_json(self) -> Dict[str, Any]:
+    def to_locator_json(self, doc_id: Optional[str] = None) -> Dict[str, Any]:
         """Convert to locator JSON for storage"""
-        return {
+        locator = {
             "page_no": self.page_no,
             "block_index": self.block_index,
             "paragraph_index": self.paragraph_index,
@@ -46,6 +46,9 @@ class BlockContent:
             "char_end": self.char_end,
             "bbox": self.bbox
         }
+        if doc_id:
+            locator["doc_id"] = doc_id
+        return locator
 
 
 @dataclass

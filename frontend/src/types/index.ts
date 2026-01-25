@@ -164,6 +164,34 @@ export interface Claim {
   metadata?: Record<string, unknown>;
 }
 
+export interface EvidenceAnchor {
+  doc_id: string;
+  page_no?: number;
+  block_index?: number;
+  paragraph_index?: number;
+  char_start?: number;
+  char_end?: number;
+  snippet?: string;
+  bbox?: { x: number; y: number; width: number; height: number };
+}
+
+export interface AnchorResolveResponse {
+  doc_id: string;
+  doc_name: string;
+  page_no?: number;
+  block_index?: number;
+  paragraph_index?: number;
+  char_start?: number;
+  char_end?: number;
+  text: string;
+  context_before?: string;
+  context_after?: string;
+  highlight_start?: number;
+  highlight_end?: number;
+  highlight_text?: string;
+  bbox?: Record<string, unknown>;
+}
+
 export interface Contradiction {
   id: string;
   // Claim IDs (backend uses both naming conventions)
@@ -197,8 +225,8 @@ export interface Contradiction {
   quote2?: string;
   category?: string;
   // Locators
-  claim1_locator?: Record<string, unknown>;
-  claim2_locator?: Record<string, unknown>;
+  claim1_locator?: EvidenceAnchor | Record<string, unknown>;
+  claim2_locator?: EvidenceAnchor | Record<string, unknown>;
   // Timestamps
   created_at?: string;
 }

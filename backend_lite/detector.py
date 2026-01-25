@@ -36,7 +36,8 @@ from .schemas import (
     ContradictionCategory,
     AmbiguityExplanation,
     ClaimEvidence,
-    Locator
+    Locator,
+    EvidenceAnchor,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,13 +78,26 @@ class DetectedContradiction:
             locator = Locator(
                 doc_id=claim.doc_id,
                 page=getattr(claim, 'page', None),
-                paragraph=getattr(claim, 'paragraph', None)
+                block_index=getattr(claim, 'block_index', None),
+                paragraph=getattr(claim, 'paragraph_index', None),
+                char_start=getattr(claim, 'char_start', None),
+                char_end=getattr(claim, 'char_end', None),
             )
 
         return ClaimEvidence(
             claim_id=claim.id,
             doc_id=getattr(claim, 'doc_id', None),
             locator=locator,
+            anchor=EvidenceAnchor(
+                doc_id=getattr(claim, 'doc_id', None) or "",
+                page_no=getattr(claim, 'page', None),
+                block_index=getattr(claim, 'block_index', None),
+                paragraph_index=getattr(claim, 'paragraph_index', None),
+                char_start=getattr(claim, 'char_start', None),
+                char_end=getattr(claim, 'char_end', None),
+                snippet=quote,
+                bbox=getattr(claim, 'bbox', None),
+            ) if getattr(claim, 'doc_id', None) else None,
             quote=quote,
             normalized=normalized
         )
