@@ -61,6 +61,7 @@ from .schemas import (
     Severity,
     TextSpan,
     Locator,
+    EvidenceAnchor,
     # Case management request models
     CreateCaseRequest,
     AddDocumentRequest,
@@ -1028,6 +1029,8 @@ def convert_contradiction_to_output(
     if hasattr(contr.claim1, 'doc_id') and contr.claim1.doc_id:
         locator1 = Locator(
             doc_id=contr.claim1.doc_id,
+            page=getattr(contr.claim1, 'page', None),
+            block_index=getattr(contr.claim1, 'block_index', None),
             paragraph=getattr(contr.claim1, 'paragraph_index', None),
             char_start=getattr(contr.claim1, 'char_start', None),
             char_end=getattr(contr.claim1, 'char_end', None)
@@ -1036,6 +1039,8 @@ def convert_contradiction_to_output(
     if hasattr(contr.claim2, 'doc_id') and contr.claim2.doc_id:
         locator2 = Locator(
             doc_id=contr.claim2.doc_id,
+            page=getattr(contr.claim2, 'page', None),
+            block_index=getattr(contr.claim2, 'block_index', None),
             paragraph=getattr(contr.claim2, 'paragraph_index', None),
             char_start=getattr(contr.claim2, 'char_start', None),
             char_end=getattr(contr.claim2, 'char_end', None)
@@ -1046,6 +1051,16 @@ def convert_contradiction_to_output(
         claim_id=contr.claim1.id,
         doc_id=getattr(contr.claim1, 'doc_id', None),
         locator=locator1,
+        anchor=EvidenceAnchor(
+            doc_id=getattr(contr.claim1, 'doc_id', None) or "",
+            page_no=getattr(contr.claim1, 'page', None),
+            block_index=getattr(contr.claim1, 'block_index', None),
+            paragraph_index=getattr(contr.claim1, 'paragraph_index', None),
+            char_start=getattr(contr.claim1, 'char_start', None),
+            char_end=getattr(contr.claim1, 'char_end', None),
+            snippet=contr.quote1,
+            bbox=getattr(contr.claim1, 'bbox', None),
+        ) if getattr(contr.claim1, 'doc_id', None) else None,
         quote=contr.quote1,
         normalized=getattr(contr, 'normalized1', None)
     )
@@ -1054,6 +1069,16 @@ def convert_contradiction_to_output(
         claim_id=contr.claim2.id,
         doc_id=getattr(contr.claim2, 'doc_id', None),
         locator=locator2,
+        anchor=EvidenceAnchor(
+            doc_id=getattr(contr.claim2, 'doc_id', None) or "",
+            page_no=getattr(contr.claim2, 'page', None),
+            block_index=getattr(contr.claim2, 'block_index', None),
+            paragraph_index=getattr(contr.claim2, 'paragraph_index', None),
+            char_start=getattr(contr.claim2, 'char_start', None),
+            char_end=getattr(contr.claim2, 'char_end', None),
+            snippet=contr.quote2,
+            bbox=getattr(contr.claim2, 'bbox', None),
+        ) if getattr(contr.claim2, 'doc_id', None) else None,
         quote=contr.quote2,
         normalized=getattr(contr, 'normalized2', None)
     )
@@ -1214,9 +1239,23 @@ def build_claim_outputs(
         if claim.doc_id or claim.paragraph_index is not None or claim.char_start is not None:
             locator = Locator(
                 doc_id=claim.doc_id,
+                page=getattr(claim, "page", None),
+                block_index=getattr(claim, "block_index", None),
                 paragraph=claim.paragraph_index,
                 char_start=claim.char_start,
                 char_end=claim.char_end
+            )
+        anchor = None
+        if claim.doc_id:
+            anchor = EvidenceAnchor(
+                doc_id=claim.doc_id,
+                page_no=getattr(claim, "page", None),
+                block_index=getattr(claim, "block_index", None),
+                paragraph_index=claim.paragraph_index,
+                char_start=claim.char_start,
+                char_end=claim.char_end,
+                snippet=claim.text,
+                bbox=getattr(claim, "bbox", None),
             )
 
         # Extract features (dates, amounts) from metadata if available
@@ -1248,6 +1287,7 @@ def build_claim_outputs(
             role=role,
             author=author,
             locator=locator,
+            anchor=anchor,
             features=features
         ))
 

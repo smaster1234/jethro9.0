@@ -3,6 +3,7 @@ export { default as authApi } from './auth';
 export { default as casesApi } from './cases';
 export { default as documentsApi } from './documents';
 export { default as analysisApi } from './analysis';
+export { default as anchorsApi } from './anchors';
 
 // Health check
 import apiClient from './client';

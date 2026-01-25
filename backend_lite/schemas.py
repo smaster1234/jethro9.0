@@ -205,6 +205,22 @@ class AttackAngleType(str, Enum):
 # INPUT SCHEMAS
 # =============================================================================
 
+class EvidenceAnchor(BaseModel):
+    """
+    Evidence anchor with precise location and snippet.
+
+    This is the canonical schema for evidence anchoring across the system.
+    """
+    doc_id: str = Field(..., description="Document ID")
+    page_no: Optional[int] = Field(None, description="Page number (if available)")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index within document")
+    paragraph_index: Optional[int] = Field(None, description="Paragraph index (if available)")
+    char_start: Optional[int] = Field(None, description="Character start offset in normalized text")
+    char_end: Optional[int] = Field(None, description="Character end offset in normalized text")
+    snippet: Optional[str] = Field(None, description="Snippet text around the anchor")
+    bbox: Optional[Dict[str, float]] = Field(None, description="Bounding box (future OCR)")
+
+
 class ClaimInput(BaseModel):
     """Single claim for analysis"""
     id: str = Field(..., description="Unique claim identifier")
@@ -212,10 +228,12 @@ class ClaimInput(BaseModel):
     source: Optional[str] = Field(None, description="Source document name")
     doc_id: Optional[str] = Field(None, description="Document ID for locator")
     page: Optional[int] = Field(None, description="Page number")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index")
     paragraph: Optional[int] = Field(None, description="Paragraph number")
     char_start: Optional[int] = Field(None, description="Character start offset")
     char_end: Optional[int] = Field(None, description="Character end offset")
     speaker: Optional[str] = Field(None, description="Who made this claim")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Optional evidence anchor")
 
     class Config:
         json_schema_extra = {
@@ -335,11 +353,11 @@ class AnalyzeCaseRequest(BaseModel):
 # =============================================================================
 # OUTPUT SCHEMAS - Locators
 # =============================================================================
-
 class Locator(BaseModel):
     """Location reference for evidence"""
     doc_id: Optional[str] = Field(None, description="Document ID")
     page: Optional[int] = Field(None, description="Page number")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index within document")
     paragraph: Optional[int] = Field(None, description="Paragraph number")
     char_start: Optional[int] = Field(None, description="Character start offset")
     char_end: Optional[int] = Field(None, description="Character end offset")
@@ -350,6 +368,7 @@ class ClaimEvidence(BaseModel):
     claim_id: str = Field(..., description="Claim ID")
     doc_id: Optional[str] = Field(None, description="Document ID")
     locator: Optional[Locator] = Field(None, description="Location in document")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     quote: str = Field(..., description="Relevant quote")
     normalized: Optional[str] = Field(None, description="Normalized value (date, amount, etc.)")
 
@@ -394,6 +413,7 @@ class ClaimOutput(BaseModel):
     role: Optional[str] = Field(None, description="Document role in case")
     author: Optional[str] = Field(None, description="Document author")
     locator: Optional[Locator] = Field(None, description="Location in document")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     features: Optional[ClaimFeatures] = Field(None, description="Extracted features")
 
     class Config:

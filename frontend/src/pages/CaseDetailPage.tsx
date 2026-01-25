@@ -44,7 +44,17 @@ import {
   Progress,
   Input,
 } from '../components/ui';
-import type { Case, Document as DocumentType, AnalysisRun, Folder as FolderType, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+import type {
+  Case,
+  Document as DocumentType,
+  AnalysisRun,
+  Folder as FolderType,
+  Contradiction,
+  CrossExamQuestion,
+  CrossExamQuestionsOutput,
+  EvidenceAnchor,
+} from '../types';
+import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
 // Helper to flatten cross-exam questions from nested structure
 const flattenCrossExamQuestions = (
@@ -58,6 +68,37 @@ const flattenCrossExamQuestions = (
   return (questions as CrossExamQuestionsOutput[]).flatMap(
     (set) => set.questions || []
   );
+};
+
+const toEvidenceAnchor = (
+  raw?: EvidenceAnchor | Record<string, unknown> | null
+): EvidenceAnchor | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const data = raw as Record<string, unknown>;
+  const docId = data.doc_id as string | undefined;
+  if (!docId) return null;
+
+  return {
+    doc_id: docId,
+    page_no: (data.page_no as number | undefined) ?? (data.page as number | undefined),
+    block_index: data.block_index as number | undefined,
+    paragraph_index: (data.paragraph_index as number | undefined) ?? (data.paragraph as number | undefined),
+    char_start: data.char_start as number | undefined,
+    char_end: data.char_end as number | undefined,
+    snippet: data.snippet as string | undefined,
+    bbox: data.bbox as EvidenceAnchor['bbox'],
+  };
+};
+
+const anchorFromClaim = (
+  claim?: { source_doc_id?: string; page_no?: number; block_index?: number }
+): EvidenceAnchor | null => {
+  if (!claim?.source_doc_id) return null;
+  return {
+    doc_id: claim.source_doc_id,
+    page_no: claim.page_no,
+    block_index: claim.block_index,
+  };
 };
 
 type Tab = 'documents' | 'analysis' | 'notes' | 'team';
@@ -105,6 +146,11 @@ export const CaseDetailPage: React.FC = () => {
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
   const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+
+  // Evidence viewer state
+  const [isEvidenceViewerOpen, setIsEvidenceViewerOpen] = useState(false);
+  const [evidenceLeftAnchor, setEvidenceLeftAnchor] = useState<EvidenceAnchor | null>(null);
+  const [evidenceRightAnchor, setEvidenceRightAnchor] = useState<EvidenceAnchor | null>(null);
 
   // Analysis options modal state
   const [showAnalysisModal, setShowAnalysisModal] = useState(false);
@@ -586,6 +632,15 @@ export const CaseDetailPage: React.FC = () => {
       URL.revokeObjectURL(url);
     }
   };
+
+  const handleShowEvidence = useCallback((contradiction: Contradiction) => {
+    const left = toEvidenceAnchor(contradiction.claim1_locator) || anchorFromClaim(contradiction.claim_a);
+    const right = toEvidenceAnchor(contradiction.claim2_locator) || anchorFromClaim(contradiction.claim_b);
+
+    setEvidenceLeftAnchor(left);
+    setEvidenceRightAnchor(right);
+    setIsEvidenceViewerOpen(true);
+  }, []);
 
   const handleAnalyze = async () => {
     if (!caseId) return;
@@ -1460,6 +1515,7 @@ export const CaseDetailPage: React.FC = () => {
                                     key={contradiction.id || index}
                                     contradiction={contradiction}
                                     index={index}
+                                    onShowEvidence={handleShowEvidence}
                                   />
                                 ))}
                               </>
@@ -2230,6 +2286,13 @@ export const CaseDetailPage: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      <EvidenceViewerModal
+        isOpen={isEvidenceViewerOpen}
+        onClose={() => setIsEvidenceViewerOpen(false)}
+        leftAnchor={evidenceLeftAnchor}
+        rightAnchor={evidenceRightAnchor}
+      />
     </div>
   );
 };
@@ -2310,10 +2373,11 @@ const FolderTreeItem: React.FC<{
 };
 
 // Contradiction Card Component
-const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number }> = ({
-  contradiction,
-  index,
-}) => {
+const ContradictionCard: React.FC<{
+  contradiction: Contradiction;
+  index: number;
+  onShowEvidence: (contradiction: Contradiction) => void;
+}> = ({ contradiction, index, onShowEvidence }) => {
   const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -2375,6 +2439,15 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
+  const claimAText =
+    contradiction.claim_a?.text || contradiction.claim1_text || contradiction.quote1 || 'לא זמין';
+  const claimBText =
+    contradiction.claim_b?.text || contradiction.claim2_text || contradiction.quote2 || 'לא זמין';
+  const hasEvidence = Boolean(
+    (toEvidenceAnchor(contradiction.claim1_locator) || anchorFromClaim(contradiction.claim_a)) &&
+      (toEvidenceAnchor(contradiction.claim2_locator) || anchorFromClaim(contradiction.claim_b))
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -2400,9 +2473,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
           <div className="space-y-3">
             <div className="p-4 bg-red-50 rounded-xl border border-red-100">
               <div className="text-xs text-red-500 font-medium mb-1">טענה א'</div>
-              <p className="text-slate-800">
-                {contradiction.claim_a?.text || 'לא זמין'}
-              </p>
+              <p className="text-slate-800">{claimAText}</p>
               {contradiction.claim_a?.source_name && (
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-slate-500">מקור:</span>
@@ -2444,9 +2515,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
 
             <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
               <div className="text-xs text-orange-500 font-medium mb-1">טענה ב'</div>
-              <p className="text-slate-800">
-                {contradiction.claim_b?.text || 'לא זמין'}
-              </p>
+              <p className="text-slate-800">{claimBText}</p>
               {contradiction.claim_b?.source_name && (
                 <div className="flex items-center gap-2 mt-2">
                   <span className="text-xs text-slate-500">מקור:</span>
@@ -2480,6 +2549,18 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
               )}
             </div>
           </div>
+
+          {hasEvidence && (
+            <div className="flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onShowEvidence(contradiction)}
+              >
+                השווה ראיות
+              </Button>
+            </div>
+          )}
 
           {/* Explanation */}
           <div className="p-4 bg-slate-50 rounded-xl">

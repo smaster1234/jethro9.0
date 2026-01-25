@@ -12,7 +12,7 @@ Simple, rule-based claim extraction:
 
 import re
 import uuid
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict, Any
 from dataclasses import dataclass, field
 
 # Import from sanitize module
@@ -49,6 +49,7 @@ class Claim:
     text: str
     source: Optional[str] = None
     page: Optional[int] = None
+    block_index: Optional[int] = None
     speaker: Optional[str] = None
 
     # Locator fields for evidence
@@ -57,6 +58,7 @@ class Claim:
     paragraph_index: Optional[int] = None
     char_start: Optional[int] = None
     char_end: Optional[int] = None
+    bbox: Optional[Dict[str, Any]] = None
 
     # For detection
     subject: Optional[str] = None
@@ -72,12 +74,14 @@ class Claim:
             "text": self.text,
             "source": self.source,
             "page": self.page,
+            "block_index": self.block_index,
             "speaker": self.speaker,
             "doc_id": self.doc_id,
             "paragraph_id": self.paragraph_id,
             "paragraph_index": self.paragraph_index,
             "char_start": self.char_start,
             "char_end": self.char_end,
+            "bbox": self.bbox,
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
@@ -138,7 +142,11 @@ class ClaimExtractor:
         doc_id: Optional[str] = None,
         paragraph_id: Optional[str] = None,
         paragraph_index: Optional[int] = None,
-        char_offset: int = 0
+        char_offset: int = 0,
+        page_no: Optional[int] = None,
+        block_index: Optional[int] = None,
+        bbox: Optional[Dict[str, Any]] = None,
+        sanitize: bool = True,
     ) -> List[Claim]:
         """
         Extract claims from free text.
@@ -159,15 +167,18 @@ class ClaimExtractor:
             return []
 
         # STEP 1: Sanitize input - remove report/meta sections
-        text = sanitize_input(text)
+        if sanitize:
+            text = sanitize_input(text)
+            if not text:
+                return []
+
+        # Normalize text (positions are computed on normalized text)
+        text = self._normalize_text(text)
         if not text:
             return []
 
-        # Store original text for position tracking
+        # Store normalized text for position tracking
         original_text = text
-
-        # Normalize text
-        text = self._normalize_text(text)
 
         # Choose extraction strategy
         if strategy == "auto":
@@ -202,13 +213,15 @@ class ClaimExtractor:
                 id=f"claim_{i}",
                 text=segment,
                 source=source_name,
-                page=None,  # Can be enhanced if page markers exist
+                page=page_no,
+                block_index=block_index,
                 speaker=None,  # Can be enhanced with speaker detection
                 doc_id=doc_id,
                 paragraph_id=paragraph_id,
                 paragraph_index=paragraph_index,
                 char_start=char_offset + seg_start,
                 char_end=char_offset + seg_end,
+                bbox=bbox,
                 metadata={
                     "extraction_strategy": strategy,
                     "segment_index": i
@@ -239,7 +252,18 @@ class ClaimExtractor:
                 text=item.get("text", ""),
                 source=item.get("source"),
                 page=item.get("page"),
+                block_index=item.get("block_index"),
                 speaker=item.get("speaker"),
+                doc_id=item.get("doc_id"),
+                paragraph_id=item.get("paragraph_id"),
+                paragraph_index=(
+                    item.get("paragraph_index")
+                    if item.get("paragraph_index") is not None
+                    else item.get("paragraph")
+                ),
+                char_start=item.get("char_start"),
+                char_end=item.get("char_end"),
+                bbox=item.get("bbox"),
                 metadata=item.get("metadata", {})
             )
 
@@ -403,7 +427,11 @@ def extract_claims(
     doc_id: Optional[str] = None,
     paragraph_id: Optional[str] = None,
     paragraph_index: Optional[int] = None,
-    char_offset: int = 0
+    char_offset: int = 0,
+    page_no: Optional[int] = None,
+    block_index: Optional[int] = None,
+    bbox: Optional[Dict[str, Any]] = None,
+    sanitize: bool = True,
 ) -> List[Claim]:
     """
     Convenience function to extract claims from text.
@@ -427,7 +455,11 @@ def extract_claims(
         doc_id=doc_id,
         paragraph_id=paragraph_id,
         paragraph_index=paragraph_index,
-        char_offset=char_offset
+        char_offset=char_offset,
+        page_no=page_no,
+        block_index=block_index,
+        bbox=bbox,
+        sanitize=sanitize,
     )
 
 # Alias for backwards compatibility

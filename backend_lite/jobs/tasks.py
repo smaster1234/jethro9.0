@@ -9,6 +9,7 @@ import os
 import io
 import zipfile
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -268,7 +269,7 @@ def task_parse_document(
                         char_start=block.char_start,
                         char_end=block.char_end,
                         paragraph_index=block.paragraph_index,
-                        locator_json=block.to_locator_json()
+                        locator_json=block.to_locator_json(doc_id=document_id)
                     )
                     db.add(db_block)
 
@@ -628,10 +629,11 @@ def task_analyze_case(
     from ..db.session import get_db_session
     from ..db.models import (
         Document, DocumentStatus, AnalysisRun, Claim, Contradiction,
-        Event, EventType
+        Event, EventType, DocumentBlock
     )
     from ..extractor import extract_claims_from_text, Claim as ExtractedClaim
     from ..detector import detect_contradictions
+    from ..anchors import build_anchor_from_claim
 
     start_time = datetime.utcnow()
     update_job_progress(10, "Loading documents")
@@ -697,7 +699,7 @@ def task_analyze_case(
             )
             db.add(event)
 
-            # Extract claims from each document
+            # Extract claims from each document (prefer block-level for anchors)
             all_claims = []
             claim_pairs = []
             for idx, doc in enumerate(documents):
@@ -707,27 +709,62 @@ def task_analyze_case(
                 if not doc.full_text:
                     continue
 
-                extracted = extract_claims_from_text(
-                    text=doc.full_text,
-                    source_name=doc.doc_name,
-                    doc_id=doc.id
+                extracted = []
+                blocks = (
+                    db.query(DocumentBlock)
+                    .filter(DocumentBlock.document_id == doc.id)
+                    .order_by(DocumentBlock.block_index.asc())
+                    .all()
                 )
+
+                if blocks:
+                    for block in blocks:
+                        block_claims = extract_claims_from_text(
+                            text=block.text,
+                            source_name=doc.doc_name,
+                            doc_id=doc.id,
+                            paragraph_id=block.id,
+                            paragraph_index=block.paragraph_index,
+                            char_offset=block.char_start or 0,
+                            page_no=block.page_no,
+                            block_index=block.block_index,
+                            bbox=block.bbox_json,
+                            sanitize=False,
+                        )
+
+                        # Make claim IDs unique across blocks/documents for detection
+                        for claim in block_claims:
+                            segment_index = None
+                            if getattr(claim, "metadata", None):
+                                segment_index = claim.metadata.get("segment_index")
+                            if segment_index is not None:
+                                claim.id = f"{doc.id}_{block.block_index}_{segment_index}"
+                            else:
+                                claim.id = f"{doc.id}_{block.block_index}_{uuid.uuid4().hex[:6]}"
+
+                        extracted.extend(block_claims)
+                else:
+                    # Fallback: extract from full text (less precise anchors)
+                    extracted = extract_claims_from_text(
+                        text=doc.full_text,
+                        source_name=doc.doc_name,
+                        doc_id=doc.id,
+                        sanitize=True,
+                    )
+                    for claim in extracted:
+                        claim.id = f"{doc.id}_{claim.id}"
 
                 # Track DB claim objects so we can link contradictions -> claims later
                 for claim in extracted:
                     # Save claim to DB
+                    anchor = build_anchor_from_claim(claim)
                     db_claim = Claim(
                         run_id=run.id,
                         document_id=doc.id,
                         text=claim.text,
                         party=doc.party.value if doc.party else None,
                         role=doc.role.value if doc.role else None,
-                        locator_json={
-                            "doc_id": doc.id,
-                            "paragraph_index": getattr(claim, 'paragraph_index', None),
-                            "char_start": getattr(claim, 'char_start', None),
-                            "char_end": getattr(claim, 'char_end', None)
-                        }
+                        locator_json=anchor,
                     )
                     db.add(db_claim)
                     claim_pairs.append((claim, db_claim))
@@ -753,6 +790,8 @@ def task_analyze_case(
                     claim1_db_id = getattr(contr.claim1, "_db_id", None)
                     claim2_db_id = getattr(contr.claim2, "_db_id", None)
 
+                    locator1 = build_anchor_from_claim(contr.claim1)
+                    locator2 = build_anchor_from_claim(contr.claim2)
                     db_contr = Contradiction(
                         run_id=run.id,
                         claim1_id=claim1_db_id,
@@ -765,18 +804,8 @@ def task_analyze_case(
                         explanation=contr.explanation,
                         quote1=contr.quote1,
                         quote2=contr.quote2,
-                        locator1_json={
-                            "doc_id": getattr(contr.claim1, "doc_id", None),
-                            "paragraph_index": getattr(contr.claim1, "paragraph_index", None),
-                            "char_start": getattr(contr.claim1, "char_start", None),
-                            "char_end": getattr(contr.claim1, "char_end", None),
-                        },
-                        locator2_json={
-                            "doc_id": getattr(contr.claim2, "doc_id", None),
-                            "paragraph_index": getattr(contr.claim2, "paragraph_index", None),
-                            "char_start": getattr(contr.claim2, "char_start", None),
-                            "char_end": getattr(contr.claim2, "char_end", None),
-                        },
+                        locator1_json=locator1,
+                        locator2_json=locator2,
                     )
                     db.add(db_contr)
 
