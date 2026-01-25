@@ -34,6 +34,10 @@ from .schemas import (
     TrainingBackResponse,
     TrainingFinishResponse,
     EntityUsageSummary,
+    FeedbackCreateRequest,
+    FeedbackItemResponse,
+    FeedbackAggregateResponse,
+    FeedbackListResponse,
     WitnessCreateRequest,
     WitnessVersionCreateRequest,
     WitnessResponse,
@@ -2872,6 +2876,144 @@ async def list_entity_usage(
         raise
     except Exception as e:
         logger.exception("Failed to list entity usage")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/feedback", response_model=FeedbackItemResponse)
+async def create_feedback(
+    payload: FeedbackCreateRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Create feedback for an entity."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Feedback, FeedbackLabel, Case
+
+        allowed_entity_types = {"insight", "plan_step"}
+        allowed_labels = {"worked", "not_worked", "too_risky", "excellent"}
+
+        if payload.entity_type not in allowed_entity_types:
+            raise HTTPException(status_code=400, detail="Invalid entity_type")
+        if payload.label not in allowed_labels:
+            raise HTTPException(status_code=400, detail="Invalid label")
+
+        note = (payload.note or "").strip()
+        if note and len(note) > 500:
+            note = note[:500]
+
+        with get_db_session() as db:
+            case, _ = _require_case_access(db, auth, payload.case_id)
+            org_id = case.organization_id
+
+            entry = Feedback(
+                org_id=org_id,
+                case_id=payload.case_id,
+                entity_type=payload.entity_type,
+                entity_id=payload.entity_id,
+                label=FeedbackLabel(payload.label),
+                note=note or None,
+                created_by=auth.user_id or "system",
+            )
+            db.add(entry)
+            db.flush()
+
+            return FeedbackItemResponse(
+                id=entry.id,
+                org_id=entry.org_id,
+                case_id=entry.case_id,
+                entity_type=entry.entity_type,
+                entity_id=entry.entity_id,
+                label=entry.label.value,
+                note=entry.note,
+                created_at=entry.created_at,
+                created_by=entry.created_by,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create feedback")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/feedback", response_model=FeedbackListResponse)
+async def list_feedback(
+    case_id: str = Query(...),
+    entity_type: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """List feedback and aggregates for a case."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Feedback
+        from .feedback_utils import sort_feedback_aggregates
+
+        allowed_entity_types = {"insight", "plan_step"}
+        if entity_type and entity_type not in allowed_entity_types:
+            raise HTTPException(status_code=400, detail="Invalid entity_type")
+
+        with get_db_session() as db:
+            _require_case_access(db, auth, case_id)
+
+            query = db.query(Feedback).filter(Feedback.case_id == case_id)
+            if entity_type:
+                query = query.filter(Feedback.entity_type == entity_type)
+
+            items = query.order_by(Feedback.created_at.desc()).limit(100).all()
+
+            aggregates_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            for entry in items:
+                key = (entry.entity_type, entry.entity_id)
+                agg = aggregates_map.get(key)
+                if not agg:
+                    agg = {
+                        "entity_type": entry.entity_type,
+                        "entity_id": entry.entity_id,
+                        "counts": {"worked": 0, "not_worked": 0, "too_risky": 0, "excellent": 0},
+                        "latest_at": None,
+                    }
+                    aggregates_map[key] = agg
+
+                label = entry.label.value if hasattr(entry.label, "value") else str(entry.label)
+                if label in agg["counts"]:
+                    agg["counts"][label] += 1
+
+                if entry.created_at:
+                    if not agg["latest_at"] or agg["latest_at"] < entry.created_at:
+                        agg["latest_at"] = entry.created_at
+
+            aggregates_list = sort_feedback_aggregates(list(aggregates_map.values()))
+
+            return FeedbackListResponse(
+                items=[
+                    FeedbackItemResponse(
+                        id=entry.id,
+                        org_id=entry.org_id,
+                        case_id=entry.case_id,
+                        entity_type=entry.entity_type,
+                        entity_id=entry.entity_id,
+                        label=entry.label.value if hasattr(entry.label, "value") else str(entry.label),
+                        note=entry.note,
+                        created_at=entry.created_at,
+                        created_by=entry.created_by,
+                    )
+                    for entry in items
+                ],
+                aggregates=[
+                    FeedbackAggregateResponse(
+                        entity_type=agg["entity_type"],
+                        entity_id=agg["entity_id"],
+                        counts=agg["counts"],
+                        latest_at=agg["latest_at"],
+                    )
+                    for agg in aggregates_list
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list feedback")
         raise HTTPException(status_code=500, detail=str(e))
 
 

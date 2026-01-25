@@ -149,6 +149,14 @@ class TrainingSessionStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class FeedbackLabel(str, enum.Enum):
+    """Feedback labels"""
+    WORKED = "worked"
+    NOT_WORKED = "not_worked"
+    TOO_RISKY = "too_risky"
+    EXCELLENT = "excellent"
+
+
 class EventType(str, enum.Enum):
     """Timeline event types"""
     DOCUMENT_ADDED = "document_added"
@@ -942,6 +950,27 @@ class EntityUsage(Base):
         Index("ix_entity_usage_case", "case_id"),
         Index("ix_entity_usage_type", "entity_type"),
         Index("ix_entity_usage_usage", "usage_type"),
+    )
+
+
+class Feedback(Base):
+    """User feedback for entities"""
+    __tablename__ = "feedback"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    entity_type = Column(String(50), nullable=False)  # insight/plan_step
+    entity_id = Column(String(128), nullable=False)
+    label = Column(Enum(FeedbackLabel), nullable=False)
+    note = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(64), nullable=False, default="system")
+
+    __table_args__ = (
+        Index("ix_feedback_case", "case_id"),
+        Index("ix_feedback_entity", "entity_type", "entity_id"),
+        Index("ix_feedback_org", "org_id"),
     )
 
 
