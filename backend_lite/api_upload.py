@@ -9,7 +9,7 @@ import os
 import json
 import logging
 import secrets
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from .schemas import (
     TrainingTurnResponse,
     TrainingBackResponse,
     TrainingFinishResponse,
+    EntityUsageSummary,
     WitnessCreateRequest,
     WitnessVersionCreateRequest,
     WitnessResponse,
@@ -296,6 +297,14 @@ def _find_plan_step(plan_json: Dict[str, Any], step_id: str) -> Optional[Dict[st
         if step.get("id") == step_id:
             return step
     return None
+
+
+def _narrative_shift_id(witness_id: str, shift: Dict[str, Any], idx: int) -> str:
+    anchor = shift.get("anchor_a") or shift.get("anchor_b") or {}
+    doc_id = anchor.get("doc_id") or "doc"
+    char_start = anchor.get("char_start") or "pos"
+    shift_type = shift.get("shift_type") or "shift"
+    return f"{witness_id}:{shift_type}:{doc_id}:{char_start}:{idx}"
 
 
 def get_db_dependency():
@@ -2326,9 +2335,10 @@ async def generate_cross_exam_plan(
     """Generate a cross-exam plan for a run."""
     try:
         from .db.session import get_db_session
-        from .db.models import AnalysisRun, Contradiction, ContradictionInsight, CrossExamPlan
+        from .db.models import AnalysisRun, Contradiction, ContradictionInsight, CrossExamPlan, Case
         from .insights import compute_insights_for_run
         from .cross_exam_planner import build_cross_exam_plan
+        from .entity_usage import record_entity_usages
 
         with get_db_session() as db:
             run = db.query(AnalysisRun).filter(
@@ -2377,6 +2387,36 @@ async def generate_cross_exam_plan(
             )
             db.add(plan)
             db.flush()
+
+            case = db.query(Case).filter(Case.id == run.case_id).first()
+            org_id = case.organization_id if case else None
+
+            usage_entries: List[Tuple[str, str, Optional[Dict]]] = []
+            for contr in contradictions:
+                if contr.id:
+                    usage_entries.append(("contradiction", contr.id, None))
+                    if insight_map.get(contr.id):
+                        usage_entries.append(("insight", contr.id, None))
+            for stage in stages:
+                for step in stage.get("steps", []):
+                    step_id = step.get("id")
+                    if step_id:
+                        usage_entries.append(("plan_step", step_id, None))
+                        usage_entries.append(("question", step_id, None))
+                    contr_id = step.get("contradiction_id")
+                    if contr_id:
+                        usage_entries.append(("contradiction", contr_id, None))
+                        if insight_map.get(contr_id):
+                            usage_entries.append(("insight", contr_id, None))
+
+            record_entity_usages(
+                db,
+                case_id=run.case_id,
+                org_id=org_id,
+                usage_type="plan",
+                entries=usage_entries,
+                meta_base={"run_id": run_id, "plan_id": plan.id},
+            )
 
             return CrossExamPlanResponse(
                 plan_id=plan.id,
@@ -2501,7 +2541,8 @@ async def start_training_session(
     """Start a training session for a case."""
     try:
         from .db.session import get_db_session
-        from .db.models import CrossExamPlan, TrainingSession, TrainingSessionStatus, Witness
+        from .db.models import CrossExamPlan, TrainingSession, TrainingSessionStatus, Witness, Case
+        from .entity_usage import record_entity_usages
 
         with get_db_session() as db:
             _require_case_access(db, auth, case_id)
@@ -2535,6 +2576,30 @@ async def start_training_session(
             db.add(session)
             db.flush()
 
+            case = db.query(Case).filter(Case.id == case_id).first()
+            org_id = case.organization_id if case else None
+            steps = _flatten_plan_steps(plan.plan_json or {})
+            if steps:
+                first = steps[0]
+                usage_entries: List[Tuple[str, str, Optional[Dict]]] = []
+                step_id = first.get("id")
+                if step_id:
+                    usage_entries.append(("plan_step", step_id, None))
+                    usage_entries.append(("question", step_id, None))
+                contr_id = first.get("contradiction_id")
+                if contr_id:
+                    usage_entries.append(("contradiction", contr_id, None))
+                    usage_entries.append(("insight", contr_id, None))
+
+                record_entity_usages(
+                    db,
+                    case_id=case_id,
+                    org_id=org_id,
+                    usage_type="training",
+                    entries=usage_entries,
+                    meta_base={"plan_id": plan.id, "session_id": session.id},
+                )
+
             return TrainingSessionResponse(
                 session_id=session.id,
                 case_id=session.case_id,
@@ -2562,8 +2627,9 @@ async def training_turn(
     """Record a training turn."""
     try:
         from .db.session import get_db_session
-        from .db.models import TrainingSession, TrainingTurn, TrainingSessionStatus, CrossExamPlan
+        from .db.models import TrainingSession, TrainingTurn, TrainingSessionStatus, CrossExamPlan, Case
         from .witness_simulation import simulate_step
+        from .entity_usage import record_entity_usages
 
         with get_db_session() as db:
             session = db.query(TrainingSession).filter(
@@ -2603,6 +2669,27 @@ async def training_turn(
             )
             db.add(turn)
             db.flush()
+
+            case = db.query(Case).filter(Case.id == session.case_id).first()
+            org_id = case.organization_id if case else None
+            usage_entries: List[Tuple[str, str, Optional[Dict]]] = []
+            step_id = step.get("id")
+            if step_id:
+                usage_entries.append(("plan_step", step_id, None))
+                usage_entries.append(("question", step_id, None))
+            contr_id = step.get("contradiction_id")
+            if contr_id:
+                usage_entries.append(("contradiction", contr_id, None))
+                usage_entries.append(("insight", contr_id, None))
+
+            record_entity_usages(
+                db,
+                case_id=session.case_id,
+                org_id=org_id,
+                usage_type="training",
+                entries=usage_entries,
+                meta_base={"plan_id": session.plan_id, "session_id": session.id},
+            )
 
             return TrainingTurnResponse(
                 turn_id=turn.id,
@@ -2735,6 +2822,59 @@ async def finish_training(
         raise HTTPException(status_code=500, detail="Failed to finish training session")
 
 
+@router.get("/cases/{case_id}/usage", response_model=List[EntityUsageSummary])
+async def list_entity_usage(
+    case_id: str,
+    entity_type: Optional[str] = Query(default=None),
+    usage_type: Optional[str] = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """List usage summary for entities in a case."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import EntityUsage
+
+        with get_db_session() as db:
+            _require_case_access(db, auth, case_id)
+
+            query = db.query(EntityUsage).filter(EntityUsage.case_id == case_id)
+            if entity_type:
+                query = query.filter(EntityUsage.entity_type == entity_type)
+            if usage_type:
+                query = query.filter(EntityUsage.usage_type == usage_type)
+
+            rows = query.order_by(EntityUsage.created_at.desc()).all()
+            summary_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+            for row in rows:
+                key = (row.entity_type, row.entity_id)
+                entry = summary_map.get(key)
+                if not entry:
+                    entry = {
+                        "entity_type": row.entity_type,
+                        "entity_id": row.entity_id,
+                        "usage": {},
+                        "latest_used_at": None,
+                    }
+                    summary_map[key] = entry
+
+                ts = row.created_at.isoformat() if row.created_at else None
+                if ts:
+                    existing = entry["usage"].get(row.usage_type)
+                    if not existing or existing < ts:
+                        entry["usage"][row.usage_type] = ts
+                    if not entry["latest_used_at"] or entry["latest_used_at"] < ts:
+                        entry["latest_used_at"] = ts
+
+            return [EntityUsageSummary(**entry) for entry in summary_map.values()]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list entity usage")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/analysis-runs/{run_id}/witness-simulation", response_model=WitnessSimulationResponse)
 async def simulate_witness(
     run_id: str,
@@ -2818,6 +2958,7 @@ async def export_cross_exam_plan(
         from .exporter import build_cross_exam_docx, build_cross_exam_pdf
         from .insights import compute_insights_for_run
         from .witness_diff import diff_witness_versions
+        from .entity_usage import record_entity_usages
 
         with get_db_session() as db:
             run = db.query(AnalysisRun).filter(
@@ -2966,6 +3107,43 @@ async def export_cross_exam_plan(
                             continue
                         seen.add(key)
                         appendix_anchors.append(anchor)
+
+            usage_entries: List[Tuple[str, str, Optional[Dict]]] = []
+            for item in ranked:
+                contr_id = item.get("contradiction_id")
+                if contr_id:
+                    usage_entries.append(("contradiction", contr_id, None))
+                    if insight_map.get(contr_id):
+                        usage_entries.append(("insight", contr_id, None))
+
+            for stage in (plan.plan_json or {}).get("stages", []):
+                for step in stage.get("steps", []):
+                    step_id = step.get("id")
+                    if step_id:
+                        usage_entries.append(("plan_step", step_id, None))
+                        usage_entries.append(("question", step_id, None))
+
+            for witness_item in version_shifts:
+                witness_id = witness_item.get("witness_id")
+                shifts = witness_item.get("shifts", [])
+                for idx, shift in enumerate(shifts):
+                    if not witness_id:
+                        continue
+                    shift_id = _narrative_shift_id(witness_id, shift, idx)
+                    usage_entries.append((
+                        "narrative_shift",
+                        shift_id,
+                        {"witness_id": witness_id, "shift_type": shift.get("shift_type")},
+                    ))
+
+            record_entity_usages(
+                db,
+                case_id=run.case_id,
+                org_id=case.organization_id,
+                usage_type="export",
+                entries=usage_entries,
+                meta_base={"run_id": run_id, "plan_id": plan.id},
+            )
 
             plan_payload = dict(plan.plan_json or {})
             plan_payload["case_settings"] = {

@@ -459,6 +459,17 @@ class TrainingFinishResponse(BaseModel):
 
 
 # =============================================================================
+# OUTPUT SCHEMAS - Entity Usage (C2)
+# =============================================================================
+
+class EntityUsageSummary(BaseModel):
+    entity_type: str
+    entity_id: str
+    usage: Dict[str, str]
+    latest_used_at: Optional[str] = None
+
+
+# =============================================================================
 # INPUT SCHEMAS - Witnesses
 # =============================================================================
 
