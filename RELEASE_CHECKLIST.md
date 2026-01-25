@@ -13,16 +13,16 @@
   צעדי שחזור: להריץ UI, לפתוח תיק → Contradictions → "הצג ראיות" → לוודא שההדגשה תואמת לטקסט המקורי בכל מקרה.
 
 ## Phase 2 — Witness Versions
-- **PASS** — Witness וגרסאות קיימים ונראים ב־UI (API).  
-  בדיקה: `backend_lite/tests/test_phase2_witnesses.py::test_witness_endpoints_and_diff`
+- **FAIL** — Witness וגרסאות קיימים ונראים ב־UI.  
+  צעדי שחזור: לפתוח תיק → לשונית "עדים" → ליצור עד + גרסאות → לוודא שהגרסאות מוצגות.
 - **PASS** — זיהוי סטיות נרטיביות כולל anchors לשני הצדדים.  
   בדיקה: `backend_lite/tests/test_phase2_witnesses.py::test_witness_endpoints_and_diff`
 
 ## Phase 3 — ContradictionInsight
 - **PASS** — לכל סתירה יש Insight עם impact/risk/verifiability + stage.  
   בדיקה: `backend_lite/tests/test_phase3_insights.py`
-- **PASS** — DON’T ASK THIS מוצג כשצריך.  
-  בדיקה: `backend_lite/tests/test_phase3_insights.py::test_insight_do_not_ask_for_low_verifiability_high_risk`
+- **FAIL** — DON’T ASK THIS מוצג כשצריך ב־UI.  
+  צעדי שחזור: לפתוח תיק → Contradictions → לוודא שמוצג "DON'T ASK" לסתירה בסיכון גבוה.
 
 ## Phase 4 — Cross-Exam Plan
 - **PASS** — תכנית מדורגת (early/mid/late) ומכבדת prerequisites.  
@@ -35,7 +35,7 @@
 ## Phase 5 — Export
 - **PASS** — יצוא DOCX עובד מקצה לקצה.  
   בדיקה: `backend_lite/tests/test_phase5_export.py::test_export_docx_and_pdf_bytes`
-- **PASS** — ציטוטים תואמים anchors (doc/page/paragraph/snippet).  
-  בדיקה ידנית: לפתוח DOCX ולוודא התאמה לעוגנים.
+- **FAIL** — ציטוטים תואמים anchors (doc/page/paragraph/snippet).  
+  צעדי שחזור: לבצע Export → לפתוח DOCX → לוודא ציטוטים מול עוגנים במסמכים.
 - **PASS** — מבנה היצוא כולל: פרטי תיק, סתירות מדורגות, סטיות גרסה, תכנית חקירה, נספח.  
   בדיקה: `backend_lite/tests/test_phase5_export.py::test_export_docx_and_pdf_bytes`
