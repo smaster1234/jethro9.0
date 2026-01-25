@@ -167,6 +167,20 @@ export interface WitnessVersionDiffResponse {
   shifts: VersionShift[];
 }
 
+export interface ContradictionInsight {
+  contradiction_id: string;
+  impact_score: number;
+  risk_score: number;
+  verifiability_score: number;
+  stage_recommendation?: 'early' | 'mid' | 'late' | string;
+  prerequisites?: string[];
+  expected_evasions?: string[];
+  best_counter_questions?: string[];
+  do_not_ask_flag?: boolean;
+  do_not_ask_reason?: string | null;
+  composite_score?: number;
+}
+
 // Folder Types
 export interface Folder {
   id: string;

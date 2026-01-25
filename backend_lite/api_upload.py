@@ -23,6 +23,7 @@ from .schemas import (
     WitnessVersionResponse,
     WitnessVersionDiffResponse,
     VersionShift,
+    ContradictionInsightResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -1835,6 +1836,63 @@ async def get_analysis_run(
         raise
     except Exception as e:
         logger.exception("Failed to get analysis run")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analysis-runs/{run_id}/insights", response_model=List[ContradictionInsightResponse])
+async def list_contradiction_insights(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List contradiction insights for a run."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import AnalysisRun, Contradiction, ContradictionInsight
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            rows = (
+                db.query(ContradictionInsight, Contradiction)
+                .join(Contradiction, Contradiction.id == ContradictionInsight.contradiction_id)
+                .filter(Contradiction.run_id == run_id)
+                .all()
+            )
+
+            response = []
+            for insight, contr in rows:
+                composite = round(
+                    (insight.impact_score or 0.0)
+                    * (insight.risk_score or 0.0)
+                    * (insight.verifiability_score or 0.0),
+                    4,
+                )
+                response.append(ContradictionInsightResponse(
+                    contradiction_id=insight.contradiction_id,
+                    impact_score=insight.impact_score or 0.0,
+                    risk_score=insight.risk_score or 0.0,
+                    verifiability_score=insight.verifiability_score or 0.0,
+                    stage_recommendation=insight.stage_recommendation,
+                    prerequisites=insight.prerequisites_json or [],
+                    expected_evasions=insight.evasions_json or [],
+                    best_counter_questions=insight.counters_json or [],
+                    do_not_ask_flag=bool(insight.do_not_ask),
+                    do_not_ask_reason=insight.do_not_ask_reason,
+                    composite_score=composite,
+                ))
+
+            response.sort(key=lambda r: r.composite_score or 0.0, reverse=True)
+            return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list insights")
         raise HTTPException(status_code=500, detail=str(e))
 
 

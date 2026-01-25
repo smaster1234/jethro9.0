@@ -30,7 +30,7 @@ import {
   Mail,
   Download,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi } from '../api';
 import { usersApi } from '../api/users';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
@@ -55,6 +55,7 @@ import type {
   EvidenceAnchor,
   Witness,
   WitnessVersionDiffResponse,
+  ContradictionInsight,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -148,6 +149,8 @@ export const CaseDetailPage: React.FC = () => {
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
   const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+  const [insightsByContradiction, setInsightsByContradiction] = useState<Record<string, ContradictionInsight>>({});
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
 
   // Witnesses state
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
@@ -498,6 +501,7 @@ export const CaseDetailPage: React.FC = () => {
     if (selectedRun?.id === run.id) {
       // Toggle off if same run clicked
       setSelectedRun(null);
+      setInsightsByContradiction({});
       return;
     }
 
@@ -513,6 +517,29 @@ export const CaseDetailPage: React.FC = () => {
       setIsLoadingRun(false);
     }
   };
+
+  useEffect(() => {
+    if (!selectedRun?.id) {
+      setInsightsByContradiction({});
+      return;
+    }
+    const fetchInsights = async () => {
+      setIsLoadingInsights(true);
+      try {
+        const insights = await insightsApi.listByRun(selectedRun.id);
+        const map: Record<string, ContradictionInsight> = {};
+        insights.forEach((insight) => {
+          map[insight.contradiction_id] = insight;
+        });
+        setInsightsByContradiction(map);
+      } catch (error) {
+        console.error('Failed to fetch insights:', error);
+      } finally {
+        setIsLoadingInsights(false);
+      }
+    };
+    fetchInsights();
+  }, [selectedRun?.id]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -1567,12 +1594,16 @@ export const CaseDetailPage: React.FC = () => {
                                 <p className="text-sm text-slate-500">
                                   מציג {filtered.length} מתוך {selectedRun.contradictions.length} סתירות
                                 </p>
+                                {isLoadingInsights && (
+                                  <div className="text-xs text-slate-400">טוען דירוג תובנות...</div>
+                                )}
                                 {filtered.map((contradiction, index) => (
                                   <ContradictionCard
                                     key={contradiction.id || index}
                                     contradiction={contradiction}
                                     index={index}
                                     onShowEvidence={handleShowEvidence}
+                                    insight={insightsByContradiction[contradiction.id || '']}
                                   />
                                 ))}
                               </>
@@ -2720,7 +2751,8 @@ const ContradictionCard: React.FC<{
   contradiction: Contradiction;
   index: number;
   onShowEvidence: (contradiction: Contradiction) => void;
-}> = ({ contradiction, index, onShowEvidence }) => {
+  insight?: ContradictionInsight;
+}> = ({ contradiction, index, onShowEvidence, insight }) => {
   const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -2790,6 +2822,11 @@ const ContradictionCard: React.FC<{
     (toEvidenceAnchor(contradiction.claim1_locator) || anchorFromClaim(contradiction.claim_a)) &&
       (toEvidenceAnchor(contradiction.claim2_locator) || anchorFromClaim(contradiction.claim_b))
   );
+
+  const renderScore = (value?: number) => {
+    if (value === undefined || value === null) return '—';
+    return `${Math.round(value * 100)}%`;
+  };
 
   return (
     <motion.div
@@ -2902,6 +2939,25 @@ const ContradictionCard: React.FC<{
               >
                 השווה ראיות
               </Button>
+            </div>
+          )}
+
+          {insight && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+              <div className="flex flex-wrap gap-2 text-xs text-slate-600">
+                <Badge variant="neutral">השפעה: {renderScore(insight.impact_score)}</Badge>
+                <Badge variant="neutral">סיכון: {renderScore(insight.risk_score)}</Badge>
+                <Badge variant="neutral">אימות: {renderScore(insight.verifiability_score)}</Badge>
+                {insight.stage_recommendation && (
+                  <Badge variant="warning">שלב: {insight.stage_recommendation}</Badge>
+                )}
+              </div>
+              {insight.do_not_ask_flag && (
+                <div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-2">
+                  <strong>אל תשאל/י זאת:</strong>{' '}
+                  {insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}
+                </div>
+              )}
             </div>
           )}
 

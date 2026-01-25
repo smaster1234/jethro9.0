@@ -634,6 +634,7 @@ def task_analyze_case(
     from ..extractor import extract_claims_from_text, Claim as ExtractedClaim
     from ..detector import detect_contradictions
     from ..anchors import build_anchor_from_claim
+    from ..insights import compute_insights_for_run
 
     start_time = datetime.utcnow()
     update_job_progress(10, "Loading documents")
@@ -820,6 +821,11 @@ def task_analyze_case(
                         locator2_json=locator2,
                     )
                     db.add(db_contr)
+
+            update_job_progress(85, "Generating insights")
+
+            # Generate contradiction insights
+            compute_insights_for_run(db, run.id)
 
             update_job_progress(90, "Saving results")
 
