@@ -629,7 +629,7 @@ def task_analyze_case(
     from ..db.session import get_db_session
     from ..db.models import (
         Document, DocumentStatus, AnalysisRun, Claim, Contradiction,
-        Event, EventType, DocumentBlock
+        Event, EventType, DocumentBlock, WitnessVersion
     )
     from ..extractor import extract_claims_from_text, Claim as ExtractedClaim
     from ..detector import detect_contradictions
@@ -699,6 +699,17 @@ def task_analyze_case(
             )
             db.add(event)
 
+            # Preload witness versions by document
+            doc_ids = [d.id for d in documents]
+            witness_version_map: Dict[str, str] = {}
+            if doc_ids:
+                versions = (
+                    db.query(WitnessVersion)
+                    .filter(WitnessVersion.document_id.in_(doc_ids))
+                    .all()
+                )
+                witness_version_map = {v.document_id: v.id for v in versions}
+
             # Extract claims from each document (prefer block-level for anchors)
             all_claims = []
             claim_pairs = []
@@ -761,6 +772,7 @@ def task_analyze_case(
                     db_claim = Claim(
                         run_id=run.id,
                         document_id=doc.id,
+                        witness_version_id=witness_version_map.get(doc.id),
                         text=claim.text,
                         party=doc.party.value if doc.party else None,
                         role=doc.role.value if doc.role else None,

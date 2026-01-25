@@ -351,6 +351,25 @@ class AnalyzeCaseRequest(BaseModel):
 
 
 # =============================================================================
+# INPUT SCHEMAS - Witnesses
+# =============================================================================
+
+class WitnessCreateRequest(BaseModel):
+    """Create witness request"""
+    name: str = Field(..., description="Witness name")
+    side: Optional[str] = Field(None, description="ours/theirs/unknown")
+    extra_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class WitnessVersionCreateRequest(BaseModel):
+    """Create witness version request"""
+    document_id: str = Field(..., description="Document ID for this version")
+    version_type: Optional[str] = Field(None, description="statement/affidavit/testimony/etc")
+    version_date: Optional[datetime] = Field(None, description="Date of version")
+    extra_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+# =============================================================================
 # OUTPUT SCHEMAS - Locators
 # =============================================================================
 class Locator(BaseModel):
@@ -412,6 +431,7 @@ class ClaimOutput(BaseModel):
     party: Optional[str] = Field(None, description="Which party: ours/theirs/court/third_party/unknown")
     role: Optional[str] = Field(None, description="Document role in case")
     author: Optional[str] = Field(None, description="Document author")
+    witness_version_id: Optional[str] = Field(None, description="Linked witness version ID")
     locator: Optional[Locator] = Field(None, description="Location in document")
     anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     features: Optional[ClaimFeatures] = Field(None, description="Extracted features")
@@ -880,6 +900,52 @@ class SnippetResponse(BaseModel):
     highlight_quote: Optional[str] = Field(None, description="Quote to highlight within text")
     char_start: Optional[int] = Field(None, description="Character start position")
     char_end: Optional[int] = Field(None, description="Character end position")
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Witnesses
+# =============================================================================
+
+class WitnessVersionResponse(BaseModel):
+    """Witness version response"""
+    id: str
+    witness_id: str
+    document_id: str
+    document_name: Optional[str] = None
+    version_type: Optional[str] = None
+    version_date: Optional[datetime] = None
+    extra_data: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+
+
+class WitnessResponse(BaseModel):
+    """Witness response"""
+    id: str
+    case_id: str
+    name: str
+    side: Optional[str] = None
+    extra_data: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    versions: List[WitnessVersionResponse] = Field(default_factory=list)
+
+
+class VersionShift(BaseModel):
+    """Narrative shift between witness versions"""
+    shift_type: str
+    description: str
+    similarity: Optional[float] = None
+    details: Optional[Dict[str, Any]] = None
+    anchor_a: Optional[EvidenceAnchor] = None
+    anchor_b: Optional[EvidenceAnchor] = None
+
+
+class WitnessVersionDiffResponse(BaseModel):
+    """Diff response for two witness versions"""
+    witness_id: str
+    version_a_id: str
+    version_b_id: str
+    similarity: float
+    shifts: List[VersionShift] = Field(default_factory=list)
 
 
 # OUTPUT SCHEMAS - Health & Errors

@@ -30,7 +30,7 @@ import {
   Mail,
   Download,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi } from '../api';
 import { usersApi } from '../api/users';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
@@ -53,6 +53,8 @@ import type {
   CrossExamQuestion,
   CrossExamQuestionsOutput,
   EvidenceAnchor,
+  Witness,
+  WitnessVersionDiffResponse,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -101,7 +103,7 @@ const anchorFromClaim = (
   };
 };
 
-type Tab = 'documents' | 'analysis' | 'notes' | 'team';
+type Tab = 'documents' | 'analysis' | 'witnesses' | 'notes' | 'team';
 
 export const CaseDetailPage: React.FC = () => {
   const { caseId } = useParams<{ caseId: string }>();
@@ -146,6 +148,14 @@ export const CaseDetailPage: React.FC = () => {
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
   const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+
+  // Witnesses state
+  const [witnesses, setWitnesses] = useState<Witness[]>([]);
+  const [isLoadingWitnesses, setIsLoadingWitnesses] = useState(false);
+  const [newWitnessName, setNewWitnessName] = useState('');
+  const [newWitnessSide, setNewWitnessSide] = useState('unknown');
+  const [isCreatingWitness, setIsCreatingWitness] = useState(false);
+  const [witnessError, setWitnessError] = useState('');
 
   // Evidence viewer state
   const [isEvidenceViewerOpen, setIsEvidenceViewerOpen] = useState(false);
@@ -223,6 +233,13 @@ export const CaseDetailPage: React.FC = () => {
   useEffect(() => {
     if (activeTab === 'notes' && caseId && notes.length === 0) {
       fetchNotes();
+    }
+  }, [activeTab, caseId]);
+
+  // Fetch witnesses when witnesses tab is selected
+  useEffect(() => {
+    if (activeTab === 'witnesses' && caseId) {
+      fetchWitnesses();
     }
   }, [activeTab, caseId]);
 
@@ -343,6 +360,39 @@ export const CaseDetailPage: React.FC = () => {
       console.error('Failed to fetch participants:', error);
     } finally {
       setIsLoadingParticipants(false);
+    }
+  };
+
+  const fetchWitnesses = async () => {
+    if (!caseId) return;
+    setIsLoadingWitnesses(true);
+    try {
+      const witnessRes = await witnessesApi.list(caseId);
+      setWitnesses(witnessRes || []);
+    } catch (error) {
+      console.error('Failed to fetch witnesses:', error);
+      setWitnessError(handleApiError(error));
+    } finally {
+      setIsLoadingWitnesses(false);
+    }
+  };
+
+  const handleCreateWitness = async () => {
+    if (!caseId || !newWitnessName.trim()) return;
+    setIsCreatingWitness(true);
+    setWitnessError('');
+    try {
+      await witnessesApi.create(caseId, {
+        name: newWitnessName.trim(),
+        side: newWitnessSide,
+      });
+      setNewWitnessName('');
+      setNewWitnessSide('unknown');
+      await fetchWitnesses();
+    } catch (error) {
+      setWitnessError(handleApiError(error));
+    } finally {
+      setIsCreatingWitness(false);
     }
   };
 
@@ -642,6 +692,12 @@ export const CaseDetailPage: React.FC = () => {
     setIsEvidenceViewerOpen(true);
   }, []);
 
+  const handleShowEvidenceAnchors = useCallback((left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => {
+    setEvidenceLeftAnchor(left || null);
+    setEvidenceRightAnchor(right || null);
+    setIsEvidenceViewerOpen(true);
+  }, []);
+
   const handleAnalyze = async () => {
     if (!caseId) return;
 
@@ -887,6 +943,7 @@ export const CaseDetailPage: React.FC = () => {
           {[
             { id: 'documents', label: 'מסמכים', icon: FileText, count: documents.length },
             { id: 'analysis', label: 'ניתוח', icon: Search, count: analysisRuns.length },
+            { id: 'witnesses', label: 'עדים', icon: Users, count: witnesses.length || undefined },
             { id: 'notes', label: 'הערות', icon: StickyNote, count: notes.length || undefined },
             { id: 'team', label: 'צוות', icon: Users, count: participants.length || undefined },
           ].map((tab) => (
@@ -1579,6 +1636,72 @@ export const CaseDetailPage: React.FC = () => {
                     </AnimatePresence>
                   </motion.div>
                 )}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {activeTab === 'witnesses' && (
+          <motion.div
+            key="witnesses"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
+          >
+            <Card>
+              <div className="space-y-4">
+                <h3 className="font-semibold text-slate-900">הוספת עד</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Input
+                    placeholder="שם העד"
+                    value={newWitnessName}
+                    onChange={(e) => setNewWitnessName(e.target.value)}
+                  />
+                  <select
+                    value={newWitnessSide}
+                    onChange={(e) => setNewWitnessSide(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                  >
+                    <option value="unknown">לא ידוע</option>
+                    <option value="ours">שלנו</option>
+                    <option value="theirs">של הצד שכנגד</option>
+                  </select>
+                  <Button
+                    onClick={handleCreateWitness}
+                    isLoading={isCreatingWitness}
+                    disabled={!newWitnessName.trim()}
+                  >
+                    הוסף עד
+                  </Button>
+                </div>
+                {witnessError && (
+                  <div className="text-sm text-danger-600">{witnessError}</div>
+                )}
+              </div>
+            </Card>
+
+            {isLoadingWitnesses ? (
+              <div className="flex items-center justify-center py-10">
+                <Spinner size="lg" />
+              </div>
+            ) : witnesses.length === 0 ? (
+              <EmptyState
+                icon={<Users className="w-16 h-16" />}
+                title="אין עדים עדיין"
+                description="הוסף עד ראשון כדי להתחיל לעבוד על גרסאות"
+              />
+            ) : (
+              <div className="space-y-4">
+                {witnesses.map((witness) => (
+                  <WitnessCard
+                    key={witness.id}
+                    witness={witness}
+                    documents={documents}
+                    onRefresh={fetchWitnesses}
+                    onShowEvidence={handleShowEvidenceAnchors}
+                  />
+                ))}
               </div>
             )}
           </motion.div>
@@ -2369,6 +2492,226 @@ const FolderTreeItem: React.FC<{
         </div>
       )}
     </div>
+  );
+};
+
+// Witness Card Component
+const WitnessCard: React.FC<{
+  witness: Witness;
+  documents: DocumentType[];
+  onRefresh: () => void;
+  onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
+}> = ({ witness, documents, onRefresh, onShowEvidence }) => {
+  const versions = witness.versions || [];
+  const [versionDocId, setVersionDocId] = useState('');
+  const [versionType, setVersionType] = useState('');
+  const [versionDate, setVersionDate] = useState('');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  const [diffA, setDiffA] = useState('');
+  const [diffB, setDiffB] = useState('');
+  const [diffResult, setDiffResult] = useState<WitnessVersionDiffResponse | null>(null);
+  const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (versions.length >= 2 && (!diffA || !diffB)) {
+      setDiffA(versions[0].id);
+      setDiffB(versions[1].id);
+    }
+  }, [versions, diffA, diffB]);
+
+  const handleAddVersion = async () => {
+    if (!versionDocId) return;
+    setIsSavingVersion(true);
+    setError('');
+    try {
+      await witnessesApi.createVersion(witness.id, {
+        document_id: versionDocId,
+        version_type: versionType || undefined,
+        version_date: versionDate || undefined,
+      });
+      setVersionDocId('');
+      setVersionType('');
+      setVersionDate('');
+      await onRefresh();
+    } catch (err) {
+      setError(handleApiError(err));
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
+  const handleDiff = async () => {
+    if (!diffA || !diffB || diffA === diffB) return;
+    setIsDiffLoading(true);
+    setError('');
+    try {
+      const res = await witnessesApi.diffVersions(witness.id, {
+        version_a_id: diffA,
+        version_b_id: diffB,
+      });
+      setDiffResult(res);
+    } catch (err) {
+      setError(handleApiError(err));
+    } finally {
+      setIsDiffLoading(false);
+    }
+  };
+
+  const getShiftLabel = (shiftType: string) => {
+    const map: Record<string, string> = {
+      low_similarity: 'דמיון נמוך',
+      time_change: 'שינוי במועדים',
+      entity_change: 'שינוי בישויות',
+      negation_flip: 'היפוך שלילה',
+    };
+    return map[shiftType] || shiftType;
+  };
+
+  return (
+    <Card>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="font-semibold text-slate-900">{witness.name}</h4>
+            <p className="text-xs text-slate-500">
+              צד: {witness.side || 'לא ידוע'}
+            </p>
+          </div>
+          <Badge variant="neutral">{versions.length} גרסאות</Badge>
+        </div>
+
+        {error && <div className="text-sm text-danger-600">{error}</div>}
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <select
+            value={versionDocId}
+            onChange={(e) => setVersionDocId(e.target.value)}
+            className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+          >
+            <option value="">בחר מסמך לגרסה</option>
+            {documents.map((doc) => (
+              <option key={doc.id} value={doc.id}>
+                {doc.doc_name || doc.original_filename || doc.id}
+              </option>
+            ))}
+          </select>
+          <Input
+            placeholder="סוג גרסה (למשל: תצהיר)"
+            value={versionType}
+            onChange={(e) => setVersionType(e.target.value)}
+          />
+          <Input
+            type="date"
+            value={versionDate}
+            onChange={(e) => setVersionDate(e.target.value)}
+          />
+          <Button
+            variant="secondary"
+            onClick={handleAddVersion}
+            isLoading={isSavingVersion}
+            disabled={!versionDocId}
+          >
+            הוסף גרסה
+          </Button>
+        </div>
+
+        {versions.length > 0 && (
+          <div className="space-y-2">
+            {versions.map((v) => (
+              <div key={v.id} className="flex items-center justify-between text-sm text-slate-700">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{v.document_name || v.document_id}</span>
+                  {v.version_type && <Badge variant="neutral">{v.version_type}</Badge>}
+                </div>
+                {v.version_date && (
+                  <span className="text-xs text-slate-500">
+                    {new Date(v.version_date).toLocaleDateString('he-IL')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {versions.length >= 2 && (
+          <div className="border-t border-slate-100 pt-4 space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <select
+                value={diffA}
+                onChange={(e) => setDiffA(e.target.value)}
+                className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.document_name || v.document_id}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={diffB}
+                onChange={(e) => setDiffB(e.target.value)}
+                className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.document_name || v.document_id}
+                  </option>
+                ))}
+              </select>
+              <Button onClick={handleDiff} isLoading={isDiffLoading} disabled={!diffA || !diffB || diffA === diffB}>
+                השווה גרסאות
+              </Button>
+            </div>
+
+            {diffResult && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-500">
+                  דמיון כללי: {Math.round(diffResult.similarity * 100)}%
+                </p>
+                {diffResult.shifts.length === 0 ? (
+                  <EmptyState
+                    icon={<CheckCircle className="w-10 h-10" />}
+                    title="לא זוהו שינויים מהותיים"
+                    description="הגרסאות דומות ברמת הנרטיב"
+                  />
+                ) : (
+                  diffResult.shifts.map((shift, idx) => (
+                    <div key={`${shift.shift_type}_${idx}`} className="border border-slate-200 rounded-xl p-3">
+                      <div className="flex items-center justify-between">
+                        <Badge variant="warning">{getShiftLabel(shift.shift_type)}</Badge>
+                        {shift.similarity !== undefined && (
+                          <span className="text-xs text-slate-500">
+                            {Math.round(shift.similarity * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-700 mt-2">{shift.description}</p>
+                      {shift.details && (
+                        <pre className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 mt-2 whitespace-pre-wrap">
+                          {JSON.stringify(shift.details, null, 2)}
+                        </pre>
+                      )}
+                      {shift.anchor_a && shift.anchor_b && (
+                        <div className="mt-2 flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => onShowEvidence(shift.anchor_a, shift.anchor_b)}
+                          >
+                            הצג ראיות
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Card>
   );
 };
 

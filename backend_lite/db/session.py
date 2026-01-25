@@ -10,7 +10,7 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 
@@ -74,6 +74,22 @@ def init_db():
     """Initialize database tables"""
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    _ensure_phase2_schema(engine)
+
+
+def _ensure_phase2_schema(engine) -> None:
+    """
+    Ensure Phase 2 columns exist (lightweight migration).
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("claims")}
+        if "witness_version_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE claims ADD COLUMN witness_version_id VARCHAR(36)"))
+    except Exception:
+        # Non-fatal: avoid breaking startup if ALTER isn't supported
+        pass
 
 
 def drop_db():

@@ -190,6 +190,7 @@ class Firm(Base):
     documents = relationship("Document", back_populates="firm", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="firm", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="firm", cascade="all, delete-orphan")
+    witnesses = relationship("Witness", back_populates="firm", cascade="all, delete-orphan")
 
 
 class User(Base):
@@ -307,6 +308,7 @@ class Case(Base):
     events = relationship("Event", back_populates="case", cascade="all, delete-orphan")
     issues = relationship("Issue", back_populates="case", cascade="all, delete-orphan")
     analysis_runs = relationship("AnalysisRun", back_populates="case", cascade="all, delete-orphan")
+    witnesses = relationship("Witness", back_populates="case", cascade="all, delete-orphan")
 
 
 class CaseParticipant(Base):
@@ -336,6 +338,57 @@ class CaseTeam(Base):
     # Relationships
     case = relationship("Case", back_populates="case_teams")
     team = relationship("Team", back_populates="case_teams")
+
+
+# =============================================================================
+# WITNESSES
+# =============================================================================
+
+class Witness(Base):
+    """Witness in a case / עד"""
+    __tablename__ = "witnesses"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    side = Column(String(50), nullable=True)  # ours/theirs/unknown
+    extra_data = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_witness_case", "case_id"),
+        Index("ix_witness_firm", "firm_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm", back_populates="witnesses")
+    case = relationship("Case", back_populates="witnesses")
+    versions = relationship("WitnessVersion", back_populates="witness", cascade="all, delete-orphan")
+
+
+class WitnessVersion(Base):
+    """Witness version tied to a specific document"""
+    __tablename__ = "witness_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    version_type = Column(String(50), nullable=True)  # statement/affidavit/testimony/etc
+    version_date = Column(DateTime, nullable=True)
+    extra_data = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("document_id", name="uq_witness_version_document"),
+        Index("ix_witness_version_witness", "witness_id"),
+        Index("ix_witness_version_document", "document_id"),
+    )
+
+    # Relationships
+    witness = relationship("Witness", back_populates="versions")
+    document = relationship("Document", back_populates="witness_versions")
+    claims = relationship("Claim", back_populates="witness_version")
 
 
 # =============================================================================
@@ -430,6 +483,7 @@ class Document(Base):
     blocks = relationship("DocumentBlock", back_populates="document", cascade="all, delete-orphan")
     versions = relationship("DocumentVersion", back_populates="document", cascade="all, delete-orphan")
     claims = relationship("Claim", back_populates="document", cascade="all, delete-orphan")
+    witness_versions = relationship("WitnessVersion", back_populates="document", cascade="all, delete-orphan")
 
 
 class DocumentPage(Base):
@@ -598,6 +652,7 @@ class Claim(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     run_id = Column(String(36), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    witness_version_id = Column(String(36), ForeignKey("witness_versions.id", ondelete="SET NULL"), nullable=True)
     claim_hash = Column(String(64), nullable=True)
     text = Column(Text, nullable=False)
     party = Column(String(50), nullable=True)
@@ -608,11 +663,13 @@ class Claim(Base):
     __table_args__ = (
         Index("ix_claim_run", "run_id"),
         Index("ix_claim_document", "document_id"),
+        Index("ix_claim_witness_version", "witness_version_id"),
     )
 
     # Relationships
     analysis_run = relationship("AnalysisRun", back_populates="claims")
     document = relationship("Document", back_populates="claims")
+    witness_version = relationship("WitnessVersion", back_populates="claims")
 
 
 class Issue(Base):

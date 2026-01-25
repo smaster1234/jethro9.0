@@ -8,14 +8,22 @@ FastAPI router for document upload and folder management.
 import os
 import json
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .schemas import EvidenceAnchor
+from .schemas import (
+    EvidenceAnchor,
+    WitnessCreateRequest,
+    WitnessVersionCreateRequest,
+    WitnessResponse,
+    WitnessVersionResponse,
+    WitnessVersionDiffResponse,
+    VersionShift,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +154,12 @@ class AnchorResolveResponse(BaseModel):
     highlight_end: Optional[int] = None
     highlight_text: Optional[str] = None
     bbox: Optional[dict] = None
+
+
+class WitnessVersionDiffRequest(BaseModel):
+    """Request to diff two witness versions"""
+    version_a_id: str
+    version_b_id: str
 
 
 # =============================================================================
@@ -1365,6 +1379,301 @@ async def resolve_anchor(
         raise
     except Exception as e:
         logger.exception("Failed to resolve anchor")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# WITNESSES
+# =============================================================================
+
+@router.get("/cases/{case_id}/witnesses", response_model=List[WitnessResponse])
+async def list_witnesses(
+    case_id: str,
+    include_versions: bool = True,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List witnesses for a case."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Case, Witness, WitnessVersion, Document
+
+        with get_db_session() as db:
+            case = db.query(Case).filter(
+                Case.id == case_id,
+                Case.firm_id == auth.firm_id
+            ).first()
+            if not case:
+                raise HTTPException(status_code=404, detail="Case not found")
+
+            witnesses = (
+                db.query(Witness)
+                .filter(Witness.case_id == case_id, Witness.firm_id == auth.firm_id)
+                .order_by(Witness.created_at.asc())
+                .all()
+            )
+
+            version_map: Dict[str, List[WitnessVersionResponse]] = {}
+            if include_versions and witnesses:
+                witness_ids = [w.id for w in witnesses]
+                versions = (
+                    db.query(WitnessVersion, Document)
+                    .join(Document, Document.id == WitnessVersion.document_id)
+                    .filter(WitnessVersion.witness_id.in_(witness_ids))
+                    .order_by(WitnessVersion.created_at.asc())
+                    .all()
+                )
+                for version, doc in versions:
+                    version_map.setdefault(version.witness_id, []).append(WitnessVersionResponse(
+                        id=version.id,
+                        witness_id=version.witness_id,
+                        document_id=version.document_id,
+                        document_name=doc.doc_name if doc else None,
+                        version_type=version.version_type,
+                        version_date=version.version_date,
+                        extra_data=version.extra_data,
+                        created_at=version.created_at,
+                    ))
+
+            return [
+                WitnessResponse(
+                    id=w.id,
+                    case_id=w.case_id,
+                    name=w.name,
+                    side=w.side,
+                    extra_data=w.extra_data,
+                    created_at=w.created_at,
+                    versions=version_map.get(w.id, []),
+                )
+                for w in witnesses
+            ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list witnesses")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cases/{case_id}/witnesses", response_model=WitnessResponse)
+async def create_witness(
+    case_id: str,
+    payload: WitnessCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Create a witness for a case."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Case, Witness
+
+        with get_db_session() as db:
+            case = db.query(Case).filter(
+                Case.id == case_id,
+                Case.firm_id == auth.firm_id
+            ).first()
+            if not case:
+                raise HTTPException(status_code=404, detail="Case not found")
+
+            witness = Witness(
+                firm_id=auth.firm_id,
+                case_id=case_id,
+                name=payload.name.strip(),
+                side=(payload.side or "unknown"),
+                extra_data=payload.extra_data or {},
+            )
+            db.add(witness)
+            db.flush()
+
+            return WitnessResponse(
+                id=witness.id,
+                case_id=witness.case_id,
+                name=witness.name,
+                side=witness.side,
+                extra_data=witness.extra_data,
+                created_at=witness.created_at,
+                versions=[],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create witness")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/witnesses/{witness_id}/versions", response_model=List[WitnessVersionResponse])
+async def list_witness_versions(
+    witness_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """List versions for a witness."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Witness, WitnessVersion, Document
+
+        with get_db_session() as db:
+            witness = db.query(Witness).filter(
+                Witness.id == witness_id,
+                Witness.firm_id == auth.firm_id
+            ).first()
+            if not witness:
+                raise HTTPException(status_code=404, detail="Witness not found")
+
+            versions = (
+                db.query(WitnessVersion, Document)
+                .join(Document, Document.id == WitnessVersion.document_id)
+                .filter(WitnessVersion.witness_id == witness_id)
+                .order_by(WitnessVersion.created_at.asc())
+                .all()
+            )
+
+            return [
+                WitnessVersionResponse(
+                    id=v.id,
+                    witness_id=v.witness_id,
+                    document_id=v.document_id,
+                    document_name=doc.doc_name if doc else None,
+                    version_type=v.version_type,
+                    version_date=v.version_date,
+                    extra_data=v.extra_data,
+                    created_at=v.created_at,
+                )
+                for v, doc in versions
+            ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list witness versions")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/witnesses/{witness_id}/versions", response_model=WitnessVersionResponse)
+async def create_witness_version(
+    witness_id: str,
+    payload: WitnessVersionCreateRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Create a witness version linked to a document."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Witness, WitnessVersion, Document
+
+        with get_db_session() as db:
+            witness = db.query(Witness).filter(
+                Witness.id == witness_id,
+                Witness.firm_id == auth.firm_id
+            ).first()
+            if not witness:
+                raise HTTPException(status_code=404, detail="Witness not found")
+
+            doc = db.query(Document).filter(
+                Document.id == payload.document_id,
+                Document.firm_id == auth.firm_id,
+                Document.case_id == witness.case_id
+            ).first()
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            existing = db.query(WitnessVersion).filter(
+                WitnessVersion.document_id == payload.document_id
+            ).first()
+            if existing:
+                raise HTTPException(status_code=409, detail="Document already linked to a witness version")
+
+            version = WitnessVersion(
+                witness_id=witness_id,
+                document_id=payload.document_id,
+                version_type=payload.version_type,
+                version_date=payload.version_date,
+                extra_data=payload.extra_data or {},
+            )
+            db.add(version)
+            db.flush()
+
+            return WitnessVersionResponse(
+                id=version.id,
+                witness_id=version.witness_id,
+                document_id=version.document_id,
+                document_name=doc.doc_name,
+                version_type=version.version_type,
+                version_date=version.version_date,
+                extra_data=version.extra_data,
+                created_at=version.created_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create witness version")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/witnesses/{witness_id}/versions/diff", response_model=WitnessVersionDiffResponse)
+async def diff_witness_versions(
+    witness_id: str,
+    payload: WitnessVersionDiffRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Compute narrative shifts between two witness versions."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Witness, WitnessVersion, Document
+        from .witness_diff import diff_witness_versions as _diff
+
+        with get_db_session() as db:
+            witness = db.query(Witness).filter(
+                Witness.id == witness_id,
+                Witness.firm_id == auth.firm_id
+            ).first()
+            if not witness:
+                raise HTTPException(status_code=404, detail="Witness not found")
+
+            versions = (
+                db.query(WitnessVersion)
+                .filter(
+                    WitnessVersion.witness_id == witness_id,
+                    WitnessVersion.id.in_([payload.version_a_id, payload.version_b_id])
+                )
+                .all()
+            )
+            if len(versions) != 2:
+                raise HTTPException(status_code=404, detail="Witness versions not found")
+
+            version_a = next(v for v in versions if v.id == payload.version_a_id)
+            version_b = next(v for v in versions if v.id == payload.version_b_id)
+
+            # Ensure documents are loaded
+            version_a.document = db.query(Document).filter(Document.id == version_a.document_id).first()
+            version_b.document = db.query(Document).filter(Document.id == version_b.document_id).first()
+
+            if not version_a.document or not version_b.document:
+                raise HTTPException(status_code=404, detail="Version document not found")
+
+            diff = _diff(db, version_a, version_b)
+            shifts = [
+                VersionShift(
+                    shift_type=s.get("shift_type", "unknown"),
+                    description=s.get("description", ""),
+                    similarity=s.get("similarity"),
+                    details=s.get("details"),
+                    anchor_a=s.get("anchor_a"),
+                    anchor_b=s.get("anchor_b"),
+                )
+                for s in diff.get("shifts", [])
+            ]
+
+            return WitnessVersionDiffResponse(
+                witness_id=witness_id,
+                version_a_id=version_a.id,
+                version_b_id=version_b.id,
+                similarity=diff.get("similarity", 0.0),
+                shifts=shifts,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to diff witness versions")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -4,6 +4,7 @@ export { default as casesApi } from './cases';
 export { default as documentsApi } from './documents';
 export { default as analysisApi } from './analysis';
 export { default as anchorsApi } from './anchors';
+export { default as witnessesApi } from './witnesses';
 
 // Health check
 import apiClient from './client';
