@@ -29,8 +29,9 @@ import {
   UserPlus,
   Mail,
   Download,
+  ListOrdered,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi } from '../api';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi } from '../api';
 import { usersApi } from '../api/users';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
@@ -56,6 +57,8 @@ import type {
   Witness,
   WitnessVersionDiffResponse,
   ContradictionInsight,
+  CrossExamPlanResponse,
+  CrossExamPlanStep,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
@@ -148,9 +151,12 @@ export const CaseDetailPage: React.FC = () => {
   // Analysis results view state
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
-  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions' | 'plan'>('contradictions');
   const [insightsByContradiction, setInsightsByContradiction] = useState<Record<string, ContradictionInsight>>({});
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
+  const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const [planError, setPlanError] = useState('');
 
   // Witnesses state
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
@@ -509,6 +515,8 @@ export const CaseDetailPage: React.FC = () => {
     try {
       const fullRun = await casesApi.getRun(run.id);
       setSelectedRun(fullRun);
+      setCrossExamPlan(null);
+      setPlanError('');
     } catch (error) {
       console.error('Failed to fetch run details:', error);
       // Still show basic run info
@@ -540,6 +548,26 @@ export const CaseDetailPage: React.FC = () => {
     };
     fetchInsights();
   }, [selectedRun?.id]);
+
+  useEffect(() => {
+    if (!selectedRun?.id || analysisResultsTab !== 'plan') {
+      return;
+    }
+    const loadPlan = async () => {
+      setIsLoadingPlan(true);
+      setPlanError('');
+      try {
+        const plan = await crossExamPlanApi.getLatest(selectedRun.id);
+        setCrossExamPlan(plan);
+      } catch (error) {
+        setCrossExamPlan(null);
+        setPlanError(handleApiError(error));
+      } finally {
+        setIsLoadingPlan(false);
+      }
+    };
+    loadPlan();
+  }, [selectedRun?.id, analysisResultsTab]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -724,6 +752,20 @@ export const CaseDetailPage: React.FC = () => {
     setEvidenceRightAnchor(right || null);
     setIsEvidenceViewerOpen(true);
   }, []);
+
+  const handleGeneratePlan = async () => {
+    if (!selectedRun?.id) return;
+    setIsLoadingPlan(true);
+    setPlanError('');
+    try {
+      const plan = await crossExamPlanApi.generate(selectedRun.id, {});
+      setCrossExamPlan(plan);
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsLoadingPlan(false);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!caseId) return;
@@ -1443,6 +1485,14 @@ export const CaseDetailPage: React.FC = () => {
                         >
                           שאלות לחקירה
                         </Button>
+                        <Button
+                          variant={analysisResultsTab === 'plan' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('plan')}
+                          leftIcon={<ListOrdered className="w-4 h-4" />}
+                        >
+                          תכנית חקירה
+                        </Button>
                       </div>
                       {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
                         <div className="flex gap-2">
@@ -1662,6 +1712,72 @@ export const CaseDetailPage: React.FC = () => {
                               />
                             ));
                           })()}
+                        </motion.div>
+                      )}
+
+                      {analysisResultsTab === 'plan' && (
+                        <motion.div
+                          key="plan"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Button
+                              onClick={handleGeneratePlan}
+                              isLoading={isLoadingPlan}
+                              variant="primary"
+                            >
+                              צור תכנית חקירה
+                            </Button>
+                            {planError && (
+                              <span className="text-sm text-danger-600">{planError}</span>
+                            )}
+                          </div>
+
+                          {isLoadingPlan && (
+                            <div className="flex items-center gap-2 text-sm text-slate-500">
+                              <Spinner size="sm" />
+                              טוען תכנית...
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && crossExamPlan && (
+                            <div className="space-y-4">
+                              {crossExamPlan.stages.map((stage) => (
+                                <Card key={stage.stage}>
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="font-semibold text-slate-900">
+                                        שלב {stage.stage}
+                                      </h4>
+                                      <Badge variant="neutral">
+                                        {stage.steps.length} צעדים
+                                      </Badge>
+                                    </div>
+                                    <div className="space-y-3">
+                                      {stage.steps.map((step) => (
+                                        <PlanStepCard
+                                          key={step.id}
+                                          step={step}
+                                          onShowEvidence={handleShowEvidenceAnchors}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+                                </Card>
+                              ))}
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && !crossExamPlan && !planError && (
+                            <EmptyState
+                              icon={<ListOrdered className="w-12 h-12" />}
+                              title="אין תכנית חקירה"
+                              description="לחץ על יצירת תכנית כדי לבנות תכנית מדורגת"
+                            />
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -2743,6 +2859,61 @@ const WitnessCard: React.FC<{
         )}
       </div>
     </Card>
+  );
+};
+
+const PlanStepCard: React.FC<{
+  step: CrossExamPlanStep;
+  onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
+}> = ({ step, onShowEvidence }) => {
+  const anchors = step.anchors || [];
+  const left = anchors[0] || null;
+  const right = anchors[1] || null;
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant="neutral">{step.step_type}</Badge>
+          <span className="text-sm font-medium text-slate-900">{step.title}</span>
+        </div>
+        {step.do_not_ask_flag && (
+          <Badge variant="danger">DON'T ASK</Badge>
+        )}
+      </div>
+      {step.do_not_ask_flag && step.do_not_ask_reason && (
+        <div className="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-2">
+          {step.do_not_ask_reason}
+        </div>
+      )}
+      <div className="text-sm text-slate-700">{step.question}</div>
+      {step.branches && step.branches.length > 0 && (
+        <div className="text-xs text-slate-600 space-y-2">
+          <div className="font-medium text-slate-700">הסתעפויות:</div>
+          {step.branches.map((branch, idx) => (
+            <div key={`${branch.trigger}_${idx}`} className="pl-3 border-r-2 border-slate-200">
+              <div>{branch.trigger}</div>
+              {branch.follow_up_questions?.length > 0 && (
+                <ul className="list-disc list-inside mt-1">
+                  {branch.follow_up_questions.map((q, qIdx) => (
+                    <li key={`${qIdx}-${q}`} className="text-slate-600">
+                      {q}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {left && right && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="secondary" onClick={() => onShowEvidence(left, right)}>
+            הצג ראיות
+          </Button>
+        </div>
+      )}
+    </div>
   );
 };
 

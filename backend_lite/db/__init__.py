@@ -14,7 +14,7 @@ from .models import (
     Document, DocumentPage, DocumentBlock, DocumentVersion,
     Job, Event,
     AnalysisRun, Claim, Issue, IssueLink, Contradiction, Finding,
-    ContradictionInsight,
+    ContradictionInsight, CrossExamPlan,
     SystemRole, TeamRole, CaseStatus, DocumentParty, DocumentRole,
     JobType, JobStatus, EventType, IssueStatus, ContradictionStatus
 )
@@ -35,7 +35,7 @@ __all__ = [
     # Jobs & Events
     "Job", "Event",
     # Analysis
-    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "Finding",
+    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "CrossExamPlan", "Finding",
     # Enums
     "SystemRole", "TeamRole", "CaseStatus", "DocumentParty", "DocumentRole",
     "JobType", "JobStatus", "EventType", "IssueStatus", "ContradictionStatus",

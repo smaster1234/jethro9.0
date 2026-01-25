@@ -764,6 +764,30 @@ class ContradictionInsight(Base):
     contradiction = relationship("Contradiction", back_populates="insight")
 
 
+class CrossExamPlan(Base):
+    """Cross-examination plan for a case/run"""
+    __tablename__ = "cross_exam_plans"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String(36), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="SET NULL"), nullable=True)
+    plan_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_cross_exam_plan_case", "case_id"),
+        Index("ix_cross_exam_plan_run", "run_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm")
+    case = relationship("Case")
+    analysis_run = relationship("AnalysisRun")
+    witness = relationship("Witness")
+
+
 class Finding(Base):
     """Court finding / קביעה שיפוטית"""
     __tablename__ = "findings"

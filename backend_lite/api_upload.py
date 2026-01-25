@@ -24,6 +24,10 @@ from .schemas import (
     WitnessVersionDiffResponse,
     VersionShift,
     ContradictionInsightResponse,
+    CrossExamPlanResponse,
+    CrossExamPlanStage,
+    CrossExamPlanStep,
+    CrossExamPlanBranch,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +165,12 @@ class WitnessVersionDiffRequest(BaseModel):
     """Request to diff two witness versions"""
     version_a_id: str
     version_b_id: str
+
+
+class CrossExamPlanRequest(BaseModel):
+    """Request to generate a cross-exam plan"""
+    contradiction_ids: Optional[List[str]] = None
+    witness_id: Optional[str] = None
 
 
 # =============================================================================
@@ -1893,6 +1903,176 @@ async def list_contradiction_insights(
         raise
     except Exception as e:
         logger.exception("Failed to list insights")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analysis-runs/{run_id}/cross-exam-plan", response_model=CrossExamPlanResponse)
+async def generate_cross_exam_plan(
+    run_id: str,
+    payload: CrossExamPlanRequest,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Generate a cross-exam plan for a run."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import AnalysisRun, Contradiction, ContradictionInsight, CrossExamPlan
+        from .insights import compute_insights_for_run
+        from .cross_exam_planner import build_cross_exam_plan
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            query = db.query(Contradiction).filter(Contradiction.run_id == run_id)
+            if payload.contradiction_ids:
+                query = query.filter(Contradiction.id.in_(payload.contradiction_ids))
+            contradictions = query.all()
+
+            if not contradictions:
+                raise HTTPException(status_code=400, detail="No contradictions found for plan")
+
+            # Ensure insights exist
+            existing_insights = db.query(ContradictionInsight).filter(
+                ContradictionInsight.contradiction_id.in_([c.id for c in contradictions])
+            ).count()
+            if existing_insights == 0:
+                compute_insights_for_run(db, run_id)
+
+            insight_map = {
+                i.contradiction_id: i
+                for i in db.query(ContradictionInsight).filter(
+                    ContradictionInsight.contradiction_id.in_([c.id for c in contradictions])
+                ).all()
+            }
+
+            pairs = [(c, insight_map.get(c.id)) for c in contradictions]
+            stages = build_cross_exam_plan(pairs)
+
+            plan = CrossExamPlan(
+                firm_id=auth.firm_id,
+                case_id=run.case_id,
+                run_id=run_id,
+                witness_id=payload.witness_id,
+                plan_json={"stages": stages},
+            )
+            db.add(plan)
+            db.flush()
+
+            return CrossExamPlanResponse(
+                plan_id=plan.id,
+                case_id=plan.case_id,
+                run_id=plan.run_id,
+                witness_id=plan.witness_id,
+                created_at=plan.created_at,
+                stages=[
+                    CrossExamPlanStage(
+                        stage=stage["stage"],
+                        steps=[
+                            CrossExamPlanStep(
+                                id=step["id"],
+                                contradiction_id=step.get("contradiction_id"),
+                                stage=step["stage"],
+                                step_type=step["step_type"],
+                                title=step["title"],
+                                question=step["question"],
+                                purpose=step.get("purpose"),
+                                anchors=step.get("anchors", []),
+                                branches=[
+                                    CrossExamPlanBranch(
+                                        trigger=b.get("trigger", ""),
+                                        follow_up_questions=b.get("follow_up_questions", []),
+                                    )
+                                    for b in step.get("branches", [])
+                                ],
+                                do_not_ask_flag=step.get("do_not_ask_flag", False),
+                                do_not_ask_reason=step.get("do_not_ask_reason"),
+                            )
+                            for step in stage.get("steps", [])
+                        ],
+                    )
+                    for stage in stages
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to generate cross-exam plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/analysis-runs/{run_id}/cross-exam-plan", response_model=CrossExamPlanResponse)
+async def get_cross_exam_plan(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context)
+):
+    """Get the latest cross-exam plan for a run."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import CrossExamPlan, AnalysisRun
+
+        with get_db_session() as db:
+            run = db.query(AnalysisRun).filter(
+                AnalysisRun.id == run_id,
+                AnalysisRun.firm_id == auth.firm_id
+            ).first()
+            if not run:
+                raise HTTPException(status_code=404, detail="Analysis run not found")
+
+            plan = (
+                db.query(CrossExamPlan)
+                .filter(CrossExamPlan.run_id == run_id, CrossExamPlan.case_id == run.case_id)
+                .order_by(CrossExamPlan.created_at.desc())
+                .first()
+            )
+            if not plan:
+                raise HTTPException(status_code=404, detail="Cross-exam plan not found")
+
+            stages = (plan.plan_json or {}).get("stages", [])
+            return CrossExamPlanResponse(
+                plan_id=plan.id,
+                case_id=plan.case_id,
+                run_id=plan.run_id,
+                witness_id=plan.witness_id,
+                created_at=plan.created_at,
+                stages=[
+                    CrossExamPlanStage(
+                        stage=stage.get("stage"),
+                        steps=[
+                            CrossExamPlanStep(
+                                id=step.get("id"),
+                                contradiction_id=step.get("contradiction_id"),
+                                stage=step.get("stage"),
+                                step_type=step.get("step_type"),
+                                title=step.get("title"),
+                                question=step.get("question"),
+                                purpose=step.get("purpose"),
+                                anchors=step.get("anchors", []),
+                                branches=[
+                                    CrossExamPlanBranch(
+                                        trigger=b.get("trigger", ""),
+                                        follow_up_questions=b.get("follow_up_questions", []),
+                                    )
+                                    for b in step.get("branches", [])
+                                ],
+                                do_not_ask_flag=step.get("do_not_ask_flag", False),
+                                do_not_ask_reason=step.get("do_not_ask_reason"),
+                            )
+                            for step in stage.get("steps", [])
+                        ],
+                    )
+                    for stage in stages
+                ],
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get cross-exam plan")
         raise HTTPException(status_code=500, detail=str(e))
 
 

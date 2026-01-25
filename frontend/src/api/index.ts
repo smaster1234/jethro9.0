@@ -6,6 +6,7 @@ export { default as analysisApi } from './analysis';
 export { default as anchorsApi } from './anchors';
 export { default as witnessesApi } from './witnesses';
 export { default as insightsApi } from './insights';
+export { default as crossExamPlanApi } from './crossExamPlan';
 
 // Health check
 import apiClient from './client';

@@ -181,6 +181,39 @@ export interface ContradictionInsight {
   composite_score?: number;
 }
 
+export interface CrossExamPlanBranch {
+  trigger: string;
+  follow_up_questions: string[];
+}
+
+export interface CrossExamPlanStep {
+  id: string;
+  contradiction_id?: string;
+  stage: string;
+  step_type: string;
+  title: string;
+  question: string;
+  purpose?: string;
+  anchors?: EvidenceAnchor[];
+  branches?: CrossExamPlanBranch[];
+  do_not_ask_flag?: boolean;
+  do_not_ask_reason?: string | null;
+}
+
+export interface CrossExamPlanStage {
+  stage: string;
+  steps: CrossExamPlanStep[];
+}
+
+export interface CrossExamPlanResponse {
+  plan_id: string;
+  case_id: string;
+  run_id: string;
+  witness_id?: string;
+  created_at?: string;
+  stages: CrossExamPlanStage[];
+}
+
 // Folder Types
 export interface Folder {
   id: string;

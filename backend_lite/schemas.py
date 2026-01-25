@@ -967,6 +967,47 @@ class ContradictionInsightResponse(BaseModel):
     composite_score: Optional[float] = None
 
 
+# =============================================================================
+# OUTPUT SCHEMAS - Cross-Examination Plan
+# =============================================================================
+
+class CrossExamPlanBranch(BaseModel):
+    """Branching follow-up for an evasion or trap"""
+    trigger: str
+    follow_up_questions: List[str] = Field(default_factory=list)
+
+
+class CrossExamPlanStep(BaseModel):
+    """Single step in a cross-exam plan"""
+    id: str
+    contradiction_id: Optional[str] = None
+    stage: str
+    step_type: str
+    title: str
+    question: str
+    purpose: Optional[str] = None
+    anchors: List[EvidenceAnchor] = Field(default_factory=list)
+    branches: List[CrossExamPlanBranch] = Field(default_factory=list)
+    do_not_ask_flag: bool = False
+    do_not_ask_reason: Optional[str] = None
+
+
+class CrossExamPlanStage(BaseModel):
+    """Stage in a cross-exam plan"""
+    stage: str
+    steps: List[CrossExamPlanStep] = Field(default_factory=list)
+
+
+class CrossExamPlanResponse(BaseModel):
+    """Cross-examination plan response"""
+    plan_id: str
+    case_id: str
+    run_id: str
+    witness_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    stages: List[CrossExamPlanStage] = Field(default_factory=list)
+
+
 # OUTPUT SCHEMAS - Health & Errors
 # =============================================================================
 
