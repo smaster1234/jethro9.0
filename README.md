@@ -76,6 +76,56 @@ DOC2=backend_lite/fixtures/temporal_02.txt \
 6. יצירת עד/גרסאות והפקת diff
 7. יצירת תכנית חקירה וייצוא DOCX
 
+טיפ: ניתן להצביע על מסמכי DOCX/PDF קיימים ע"י שינוי `DOC1`/`DOC2`.
+
+---
+
+## Org Setup (B1) — משרדים, חברים ותפקידים
+
+המערכת תומכת במשרדים (Organizations) עם תפקידים:
+`viewer` (קריאה בלבד), `intern` (הכנה ללא ייצוא), `lawyer`/`owner` (כולל ייצוא).
+
+### יצירת משרד וחברים
+```bash
+# יצירת משרד
+POST /api/v1/orgs
+
+# רשימת משרדים למשתמש הנוכחי
+GET /api/v1/orgs
+
+# הוספת משתמש קיים
+POST /api/v1/orgs/{org_id}/members  (body: { user_id, role })
+
+# הזמנה במייל
+POST /api/v1/orgs/{org_id}/invites  (body: { email, role, expires_in_days })
+
+# קבלת הזמנה
+POST /api/v1/invites/{token}/accept
+```
+
+### שיוך תיק למשרד
+בשדה `organization_id` ביצירת תיק (`POST /cases`) או באמצעות ברירת מחדל אוטומטית.
+
+---
+
+## Training Mode 2.0 (C1)
+
+```bash
+# התחלת אימון
+POST /api/v1/cases/{case_id}/training/start
+{ "plan_id": "...", "witness_id": "...", "persona": "cooperative" }
+
+# תור אימון
+POST /api/v1/training/{session_id}/turn
+{ "step_id": "step-1", "chosen_branch": "לא זוכר" }
+
+# חזרה צעד (מוגבל ל-2)
+POST /api/v1/training/{session_id}/back
+
+# סיום וסיכום
+POST /api/v1/training/{session_id}/finish
+```
+
 ### Option 2: Local Development
 
 ```bash
@@ -147,6 +197,19 @@ jethro9.0/
 | `/auth/register` | POST | Register new firm |
 | `/auth/login` | POST | Login |
 | `/auth/me` | GET | Get current user |
+
+### Organizations & Training
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/orgs` | GET/POST | List/create organizations |
+| `/api/v1/orgs/{id}/members` | GET/POST | List/add org members |
+| `/api/v1/orgs/{id}/invites` | POST | Invite by email |
+| `/api/v1/invites/{token}/accept` | POST | Accept invite |
+| `/api/v1/cases/{case_id}/training/start` | POST | Start training session |
+| `/api/v1/training/{session_id}/turn` | POST | Record training turn |
+| `/api/v1/training/{session_id}/back` | POST | Undo last turn |
+| `/api/v1/training/{session_id}/finish` | POST | Finish + summary |
 
 ---
 
