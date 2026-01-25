@@ -10,6 +10,8 @@ Legal Contradiction Detection System powered by AI
 
 JETHRO 9.0 is a standalone contradiction detection service designed for legal document analysis. It identifies contradictions, inconsistencies, and discrepancies across multiple documents, and generates cross-examination questions.
 
+Current release version is stored in `VERSION`.
+
 ### Key Features
 
 - **Contradiction Detection** - Temporal, quantitative, factual, and version contradictions
@@ -44,6 +46,35 @@ docker-compose logs -f web
 ```
 
 Access the application at: http://localhost:8000
+
+---
+
+## Golden Path (E2E, <10 דקות)
+
+הסקריפט מריץ נתיב זהב מקצה לקצה (כולל העלאת מסמכים לדוגמה):
+
+```bash
+./scripts/golden_path.sh
+```
+
+ברירת מחדל משתמשת ב־`backend_lite/fixtures/*.txt` ובכתובת `http://localhost:8000`.
+ניתן להגדיר:
+
+```bash
+BASE_URL=http://localhost:8000 \
+DOC1=backend_lite/fixtures/temporal_01.txt \
+DOC2=backend_lite/fixtures/temporal_02.txt \
+./scripts/golden_path.sh
+```
+
+הסקריפט מבצע:
+1. `docker-compose up -d`
+2. הרשמה והפקת טוקן
+3. יצירת תיק
+4. העלאת מסמכים
+5. הרצת ניתוח + המתנה לסיום
+6. יצירת עד/גרסאות והפקת diff
+7. יצירת תכנית חקירה וייצוא DOCX
 
 ### Option 2: Local Development
 
@@ -113,9 +144,9 @@ jethro9.0/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/auth/register` | POST | Register new firm |
-| `/api/v1/auth/login` | POST | Login |
-| `/api/v1/auth/me` | GET | Get current user |
+| `/auth/register` | POST | Register new firm |
+| `/auth/login` | POST | Login |
+| `/auth/me` | GET | Get current user |
 
 ---
 

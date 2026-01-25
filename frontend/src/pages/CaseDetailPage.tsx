@@ -158,6 +158,9 @@ export const CaseDetailPage: React.FC = () => {
   const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
   const [isLoadingPlan, setIsLoadingPlan] = useState(false);
   const [planError, setPlanError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf' | null>(null);
+  const [exportError, setExportError] = useState('');
   const [simulationPersona, setSimulationPersona] = useState<'cooperative' | 'evasive' | 'hostile'>('cooperative');
   const [isSimulating, setIsSimulating] = useState(false);
   const [simulationResult, setSimulationResult] = useState<WitnessSimulationResponse | null>(null);
@@ -791,6 +794,9 @@ export const CaseDetailPage: React.FC = () => {
 
   const handleExportPlan = async (format: 'docx' | 'pdf') => {
     if (!selectedRun?.id) return;
+    setIsExporting(true);
+    setExportFormat(format);
+    setExportError('');
     try {
       const blob = await crossExamPlanApi.exportPlan(selectedRun.id, format);
       const url = URL.createObjectURL(blob);
@@ -802,7 +808,11 @@ export const CaseDetailPage: React.FC = () => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (error) {
-      setPlanError(handleApiError(error));
+      setExportError(handleApiError(error));
+    }
+    finally {
+      setIsExporting(false);
+      setExportFormat(null);
     }
   };
 
@@ -1790,19 +1800,24 @@ export const CaseDetailPage: React.FC = () => {
                             <Button
                               onClick={() => handleExportPlan('docx')}
                               variant="ghost"
-                              disabled={!crossExamPlan}
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'docx'}
                             >
-                              ייצוא DOCX
+                              {isExporting && exportFormat === 'docx' ? 'מייצא DOCX...' : 'ייצוא DOCX'}
                             </Button>
                             <Button
                               onClick={() => handleExportPlan('pdf')}
                               variant="ghost"
-                              disabled={!crossExamPlan}
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'pdf'}
                             >
-                              ייצוא PDF
+                              {isExporting && exportFormat === 'pdf' ? 'מייצא PDF...' : 'ייצוא PDF'}
                             </Button>
                             {planError && (
                               <span className="text-sm text-danger-600">{planError}</span>
+                            )}
+                            {exportError && (
+                              <span className="text-sm text-danger-600">{exportError}</span>
                             )}
                           </div>
 
@@ -2990,6 +3005,7 @@ const PlanStepCard: React.FC<{
   const anchors = step.anchors || [];
   const left = anchors[0] || null;
   const right = anchors[1] || null;
+  const [showBranches, setShowBranches] = useState(false);
 
   return (
     <div className="border border-slate-200 rounded-xl p-3 space-y-2">
@@ -3010,24 +3026,34 @@ const PlanStepCard: React.FC<{
       <div className="text-sm text-slate-700">{step.question}</div>
       {step.branches && step.branches.length > 0 && (
         <div className="text-xs text-slate-600 space-y-2">
-          <div className="font-medium text-slate-700">הסתעפויות:</div>
-          {step.branches.map((branch, idx) => (
-            <div key={`${branch.trigger}_${idx}`} className="pl-3 border-r-2 border-slate-200">
-              <div>{branch.trigger}</div>
-              {branch.follow_up_questions?.length > 0 && (
-                <ul className="list-disc list-inside mt-1">
-                  {branch.follow_up_questions.map((q, qIdx) => (
-                    <li key={`${qIdx}-${q}`} className="text-slate-600">
-                      {q}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
+          <div className="flex items-center justify-between">
+            <div className="font-medium text-slate-700">הסתעפויות:</div>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => setShowBranches((prev) => !prev)}
+            >
+              {showBranches ? 'הסתר' : 'הצג'}
+            </Button>
+          </div>
+          {showBranches &&
+            step.branches.map((branch, idx) => (
+              <div key={`${branch.trigger}_${idx}`} className="pl-3 border-r-2 border-slate-200">
+                <div>{branch.trigger}</div>
+                {branch.follow_up_questions?.length > 0 && (
+                  <ul className="list-disc list-inside mt-1">
+                    {branch.follow_up_questions.map((q, qIdx) => (
+                      <li key={`${qIdx}-${q}`} className="text-slate-600">
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
         </div>
       )}
-      {left && right && (
+      {(left || right) && (
         <div className="flex justify-end">
           <Button size="sm" variant="secondary" onClick={() => onShowEvidence(left, right)}>
             הצג ראיות

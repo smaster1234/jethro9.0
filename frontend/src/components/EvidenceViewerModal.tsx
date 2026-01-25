@@ -44,10 +44,10 @@ const EvidencePanel: React.FC<{
     );
   }
 
-  if (!data) {
+  if (!data || !data.text) {
     return (
       <div className="text-sm text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-xl p-4">
-        לא נמצאה עוגן ראיה להצגה.
+        מקור לא זמין להצגה.
       </div>
     );
   }

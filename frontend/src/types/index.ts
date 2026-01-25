@@ -398,8 +398,16 @@ export interface HealthResponse {
 }
 
 // API Error
+export interface ApiErrorDetail {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
 export interface ApiError {
-  detail: string;
+  error?: ApiErrorDetail;
+  detail?: string;
+  message?: string;
   status?: number;
 }
 
