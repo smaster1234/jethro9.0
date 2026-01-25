@@ -187,6 +187,27 @@ def update_job_progress(progress: int, message: str = None):
         pass
 
 
+def _sanitize_error_message(error: Exception, fallback: str = "שגיאה בעיבוד המשימה") -> str:
+    message = str(error) if error else fallback
+    compact = " ".join(message.split())
+    if not compact:
+        compact = fallback
+    if len(compact) > 200:
+        compact = compact[:200] + "..."
+    return compact
+
+
+def _set_job_error_message(message: str) -> None:
+    try:
+        from rq import get_current_job
+        job = get_current_job()
+        if job:
+            job.meta["error_message"] = message
+            job.save_meta()
+    except:
+        pass
+
+
 def task_parse_document(
     document_id: str,
     storage_key: str,
@@ -223,6 +244,16 @@ def task_parse_document(
 
         update_job_progress(20, "Parsing document")
 
+        # Mark document as processing
+        try:
+            with get_db_session() as db:
+                doc = db.query(Document).filter(Document.id == document_id).first()
+                if doc:
+                    doc.status = DocumentStatus.PROCESSING
+                    db.commit()
+        except Exception:
+            pass
+
         # Parse document
         result = parse_document(
             data=data,
@@ -246,6 +277,10 @@ def task_parse_document(
             doc.status = DocumentStatus.READY
             # SQLAlchemy model uses extra_data (metadata is reserved)
             doc.extra_data = {**(doc.extra_data or {}), **(result.metadata or {})}
+
+            # Ensure idempotency: clear existing pages/blocks for this document
+            db.query(DocumentBlock).filter(DocumentBlock.document_id == document_id).delete()
+            db.query(DocumentPage).filter(DocumentPage.document_id == document_id).delete()
 
             # Save pages
             for page in result.pages:
@@ -290,6 +325,8 @@ def task_parse_document(
 
     except Exception as e:
         logger.exception(f"Failed to parse document {document_id}")
+        safe_error = _sanitize_error_message(e, fallback="שגיאה בעיבוד המסמך")
+        _set_job_error_message(safe_error)
 
         # Update document status to failed
         try:
@@ -298,7 +335,7 @@ def task_parse_document(
                 if doc:
                     doc.status = DocumentStatus.FAILED
                     doc.extra_data = doc.extra_data or {}
-                    doc.extra_data['error'] = str(e)
+                    doc.extra_data['error'] = safe_error
                     db.commit()
         except:
             pass
@@ -864,6 +901,8 @@ def task_analyze_case(
 
     except Exception as e:
         logger.exception("Analysis failed")
+        safe_error = _sanitize_error_message(e, fallback="שגיאה בניתוח התיק")
+        _set_job_error_message(safe_error)
 
         # Update run status
         try:
@@ -873,7 +912,8 @@ def task_analyze_case(
                 ).order_by(AnalysisRun.created_at.desc()).first()
                 if run and run.status == "running":
                     run.status = "failed"
-                    run.metadata_json['error'] = str(e)
+                    run.metadata_json = run.metadata_json or {}
+                    run.metadata_json["error"] = safe_error
                     db.commit()
         except:
             pass

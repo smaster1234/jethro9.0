@@ -10,7 +10,7 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, text, event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 
@@ -31,11 +31,19 @@ def _current_database_url() -> str:
 def _create_engine_for_url(database_url: str):
     # For SQLite fallback in tests
     if database_url.startswith("sqlite"):
-        return create_engine(
+        engine = create_engine(
             database_url,
             connect_args={"check_same_thread": False},
             echo=os.environ.get("SQL_ECHO", "false").lower() == "true",
         )
+        # Enforce foreign keys for SQLite
+        def _enable_sqlite_fk(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        event.listen(engine, "connect", _enable_sqlite_fk)
+        return engine
 
     return create_engine(
         database_url,

@@ -165,8 +165,8 @@ def get_job_status(job_id: str) -> Dict[str, Any]:
         if job.is_finished:
             result["result"] = job.result
         elif job.is_failed:
-            result["error"] = str(job.exc_info) if job.exc_info else "Unknown error"
-            result["error_message"] = job.meta.get("error_message", "")
+            result["error"] = "Job failed"
+            result["error_message"] = job.meta.get("error_message", "") or "התרחשה שגיאה בעיבוד המשימה"
 
         # Get progress from meta
         result["progress"] = job.meta.get("progress", 0)

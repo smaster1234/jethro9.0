@@ -6,10 +6,13 @@ Builds a staged plan with branching based on ContradictionInsights and playbooks
 """
 
 import uuid
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .cross_exam import PlaybookLoader
 from .db.models import Contradiction, ContradictionInsight
+
+logger = logging.getLogger(__name__)
 
 
 STEP_TYPES = [
@@ -77,17 +80,26 @@ def _anchors_from_contradiction(contr: Contradiction) -> List[Dict[str, Any]]:
 
 
 def _build_branches(trap_branches: List[str], evasions: List[str], counters: List[str]) -> List[Dict[str, Any]]:
-    branches = []
-    for branch in trap_branches:
-        branches.append({"trigger": branch, "follow_up_questions": []})
+    branches: List[Dict[str, Any]] = []
+    seen_triggers = set()
 
-    if evasions:
-        counter_question = counters[0] if counters else "אתה עומד מאחורי הגרסה הזו?"
-        for evasion in evasions:
-            branches.append({
-                "trigger": f"אם העד אומר: '{evasion}'",
-                "follow_up_questions": [counter_question],
-            })
+    for branch in trap_branches:
+        if branch and branch not in seen_triggers:
+            branches.append({"trigger": branch, "follow_up_questions": []})
+            seen_triggers.add(branch)
+
+    default_evasions = ["לא זוכר", "טעיתי", "לא הבנתי", "זה לא מה שאמרתי"]
+    combined_evasions = list(dict.fromkeys((evasions or []) + default_evasions))
+    counter_question = counters[0] if counters else "אתה עומד מאחורי הגרסה הזו?"
+    for evasion in combined_evasions:
+        trigger = f"אם העד אומר: '{evasion}'"
+        if trigger in seen_triggers:
+            continue
+        branches.append({
+            "trigger": trigger,
+            "follow_up_questions": [counter_question],
+        })
+        seen_triggers.add(trigger)
 
     return branches
 
@@ -100,6 +112,8 @@ def build_cross_exam_plan(
 
     for contr, insight in contradictions:
         stage = (insight.stage_recommendation if insight else None) or "mid"
+        if insight and insight.prerequisites_json and stage == "early":
+            stage = "mid"
         if stage not in stages:
             stage = "mid"
 
@@ -111,6 +125,9 @@ def build_cross_exam_plan(
 
         variables = _build_variables(contr)
         anchors = _anchors_from_contradiction(contr)
+        if not anchors:
+            logger.debug("Skipping contradiction %s due to missing anchors", contr.id)
+            continue
 
         do_not_ask = bool(insight.do_not_ask) if insight else False
         if do_not_ask:

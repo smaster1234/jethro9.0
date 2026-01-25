@@ -1042,11 +1042,16 @@ class HealthResponse(BaseModel):
     timestamp: datetime = Field(..., description="Current timestamp")
 
 
+class ErrorDetail(BaseModel):
+    """Structured error detail"""
+    code: str = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[Any] = Field(None, description="Optional error details")
+
+
 class ErrorResponse(BaseModel):
-    """Error response"""
-    error: str = Field(..., description="Error message")
-    detail: Optional[str] = Field(None, description="Detailed error info")
-    validation_flags: List[str] = Field(default_factory=list, description="Validation warnings")
+    """Structured error response"""
+    error: ErrorDetail
 
 
 # =============================================================================

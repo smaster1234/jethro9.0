@@ -45,15 +45,88 @@ def build_cross_exam_docx(
         raise RuntimeError("python-docx is required for DOCX export") from exc
 
     doc = Document()
+
+    def _add_right_paragraph(text: str):
+        p = doc.add_paragraph(text)
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        return p
+
     title = doc.add_heading("תכנית חקירה נגדית", level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
     meta = doc.add_paragraph(f"תיק: {case_name} | הרצה: {run_id}")
     meta.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
+    case_settings = plan.get("case_settings") or {}
+    heading = doc.add_heading("פרטי תיק", level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    settings_lines = [
+        ("מספר תיק", case_settings.get("case_number")),
+        ("בית משפט", case_settings.get("court")),
+        ("צד מיוצג", case_settings.get("our_side")),
+        ("לקוח", case_settings.get("client_name")),
+        ("צד שכנגד", case_settings.get("opponent_name")),
+        ("סוג תיק", case_settings.get("case_type")),
+        ("ערכאה", case_settings.get("court_level")),
+        ("שפה", case_settings.get("language")),
+    ]
+    rendered = False
+    for label, value in settings_lines:
+        if value:
+            _add_right_paragraph(f"{label}: {value}")
+            rendered = True
+    if not rendered:
+        _add_right_paragraph("לא הוגדרו פרטי תיק נוספים.")
+
+    ranked = plan.get("ranked_contradictions") or []
+    heading = doc.add_heading("סתירות מדורגות", level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    if not ranked:
+        _add_right_paragraph("לא נמצאו סתירות מדורגות לייצוא.")
+    else:
+        for idx, item in enumerate(ranked, start=1):
+            scores = item.get("scores") or {}
+            composite = scores.get("composite")
+            composite_text = f"{composite:.2f}" if isinstance(composite, (int, float)) else "N/A"
+            summary = f"{idx}. ציון משולב: {composite_text} | סוג: {item.get('type', '')}"
+            if item.get("severity"):
+                summary += f" | חומרה: {item.get('severity')}"
+            if item.get("stage"):
+                summary += f" | שלב: {item.get('stage')}"
+            _add_right_paragraph(summary)
+            if item.get("quote1"):
+                _add_right_paragraph(f"ציטוט א': {item.get('quote1')}")
+            if item.get("quote2"):
+                _add_right_paragraph(f"ציטוט ב': {item.get('quote2')}")
+            anchors = item.get("anchors") or []
+            if anchors:
+                _add_right_paragraph("עוגנים:")
+                for anchor in anchors:
+                    _add_right_paragraph(f"- {_format_anchor(anchor, doc_lookup)}")
+
+    shifts = plan.get("version_shifts") or []
+    heading = doc.add_heading("סטיות גרסה בעדויות", level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    if not shifts:
+        _add_right_paragraph("לא נמצאו סטיות גרסה לייצוא.")
+    else:
+        for witness in shifts:
+            _add_right_paragraph(f"עד: {witness.get('witness_name', 'לא ידוע')}")
+            for shift in witness.get("shifts", []):
+                _add_right_paragraph(f"- {shift.get('description', '')}")
+                anchor_a = shift.get("anchor_a")
+                anchor_b = shift.get("anchor_b")
+                if anchor_a:
+                    _add_right_paragraph(f"  עוגן א': {_format_anchor(anchor_a, doc_lookup)}")
+                if anchor_b:
+                    _add_right_paragraph(f"  עוגן ב': {_format_anchor(anchor_b, doc_lookup)}")
+
+    heading = doc.add_heading("תכנית חקירה", level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
     for stage in plan.get("stages", []):
-        heading = doc.add_heading(f"שלב {stage.get('stage', 'mid')}", level=1)
-        heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        stage_heading = doc.add_heading(f"שלב {stage.get('stage', 'mid')}", level=2)
+        stage_heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
         for step in stage.get("steps", []):
             step_title = doc.add_paragraph(f"{step.get('title', '')} ({step.get('step_type', '')})")
@@ -84,6 +157,15 @@ def build_cross_exam_docx(
                     for follow_up in branch.get("follow_up_questions", []):
                         f_para = doc.add_paragraph(f"  - {follow_up}")
                         f_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    appendix = plan.get("appendix_anchors") or []
+    heading = doc.add_heading("נספח: קטעי ראיות", level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    if not appendix:
+        _add_right_paragraph("לא נמצאו קטעי ראיות להצגה.")
+    else:
+        for anchor in appendix:
+            _add_right_paragraph(_format_anchor(anchor, doc_lookup))
 
     buf = BytesIO()
     doc.save(buf)
@@ -135,8 +217,68 @@ def build_cross_exam_pdf(
     draw_text("תכנית חקירה נגדית", 16)
     draw_text(f"תיק: {case_name} | הרצה: {run_id}", 11)
 
+    case_settings = plan.get("case_settings") or {}
+    draw_text("פרטי תיק", 14)
+    settings_lines = [
+        ("מספר תיק", case_settings.get("case_number")),
+        ("בית משפט", case_settings.get("court")),
+        ("צד מיוצג", case_settings.get("our_side")),
+        ("לקוח", case_settings.get("client_name")),
+        ("צד שכנגד", case_settings.get("opponent_name")),
+        ("סוג תיק", case_settings.get("case_type")),
+        ("ערכאה", case_settings.get("court_level")),
+        ("שפה", case_settings.get("language")),
+    ]
+    rendered = False
+    for label, value in settings_lines:
+        if value:
+            draw_text(f"{label}: {value}", 11)
+            rendered = True
+    if not rendered:
+        draw_text("לא הוגדרו פרטי תיק נוספים.", 11)
+
+    ranked = plan.get("ranked_contradictions") or []
+    draw_text("סתירות מדורגות", 14)
+    if not ranked:
+        draw_text("לא נמצאו סתירות מדורגות לייצוא.", 11)
+    else:
+        for idx, item in enumerate(ranked, start=1):
+            scores = item.get("scores") or {}
+            composite = scores.get("composite")
+            composite_text = f"{composite:.2f}" if isinstance(composite, (int, float)) else "N/A"
+            summary = f"{idx}. ציון משולב: {composite_text} | סוג: {item.get('type', '')}"
+            if item.get("severity"):
+                summary += f" | חומרה: {item.get('severity')}"
+            if item.get("stage"):
+                summary += f" | שלב: {item.get('stage')}"
+            draw_text(summary, 11)
+            if item.get("quote1"):
+                draw_text(f"ציטוט א': {item.get('quote1')}", 10)
+            if item.get("quote2"):
+                draw_text(f"ציטוט ב': {item.get('quote2')}", 10)
+            anchors = item.get("anchors") or []
+            for anchor in anchors:
+                draw_text(_format_anchor(anchor, doc_lookup), 10)
+
+    shifts = plan.get("version_shifts") or []
+    draw_text("סטיות גרסה בעדויות", 14)
+    if not shifts:
+        draw_text("לא נמצאו סטיות גרסה לייצוא.", 11)
+    else:
+        for witness in shifts:
+            draw_text(f"עד: {witness.get('witness_name', 'לא ידוע')}", 11)
+            for shift in witness.get("shifts", []):
+                draw_text(f"- {shift.get('description', '')}", 10)
+                anchor_a = shift.get("anchor_a")
+                anchor_b = shift.get("anchor_b")
+                if anchor_a:
+                    draw_text(f"  עוגן א': {_format_anchor(anchor_a, doc_lookup)}", 9)
+                if anchor_b:
+                    draw_text(f"  עוגן ב': {_format_anchor(anchor_b, doc_lookup)}", 9)
+
+    draw_text("תכנית חקירה", 14)
     for stage in plan.get("stages", []):
-        draw_text(f"שלב {stage.get('stage', 'mid')}", 14)
+        draw_text(f"שלב {stage.get('stage', 'mid')}", 13)
         for step in stage.get("steps", []):
             draw_text(f"{step.get('title', '')} ({step.get('step_type', '')})", 12)
             draw_text(step.get("question", ""), 11)
@@ -152,6 +294,14 @@ def build_cross_exam_pdf(
                 draw_text(f"הסתעפות: {branch.get('trigger', '')}", 10)
                 for follow_up in branch.get("follow_up_questions", []):
                     draw_text(f"- {follow_up}", 10)
+
+    appendix = plan.get("appendix_anchors") or []
+    draw_text("נספח: קטעי ראיות", 14)
+    if not appendix:
+        draw_text("לא נמצאו קטעי ראיות להצגה.", 11)
+    else:
+        for anchor in appendix:
+            draw_text(_format_anchor(anchor, doc_lookup), 10)
 
     c.save()
     buf.seek(0)

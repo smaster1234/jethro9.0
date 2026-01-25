@@ -31,7 +31,9 @@ import hashlib
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Body, APIRouter, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect, Response
+from fastapi import FastAPI, HTTPException, Header, Depends, Body, APIRouter, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect, Response, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.responses import StreamingResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
@@ -4277,17 +4279,99 @@ async def catch_all(path: str):
 # Error Handlers
 # =============================================================================
 
+def _is_api_v1_request(request: Request) -> bool:
+    return request.url.path.startswith("/api/v1")
+
+
+def _sanitize_error_detail(detail: Any) -> Any:
+    if detail is None:
+        return None
+    if isinstance(detail, str):
+        compact = " ".join(detail.split())
+        return compact[:300]
+    return detail
+
+
+def _error_code_for_status(status_code: int) -> str:
+    return {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        409: "conflict",
+        413: "payload_too_large",
+        422: "validation_error",
+        500: "internal_error",
+    }.get(status_code, "error")
+
+
+def _build_error_payload(code: str, message: str, details: Any = None) -> Dict[str, Any]:
+    return {
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details,
+        }
+    }
+
+
+@app.exception_handler(HTTPException)
+async def api_http_exception_handler(request: Request, exc: HTTPException):
+    """Structured errors for /api/v1 endpoints."""
+    if not _is_api_v1_request(request):
+        return await http_exception_handler(request, exc)
+
+    detail = _sanitize_error_detail(exc.detail)
+    if isinstance(detail, str) and detail:
+        message = detail
+        details = None
+    else:
+        message = "שגיאה בבקשה"
+        details = detail
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_build_error_payload(_error_code_for_status(exc.status_code), message, details),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def api_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return structured validation errors without leaking inputs."""
+    if not _is_api_v1_request(request):
+        return await request_validation_exception_handler(request, exc)
+
+    sanitized_errors = [
+        {"loc": err.get("loc"), "msg": err.get("msg"), "type": err.get("type")}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content=_build_error_payload(
+            "validation_error",
+            "שגיאת אימות קלט",
+            {"errors": sanitized_errors},
+        ),
+    )
+
+
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler - always return valid JSON"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error("Unhandled exception on %s: %s", request.url.path, exc.__class__.__name__)
+    if _is_api_v1_request(request):
+        return JSONResponse(
+            status_code=500,
+            content=_build_error_payload("internal_error", "שגיאה פנימית", {"exception": exc.__class__.__name__}),
+        )
+
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "detail": str(exc)[:200],
-            "validation_flags": ["UNHANDLED_ERROR"]
-        }
+            "detail": _sanitize_error_detail(str(exc)),
+            "validation_flags": ["UNHANDLED_ERROR"],
+        },
     )
 
 

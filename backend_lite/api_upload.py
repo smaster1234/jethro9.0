@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["upload"])
 
+# Upload limits (shared with ZIP validation defaults)
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))
+
 
 # =============================================================================
 # PYDANTIC MODELS
@@ -573,22 +576,32 @@ async def upload_documents(
             provider = _storage_provider_name()
 
             for idx, up in enumerate(all_files):
+                safe_filename = os.path.basename(up.filename or "")
+                if not safe_filename:
+                    raise HTTPException(status_code=400, detail="Invalid filename")
+
                 # Read file
                 data = await up.read()
 
                 if not data:
                     continue
 
+                if len(data) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB)",
+                    )
+
                 # Detect MIME type
-                mime_type = detect_mime_type(up.filename, data)
+                mime_type = detect_mime_type(safe_filename, data)
 
                 if not is_supported(mime_type):
-                    logger.warning(f"Skipping unsupported file: {up.filename} ({mime_type})")
+                    logger.warning(f"Skipping unsupported file: {safe_filename} ({mime_type})")
                     continue
 
                 # Store file
                 storage_key = storage.generate_key(
-                    auth.firm_id, case_id, up.filename
+                    auth.firm_id, case_id, safe_filename
                 )
                 storage_meta = storage.put(storage_key, data, mime_type)
 
@@ -611,8 +624,8 @@ async def upload_documents(
                     firm_id=auth.firm_id,
                     case_id=case_id,
                     folder_id=folder_id,
-                    doc_name=up.filename,
-                    original_filename=up.filename,
+                    doc_name=safe_filename,
+                    original_filename=safe_filename,
                     mime_type=mime_type,
                     party=normalized_party,
                     role=file_meta.get('role'),
@@ -654,7 +667,7 @@ async def upload_documents(
 
                         parsed = parse_document(
                             data=data,
-                            filename=up.filename,
+                            filename=safe_filename,
                             mime_type=mime_type,
                             force_ocr=False,
                         )
@@ -1959,6 +1972,11 @@ async def generate_cross_exam_plan(
 
             pairs = [(c, insight_map.get(c.id)) for c in contradictions]
             stages = build_cross_exam_plan(pairs)
+            for stage in stages:
+                stage["steps"] = [s for s in stage.get("steps", []) if s.get("anchors")]
+
+            if not any(stage.get("steps") for stage in stages):
+                raise HTTPException(status_code=400, detail="No anchored plan steps available")
 
             plan = CrossExamPlan(
                 firm_id=auth.firm_id,
@@ -2154,8 +2172,19 @@ async def export_cross_exam_plan(
     """Export cross-examination plan to DOCX/PDF."""
     try:
         from .db.session import get_db_session
-        from .db.models import CrossExamPlan, AnalysisRun, Document, Case
+        from .db.models import (
+            CrossExamPlan,
+            AnalysisRun,
+            Document,
+            Case,
+            Contradiction,
+            ContradictionInsight,
+            Witness,
+            WitnessVersion,
+        )
         from .exporter import build_cross_exam_docx, build_cross_exam_pdf
+        from .insights import compute_insights_for_run
+        from .witness_diff import diff_witness_versions
 
         with get_db_session() as db:
             run = db.query(AnalysisRun).filter(
@@ -2178,6 +2207,105 @@ async def export_cross_exam_plan(
             if not plan:
                 raise HTTPException(status_code=404, detail="Cross-exam plan not found")
 
+            contradictions = (
+                db.query(Contradiction)
+                .filter(Contradiction.run_id == run_id)
+                .order_by(Contradiction.created_at.asc())
+                .all()
+            )
+            if not contradictions:
+                raise HTTPException(status_code=400, detail="No contradictions available for export")
+
+            if contradictions:
+                insight_count = (
+                    db.query(ContradictionInsight)
+                    .filter(ContradictionInsight.contradiction_id.in_([c.id for c in contradictions if c.id]))
+                    .count()
+                )
+                if insight_count == 0:
+                    compute_insights_for_run(db, run_id)
+
+            insight_map = {
+                i.contradiction_id: i
+                for i in db.query(ContradictionInsight).filter(
+                    ContradictionInsight.contradiction_id.in_([c.id for c in contradictions if c.id])
+                )
+            }
+            if contradictions and not insight_map:
+                raise HTTPException(status_code=400, detail="Insights not available for export")
+
+            ranked = []
+            for contr in contradictions:
+                insight = insight_map.get(contr.id)
+                scores = {
+                    "impact": float(insight.impact_score) if insight else None,
+                    "risk": float(insight.risk_score) if insight else None,
+                    "verifiability": float(insight.verifiability_score) if insight else None,
+                }
+                if insight:
+                    scores["composite"] = round(
+                        (insight.impact_score or 0.0)
+                        * (insight.risk_score or 0.0)
+                        * (insight.verifiability_score or 0.0),
+                        4,
+                    )
+
+                anchors = []
+                if contr.locator1_json and contr.locator1_json.get("doc_id"):
+                    anchors.append(contr.locator1_json)
+                if contr.locator2_json and contr.locator2_json.get("doc_id"):
+                    anchors.append(contr.locator2_json)
+
+                ranked.append({
+                    "contradiction_id": contr.id,
+                    "type": contr.contradiction_type,
+                    "severity": contr.severity,
+                    "category": contr.category,
+                    "quote1": contr.quote1,
+                    "quote2": contr.quote2,
+                    "anchors": anchors,
+                    "scores": scores,
+                    "stage": insight.stage_recommendation if insight else None,
+                })
+
+            ranked.sort(
+                key=lambda item: item.get("scores", {}).get("composite") or 0.0,
+                reverse=True,
+            )
+
+            version_shifts = []
+            witnesses = (
+                db.query(Witness)
+                .filter(Witness.case_id == run.case_id, Witness.firm_id == auth.firm_id)
+                .order_by(Witness.created_at.asc())
+                .all()
+            )
+            for witness in witnesses:
+                versions = (
+                    db.query(WitnessVersion)
+                    .filter(WitnessVersion.witness_id == witness.id)
+                    .order_by(WitnessVersion.created_at.asc())
+                    .all()
+                )
+                if len(versions) < 2:
+                    continue
+                shifts = []
+                for idx in range(len(versions) - 1):
+                    diff = diff_witness_versions(db, versions[idx], versions[idx + 1])
+                    for shift in diff.get("shifts", []):
+                        shifts.append({
+                            "shift_type": shift.get("shift_type"),
+                            "description": shift.get("description"),
+                            "anchor_a": shift.get("anchor_a"),
+                            "anchor_b": shift.get("anchor_b"),
+                        })
+                if shifts:
+                    version_shifts.append({
+                        "witness_id": witness.id,
+                        "witness_name": witness.name,
+                        "shifts": shifts,
+                    })
+
             doc_ids = []
             for stage in (plan.plan_json or {}).get("stages", []):
                 for step in stage.get("steps", []):
@@ -2188,7 +2316,39 @@ async def export_cross_exam_plan(
             docs = db.query(Document).filter(Document.id.in_(doc_ids)).all() if doc_ids else []
             doc_lookup = {d.id: d for d in docs}
 
-            plan_payload = plan.plan_json or {}
+            appendix_anchors = []
+            seen = set()
+            for item in ranked:
+                for anchor in item.get("anchors", []):
+                    key = (anchor.get("doc_id"), anchor.get("char_start"), anchor.get("char_end"), anchor.get("snippet"))
+                    if key in seen or not anchor.get("doc_id"):
+                        continue
+                    seen.add(key)
+                    appendix_anchors.append(anchor)
+            for stage in (plan.plan_json or {}).get("stages", []):
+                for step in stage.get("steps", []):
+                    for anchor in step.get("anchors", []):
+                        key = (anchor.get("doc_id"), anchor.get("char_start"), anchor.get("char_end"), anchor.get("snippet"))
+                        if key in seen or not anchor.get("doc_id"):
+                            continue
+                        seen.add(key)
+                        appendix_anchors.append(anchor)
+
+            plan_payload = dict(plan.plan_json or {})
+            plan_payload["case_settings"] = {
+                "case_number": case.case_number,
+                "court": case.court,
+                "our_side": case.our_side,
+                "client_name": case.client_name,
+                "opponent_name": case.opponent_name,
+                "case_type": (case.extra_data or {}).get("case_type"),
+                "court_level": (case.extra_data or {}).get("court_level"),
+                "language": (case.extra_data or {}).get("language"),
+            }
+            plan_payload["ranked_contradictions"] = ranked
+            plan_payload["version_shifts"] = version_shifts
+            plan_payload["appendix_anchors"] = appendix_anchors
+
             if format == "pdf":
                 content = build_cross_exam_pdf(plan_payload, case.name, run_id, doc_lookup)
                 filename = f"cross_exam_plan_{case.name}_{run_id}.pdf"
