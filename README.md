@@ -36,13 +36,13 @@ cd jethro9.0
 cp .env.example .env
 
 # Start all services
-docker-compose up -d
+docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs -f web
+docker compose logs -f web
 ```
 
 Access the application at: http://localhost:8000
@@ -68,13 +68,15 @@ DOC2=backend_lite/fixtures/temporal_02.txt \
 ```
 
 הסקריפט מבצע:
-1. `docker-compose up -d`
+1. `docker compose up -d`
 2. הרשמה והפקת טוקן
 3. יצירת תיק
 4. העלאת מסמכים
 5. הרצת ניתוח + המתנה לסיום
 6. יצירת עד/גרסאות והפקת diff
 7. יצירת תכנית חקירה וייצוא DOCX
+
+הסקריפט מזהה אוטומטית `docker compose` או `docker-compose`.
 
 טיפ: ניתן להצביע על מסמכי DOCX/PDF קיימים ע"י שינוי `DOC1`/`DOC2`.
 
@@ -144,6 +146,8 @@ export LLM_MODE=none
 # Run the server
 uvicorn backend_lite.api:app --reload --port 8000
 ```
+
+> אם `docker compose` לא זמין, ניתן להשתמש ב־`docker-compose`.
 
 ---
 
@@ -225,6 +229,16 @@ jethro9.0/
 | `LLM_MODE` | No | `none` | `none`, `openrouter`, `deepseek`, `gemini` |
 | `PORT` | No | `8000` | Server port |
 | `BACKEND_LITE_ROLE` | No | `web` | `web` or `worker` |
+
+---
+
+## DOCX Debug (CLI)
+
+לבדיקה מהירה של DOCX ללא חשיפת טקסט:
+
+```bash
+python3 scripts/inspect_docx.py path/to/file.docx
+```
 
 ### LLM Configuration
 

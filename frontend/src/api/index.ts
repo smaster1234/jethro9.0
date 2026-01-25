@@ -9,6 +9,7 @@ export { default as witnessesApi } from './witnesses';
 export { default as insightsApi } from './insights';
 export { default as crossExamPlanApi } from './crossExamPlan';
 export { default as trainingApi } from './training';
+export { default as usageApi } from './usage';
 
 // Health check
 import apiClient from './client';

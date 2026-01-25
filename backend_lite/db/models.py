@@ -924,6 +924,27 @@ class TrainingTurn(Base):
     session = relationship("TrainingSession", back_populates="turns")
 
 
+class EntityUsage(Base):
+    """Track entity usage in plan/training/export"""
+    __tablename__ = "entity_usage"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    entity_type = Column(String(50), nullable=False)  # insight/contradiction/narrative_shift/plan_step/question
+    entity_id = Column(String(128), nullable=False)
+    usage_type = Column(String(50), nullable=False)  # plan/training/export
+    created_at = Column(DateTime, default=datetime.utcnow)
+    meta_json = Column(JSONB, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "entity_type", "entity_id", "usage_type", name="uq_entity_usage_case_entity_usage"),
+        Index("ix_entity_usage_case", "case_id"),
+        Index("ix_entity_usage_type", "entity_type"),
+        Index("ix_entity_usage_usage", "usage_type"),
+    )
+
+
 class Finding(Base):
     """Court finding / קביעה שיפוטית"""
     __tablename__ = "findings"
