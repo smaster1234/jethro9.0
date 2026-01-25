@@ -6,6 +6,8 @@ Microsoft Word document parser using python-docx.
 """
 
 import io
+import os
+import logging
 import zipfile
 from typing import List, Optional, Tuple
 from xml.etree import ElementTree as ET
@@ -23,6 +25,14 @@ from .base import (
 DOCX_NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 }
+
+logger = logging.getLogger(__name__)
+_DOCX_DEBUG = os.environ.get("DOCX_INGEST_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+def _debug_log(code: str, exc: Exception) -> None:
+    if _DOCX_DEBUG:
+        logger.debug("docx_ingest_error code=%s exc=%s", code, exc.__class__.__name__)
 
 
 def _read_document_xml(data: bytes) -> Optional[str]:
@@ -133,7 +143,8 @@ class DOCXParser(DocumentParser):
         """Parse DOCX file"""
         try:
             from docx import Document
-        except ImportError:
+        except ImportError as exc:
+            _debug_log("docx_missing_dependency", exc)
             raise ParserError(
                 "python-docx is required for DOCX parsing.",
                 code="docx_missing_dependency",
@@ -144,9 +155,11 @@ class DOCXParser(DocumentParser):
         if document_xml:
             try:
                 _extract_blocks_from_xml(document_xml)
-            except DocxTrackChangesError:
+            except DocxTrackChangesError as exc:
+                _debug_log("docx_track_changes", exc)
                 raise
-            except Exception:
+            except Exception as exc:
+                _debug_log("docx_xml_parse_failed", exc)
                 pass
 
         try:
@@ -211,9 +224,10 @@ class DOCXParser(DocumentParser):
                 metadata=metadata
             )
 
-        except DocxTrackChangesError:
+        except DocxTrackChangesError as exc:
+            _debug_log("docx_track_changes", exc)
             raise
-        except Exception:
+        except Exception as exc:
             if document_xml:
                 try:
                     block_items, paragraph_count, table_count = _extract_blocks_from_xml(document_xml)
@@ -236,11 +250,14 @@ class DOCXParser(DocumentParser):
                             "parser": "xml_fallback",
                         }
                     )
-                except DocxTrackChangesError:
+                except DocxTrackChangesError as exc:
+                    _debug_log("docx_track_changes", exc)
                     raise
-                except Exception:
+                except Exception as inner_exc:
+                    _debug_log("docx_xml_parse_failed", inner_exc)
                     pass
 
+            _debug_log("docx_parse_failed", exc)
             raise ParserError(
                 "Failed to parse DOCX file.",
                 code="docx_parse_failed",
