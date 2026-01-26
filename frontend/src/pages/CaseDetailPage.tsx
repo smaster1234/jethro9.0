@@ -114,9 +114,11 @@ const buildUsageBadge = (summary?: EntityUsageSummary) => {
   for (const key of order) {
     if (usage[key]) {
       return (
-        <Badge variant={variants[key] as any} title={tooltip}>
-          {labels[key]}
-        </Badge>
+        <span title={tooltip}>
+          <Badge variant={variants[key] as any}>
+            {labels[key]}
+          </Badge>
+        </span>
       );
     }
   }
@@ -429,11 +431,12 @@ export const CaseDetailPage: React.FC = () => {
     if (!showAddParticipantModal || !caseData?.organization_id) {
       return;
     }
+    const orgId = caseData.organization_id;
     const loadMembers = async () => {
       setIsLoadingOrgMembers(true);
       setAddParticipantError('');
       try {
-        const list = await orgsApi.listMembers(caseData.organization_id);
+        const list = await orgsApi.listMembers(orgId);
         setOrgMembers(list);
       } catch (error) {
         setAddParticipantError(handleApiError(error));
@@ -3494,7 +3497,7 @@ const PlanStepCard: React.FC<{
           <div className="flex items-center justify-between">
             <div className="font-medium text-slate-700">הסתעפויות:</div>
             <Button
-              size="xs"
+              size="sm"
               variant="ghost"
               onClick={() => setShowBranches((prev) => !prev)}
             >
@@ -3521,14 +3524,14 @@ const PlanStepCard: React.FC<{
       {onFeedback && step.id && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <Button
-            size="xs"
+            size="sm"
             variant="ghost"
             onClick={() => onFeedback('plan_step', step.id, 'worked')}
           >
             <ThumbsUp className="w-4 h-4" />
           </Button>
           <Button
-            size="xs"
+            size="sm"
             variant="ghost"
             onClick={() => onFeedback('plan_step', step.id, 'not_worked')}
           >
@@ -3545,7 +3548,7 @@ const PlanStepCard: React.FC<{
             <option value="excellent">excellent</option>
           </select>
           <Button
-            size="xs"
+            size="sm"
             variant="secondary"
             onClick={() => onFeedback('plan_step', step.id, selectedLabel)}
           >
@@ -3772,14 +3775,14 @@ const ContradictionCard: React.FC<{
           {onFeedback && contradiction.id && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <Button
-                size="xs"
+                size="sm"
                 variant="ghost"
                 onClick={() => onFeedback('insight', contradiction.id as string, 'worked')}
               >
                 <ThumbsUp className="w-4 h-4" />
               </Button>
               <Button
-                size="xs"
+                size="sm"
                 variant="ghost"
                 onClick={() => onFeedback('insight', contradiction.id as string, 'not_worked')}
               >
@@ -3796,7 +3799,7 @@ const ContradictionCard: React.FC<{
                 <option value="excellent">excellent</option>
               </select>
               <Button
-                size="xs"
+                size="sm"
                 variant="secondary"
                 onClick={() => onFeedback('insight', contradiction.id as string, selectedLabel)}
               >
