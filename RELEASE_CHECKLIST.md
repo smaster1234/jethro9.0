@@ -47,3 +47,7 @@
 - **FAIL** — Golden Path (DOCX).  
   פקודה: `DOC1=/tmp/gp_doc1.docx DOC2=/tmp/gp_doc2.docx ./scripts/golden_path.sh`  
   שגיאה: `docker.errors.DockerException: Error while fetching server API version: Not supported URL scheme http+docker`
+
+## C3 — Feedback Loop
+- **PASS** — יצירת משוב + אגרגציה + מיון דטרמיניסטי.  
+  בדיקה: `backend_lite/tests/test_c3_feedback.py`
