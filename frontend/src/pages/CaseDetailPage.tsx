@@ -264,6 +264,8 @@ export const CaseDetailPage: React.FC = () => {
   const [newNoteText, setNewNoteText] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState('');
+  const [newNoteType, setNewNoteType] = useState<'note' | 'finding' | 'todo'>('note');
+  const [notesFilter, setNotesFilter] = useState<'all' | 'note' | 'finding' | 'todo'>('all');
 
   // Document filters
   const [docSearchQuery, setDocSearchQuery] = useState('');
@@ -694,7 +696,8 @@ export const CaseDetailPage: React.FC = () => {
       id: crypto.randomUUID(),
       text: newNoteText.trim(),
       created_at: new Date().toISOString(),
-      type: 'note',
+      type: newNoteType,
+      done: newNoteType === 'todo' ? false : undefined,
     };
 
     const updatedNotes = [newNote, ...notes];
@@ -2010,9 +2013,9 @@ export const CaseDetailPage: React.FC = () => {
                                     'IDENTITY_BASIC': 'זהות',
                                   };
                                   const categoryLabels: Record<string, string> = {
-                                    'HARD_CONTRADICTION': 'סתירה קשיחה',
+                                    'HARD_CONTRADICTION': 'סתירה מוכרחת',
                                     'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
-                                    'LOGICAL_INCONSISTENCY': 'חוסר עקביות',
+                                    'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
                                     'RHETORICAL_SHIFT': 'שינוי רטורי',
                                     'unclassified': 'לא מסווג',
                                   };
@@ -2346,19 +2349,21 @@ export const CaseDetailPage: React.FC = () => {
                               );
                             }
 
-                            // Classify contradictions by claim party
+                            // Classify contradictions by bucket field
                             const oursWeaknesses: Contradiction[] = [];
                             const theirsWeaknesses: Contradiction[] = [];
                             const disputed: Contradiction[] = [];
 
                             allC.forEach((c) => {
-                              const partyA = c.claim_a?.metadata?.party as string || '';
-                              const partyB = c.claim_b?.metadata?.party as string || '';
-                              if (partyA === 'ours' && partyB === 'ours') {
+                              const bucket = (c.bucket || '').toLowerCase();
+                              if (bucket === 'internal_ours') {
                                 oursWeaknesses.push(c);
-                              } else if (partyA === 'theirs' && partyB === 'theirs') {
+                              } else if (bucket === 'internal_theirs') {
                                 theirsWeaknesses.push(c);
+                              } else if (bucket === 'dispute') {
+                                disputed.push(c);
                               } else {
+                                // Fallback: unclassified → disputed
                                 disputed.push(c);
                               }
                             });
@@ -2739,11 +2744,26 @@ export const CaseDetailPage: React.FC = () => {
             {/* Add New Note */}
             <Card>
               <div className="space-y-3">
-                <h3 className="font-semibold text-slate-900">הוסף הערה חדשה</h3>
+                <h3 className="font-semibold text-slate-900">הוסף פריט חדש</h3>
+                <div className="flex gap-2 items-center">
+                  <select
+                    value={newNoteType}
+                    onChange={(e) => setNewNoteType(e.target.value as typeof newNoteType)}
+                    className="px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                  >
+                    <option value="note">הערה</option>
+                    <option value="finding">ממצא</option>
+                    <option value="todo">משימה</option>
+                  </select>
+                </div>
                 <textarea
                   value={newNoteText}
                   onChange={(e) => setNewNoteText(e.target.value)}
-                  placeholder="כתבו הערה, ממצא חשוב, או משימה לביצוע..."
+                  placeholder={
+                    newNoteType === 'todo' ? 'תאר את המשימה...' :
+                    newNoteType === 'finding' ? 'תאר את הממצא...' :
+                    'כתבו הערה...'
+                  }
                   rows={3}
                   className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none resize-none"
                 />
@@ -2754,11 +2774,26 @@ export const CaseDetailPage: React.FC = () => {
                     isLoading={isSavingNotes}
                     leftIcon={<Plus className="w-4 h-4" />}
                   >
-                    הוסף הערה
+                    {newNoteType === 'todo' ? 'הוסף משימה' : newNoteType === 'finding' ? 'הוסף ממצא' : 'הוסף הערה'}
                   </Button>
                 </div>
               </div>
             </Card>
+
+            {/* Filter */}
+            <div className="flex gap-2">
+              {(['all', 'note', 'finding', 'todo'] as const).map((f) => (
+                <Button
+                  key={f}
+                  variant={notesFilter === f ? 'primary' : 'secondary'}
+                  size="sm"
+                  onClick={() => setNotesFilter(f)}
+                >
+                  {f === 'all' ? 'הכל' : f === 'note' ? 'הערות' : f === 'finding' ? 'ממצאים' : 'משימות'}
+                  {f !== 'all' && ` (${notes.filter((n) => (n.type || 'note') === f).length})`}
+                </Button>
+              ))}
+            </div>
 
             {/* Notes List */}
             {isLoadingNotes ? (
@@ -2773,8 +2808,10 @@ export const CaseDetailPage: React.FC = () => {
               />
             ) : (
               <div className="space-y-3">
-                {notes.map((note) => (
-                  <Card key={note.id}>
+                {notes
+                  .filter((n) => notesFilter === 'all' || (n.type || 'note') === notesFilter)
+                  .map((note) => (
+                  <Card key={note.id} className={note.type === 'todo' && note.done ? 'opacity-60' : ''}>
                     {editingNoteId === note.id ? (
                       <div className="space-y-3">
                         <textarea
@@ -2806,11 +2843,42 @@ export const CaseDetailPage: React.FC = () => {
                       </div>
                     ) : (
                       <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <p className="text-slate-800 whitespace-pre-wrap">{note.text}</p>
-                          <p className="text-xs text-slate-400 mt-2">
-                            {new Date(note.created_at).toLocaleString('he-IL')}
-                          </p>
+                        <div className="flex items-start gap-3 flex-1">
+                          {/* Todo checkbox */}
+                          {note.type === 'todo' && (
+                            <input
+                              type="checkbox"
+                              checked={!!note.done}
+                              onChange={async () => {
+                                const updated = notes.map((n) =>
+                                  n.id === note.id ? { ...n, done: !n.done } : n
+                                );
+                                setNotes(updated);
+                                setIsSavingNotes(true);
+                                try { await casesApi.saveMemory(caseId!, updated); }
+                                catch { await fetchNotes(); }
+                                finally { setIsSavingNotes(false); }
+                              }}
+                              className="mt-1.5 w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                            />
+                          )}
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant={
+                                note.type === 'finding' ? 'warning' :
+                                note.type === 'todo' ? (note.done ? 'success' : 'accent') :
+                                'neutral'
+                              }>
+                                {note.type === 'finding' ? 'ממצא' : note.type === 'todo' ? (note.done ? 'בוצע' : 'משימה') : 'הערה'}
+                              </Badge>
+                            </div>
+                            <p className={`text-slate-800 whitespace-pre-wrap ${note.type === 'todo' && note.done ? 'line-through text-slate-500' : ''}`}>
+                              {note.text}
+                            </p>
+                            <p className="text-xs text-slate-400 mt-2">
+                              {new Date(note.created_at).toLocaleString('he-IL')}
+                            </p>
+                          </div>
                         </div>
                         <div className="flex items-center gap-1">
                           <Button
@@ -3977,9 +4045,9 @@ const ContradictionCard: React.FC<{
 
   const getCategoryLabel = (cat?: string) => {
     const labels: Record<string, string> = {
-      'HARD_CONTRADICTION': 'סתירה קשיחה',
+      'HARD_CONTRADICTION': 'סתירה מוכרחת',
       'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
-      'LOGICAL_INCONSISTENCY': 'חוסר עקביות לוגי',
+      'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
       'RHETORICAL_SHIFT': 'שינוי רטורי',
     };
     return cat ? labels[cat] || cat : null;

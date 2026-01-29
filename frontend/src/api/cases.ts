@@ -13,6 +13,7 @@ export interface MemoryItem {
   text: string;
   created_at: string;
   type?: 'note' | 'finding' | 'todo';
+  done?: boolean;
 }
 
 export interface CaseParticipant {
