@@ -27,8 +27,17 @@ const stripEnvPrefix = (value: string): string => {
 
 const normalizeBaseUrl = (value: string): string => stripEnvPrefix(value).replace(/\/+$/, '');
 
-const getApiBaseUrl = (): string =>
-  normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
+const getApiBaseUrl = (): string => {
+  const url = normalizeBaseUrl(getRuntimeApiUrl() || import.meta.env.VITE_API_URL || '');
+  // Warn if API_URL points to the frontend itself (common misconfiguration)
+  if (url && typeof window !== 'undefined' && url === window.location.origin) {
+    console.warn(
+      `[Jethro] API_URL (${url}) points to the frontend origin. ` +
+      'API calls will fail. Set API_URL to the backend service URL, or leave it empty for same-origin deployment.'
+    );
+  }
+  return url;
+};
 
 // Create axios instance
 export const apiClient: AxiosInstance = axios.create({

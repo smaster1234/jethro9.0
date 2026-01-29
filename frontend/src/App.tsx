@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './contexts/AuthContext';
 import { ToastProvider } from './components/ui/Toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Layout } from './components/layout';
 import {
   LoginPage,
@@ -30,6 +31,7 @@ const queryClient = new QueryClient({
 
 function App() {
   return (
+    <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <AuthProvider>
@@ -62,6 +64,7 @@ function App() {
         </AuthProvider>
       </ToastProvider>
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

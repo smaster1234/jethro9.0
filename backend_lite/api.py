@@ -2673,7 +2673,7 @@ async def auth_me(
     firm = db.query(Firm).filter(Firm.id == auth.firm_id).first()
 
     return {
-        "user_id": auth.user_id,
+        "id": auth.user_id,
         "email": auth.email,
         "name": auth.name,
         "firm_id": auth.firm_id,

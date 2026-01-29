@@ -29,7 +29,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const userData = await authApi.me();
-      setUser(userData);
+      // Validate response is a real user object (not HTML from misconfigured API_URL)
+      if (!userData || typeof userData !== 'object' || !userData.id || !userData.email) {
+        console.error('Invalid user response from /auth/me — API_URL may be misconfigured');
+        clearTokens();
+        setUser(null);
+      } else {
+        setUser(userData);
+      }
     } catch {
       clearTokens();
       setUser(null);

@@ -1,15 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
 import { FullPageSpinner } from '../ui';
 import Sidebar from './Sidebar';
 
+const AUTH_TIMEOUT_MS = 10_000;
+
 export const Layout: React.FC = () => {
   const { isAuthenticated, isLoading } = useAuth();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = setTimeout(() => setTimedOut(true), AUTH_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  if (isLoading && !timedOut) {
     return <FullPageSpinner message="טוען..." />;
   }
 
