@@ -42,9 +42,6 @@ const getApiBaseUrl = (): string => {
 // Create axios instance
 export const apiClient: AxiosInstance = axios.create({
   baseURL: getApiBaseUrl(),
-  headers: {
-    'Content-Type': 'application/json',
-  },
 });
 
 // Token management
