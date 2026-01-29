@@ -244,11 +244,13 @@ if not FRONTEND_BUILD_DIR.exists():
     FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
 FRONTEND_BUILD_AVAILABLE = FRONTEND_BUILD_DIR.exists() and (FRONTEND_BUILD_DIR / "index.html").exists()
 FRONTEND_STATIC_DIR = FRONTEND_BUILD_DIR / "static"
+_log_frontend_build = (not REACT_ENABLED) or (FRONTEND_BUILD_DIR != REACT_BUILD_DIR)
 if FRONTEND_BUILD_AVAILABLE and FRONTEND_STATIC_DIR.exists():
     # Mount React static assets (JS, CSS, etc.)
     app.mount("/react-static", StaticFiles(directory=str(FRONTEND_STATIC_DIR)), name="react-static")
-    logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR}")
-elif FRONTEND_BUILD_AVAILABLE:
+    if _log_frontend_build:
+        logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR}")
+elif FRONTEND_BUILD_AVAILABLE and _log_frontend_build:
     logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR} (no /static dir)")
 
 # Include upload router if available

@@ -258,10 +258,14 @@ def decode_token(token: str) -> Optional[dict]:
     if not jwt_mod:
         return None
 
+    expired_error = getattr(jwt_mod, "ExpiredSignatureError", None)
     try:
         payload = jwt_mod.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload
     except Exception as e:
+        if expired_error and isinstance(e, expired_error):
+            logger.info("JWT token expired")
+            return None
         logger.warning(f"Invalid JWT token: {e}")
         return None
 
