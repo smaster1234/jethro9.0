@@ -210,26 +210,69 @@ export const AnalyzePage: React.FC = () => {
                 const flatQuestions = flattenCrossExamQuestions(result.cross_exam_questions);
                 return (
                   <>
-                    <Card>
-                      <div className="grid grid-cols-3 gap-4 text-center">
-                        <div>
-                          <div className="text-3xl font-bold text-slate-900">
-                            {result.claims?.length || 0}
+                    <Card className="bg-gradient-to-br from-slate-50 to-slate-100">
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-3 gap-4 text-center">
+                          <div>
+                            <div className="text-3xl font-bold text-slate-900">
+                              {result.claims?.length || 0}
+                            </div>
+                            <div className="text-sm text-slate-500">טענות זוהו</div>
                           </div>
-                          <div className="text-sm text-slate-500">טענות זוהו</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold text-warning-600">
-                            {result.contradictions?.length || 0}
+                          <div>
+                            <div className="text-3xl font-bold text-warning-600">
+                              {result.contradictions?.length || 0}
+                            </div>
+                            <div className="text-sm text-slate-500">סתירות נמצאו</div>
                           </div>
-                          <div className="text-sm text-slate-500">סתירות נמצאו</div>
-                        </div>
-                        <div>
-                          <div className="text-3xl font-bold text-primary-600">
-                            {flatQuestions.length}
+                          <div>
+                            <div className="text-3xl font-bold text-primary-600">
+                              {flatQuestions.length}
+                            </div>
+                            <div className="text-sm text-slate-500">שאלות הומלצו</div>
                           </div>
-                          <div className="text-sm text-slate-500">שאלות הומלצו</div>
                         </div>
+                        {/* Severity mini-bar */}
+                        {result.contradictions && result.contradictions.length > 0 && (() => {
+                          const sevCounts: Record<string, number> = {};
+                          result.contradictions.forEach((c) => {
+                            const s = c.severity || 'medium';
+                            sevCounts[s] = (sevCounts[s] || 0) + 1;
+                          });
+                          const total = result.contradictions.length;
+                          const order = ['critical', 'high', 'medium', 'low'];
+                          const colors: Record<string, string> = { critical: 'bg-red-600', high: 'bg-red-400', medium: 'bg-orange-400', low: 'bg-yellow-400' };
+                          const labels: Record<string, string> = { critical: 'קריטי', high: 'גבוה', medium: 'בינוני', low: 'נמוך' };
+                          return (
+                            <div className="space-y-1">
+                              <div className="flex h-3 rounded-full overflow-hidden bg-slate-200">
+                                {order.map((s) => {
+                                  const count = sevCounts[s] || 0;
+                                  if (count === 0) return null;
+                                  return <div key={s} className={`${colors[s]}`} style={{ width: `${(count / total) * 100}%` }} title={`${labels[s]}: ${count}`} />;
+                                })}
+                              </div>
+                              <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                {order.map((s) => {
+                                  const count = sevCounts[s] || 0;
+                                  if (count === 0) return null;
+                                  return (
+                                    <div key={s} className="flex items-center gap-1">
+                                      <div className={`w-2 h-2 rounded-full ${colors[s]}`} />
+                                      <span>{labels[s]}: {count}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                        {/* Duration */}
+                        {result.metadata?.duration_ms && (
+                          <div className="text-xs text-slate-400 text-center">
+                            ניתוח הושלם ב-{Math.round(result.metadata.duration_ms)}ms
+                          </div>
+                        )}
                       </div>
                     </Card>
 
@@ -462,6 +505,25 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
   };
 
+  const getCategoryLabel = (cat?: string) => {
+    const labels: Record<string, string> = {
+      'HARD_CONTRADICTION': 'סתירה קשיחה',
+      'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+      'LOGICAL_INCONSISTENCY': 'חוסר עקביות לוגי',
+      'RHETORICAL_SHIFT': 'שינוי רטורי',
+    };
+    return cat ? labels[cat] || cat : null;
+  };
+  const getCategoryColor = (cat?: string) => {
+    switch (cat) {
+      case 'HARD_CONTRADICTION': return 'danger';
+      case 'NARRATIVE_AMBIGUITY': return 'warning';
+      case 'LOGICAL_INCONSISTENCY': return 'accent';
+      case 'RHETORICAL_SHIFT': return 'neutral';
+      default: return 'neutral';
+    }
+  };
+
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
@@ -478,11 +540,19 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
               <AlertTriangle className="w-5 h-5 text-warning-500" />
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge variant={getSeverityColor(severity) as any}>
                 {getSeverityLabel(severity)}
               </Badge>
               <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
+              {getCategoryLabel(contradiction.category) && (
+                <Badge variant={getCategoryColor(contradiction.category) as any}>
+                  {getCategoryLabel(contradiction.category)}
+                </Badge>
+              )}
+              {contradiction.verified && (
+                <Badge variant="success">מאומת</Badge>
+              )}
             </div>
           </div>
 
@@ -516,17 +586,33 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
           </div>
 
           {/* Confidence */}
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <span>רמת ביטחון:</span>
-            <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
-              <div
-                className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
-                style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
-              />
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <span>ביטחון ניתוח:</span>
+              <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                <div
+                  className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
+                  style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
+                />
+              </div>
+              <span className="font-medium">
+                {Math.round((contradiction.confidence || 0) * 100)}%
+              </span>
             </div>
-            <span className="font-medium">
-              {Math.round((contradiction.confidence || 0) * 100)}%
-            </span>
+            {contradiction.verifier_confidence != null && (
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <span>ביטחון מאמת:</span>
+                <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                  <div
+                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full"
+                    style={{ width: `${(contradiction.verifier_confidence || 0) * 100}%` }}
+                  />
+                </div>
+                <span className="font-medium text-green-700">
+                  {Math.round((contradiction.verifier_confidence || 0) * 100)}%
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </Card>

@@ -11,11 +11,12 @@ import {
   Clock,
   CheckCircle,
   Search,
+  Target,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { casesApi, healthApi } from '../api';
 import { Card, Button, Badge, EmptyState, Spinner } from '../components/ui';
-import type { Case, HealthResponse } from '../types';
+import type { Case, HealthResponse, AnalysisRun } from '../types';
 
 const container = {
   hidden: { opacity: 0 },
@@ -82,6 +83,8 @@ export const DashboardPage: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [totalContradictions, setTotalContradictions] = useState(0);
+  const [analysisRunsByCase, setAnalysisRunsByCase] = useState<Record<string, AnalysisRun[]>>({});
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -93,6 +96,25 @@ export const DashboardPage: React.FC = () => {
       ]);
       setCases(casesData);
       setHealth(healthData);
+
+      // Fetch analysis runs per case to get real contradiction counts
+      let contradictionTotal = 0;
+      const runsMap: Record<string, AnalysisRun[]> = {};
+      await Promise.all(
+        casesData.slice(0, 20).map(async (c) => {
+          try {
+            const runs = await casesApi.listRuns(c.id, 5);
+            runsMap[c.id] = runs;
+            runs.forEach((r) => {
+              contradictionTotal += r.contradictions_count || 0;
+            });
+          } catch {
+            // ignore per-case errors
+          }
+        })
+      );
+      setTotalContradictions(contradictionTotal);
+      setAnalysisRunsByCase(runsMap);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       setLoadError('לא ניתן להתחבר לשרת. ודא שהשרת פועל ונסה שוב.');
@@ -107,6 +129,9 @@ export const DashboardPage: React.FC = () => {
 
   const activeCases = cases.filter((c) => c.status !== 'closed');
   const totalDocs = cases.reduce((acc, c) => acc + (c.document_count || 0), 0);
+  const analyzedCases = Object.entries(analysisRunsByCase).filter(
+    ([, runs]) => runs.length > 0
+  ).length;
 
   const getStatusBadge = (status?: string) => {
     switch (status) {
@@ -167,7 +192,7 @@ export const DashboardPage: React.FC = () => {
       </motion.div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <StatCard
           icon={<Briefcase className="w-6 h-6" />}
           label="תיקים פעילים"
@@ -183,8 +208,14 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           icon={<AlertTriangle className="w-6 h-6" />}
           label="סתירות שזוהו"
-          value="--"
+          value={totalContradictions}
           color="warning"
+        />
+        <StatCard
+          icon={<Target className="w-6 h-6" />}
+          label="תיקים נותחו"
+          value={analyzedCases}
+          color="danger"
         />
         <StatCard
           icon={<CheckCircle className="w-6 h-6" />}
@@ -291,6 +322,16 @@ export const DashboardPage: React.FC = () => {
                         <FileText className="w-4 h-4" />
                         <span>{caseItem.document_count || 0} מסמכים</span>
                       </div>
+                      {(() => {
+                        const runs = analysisRunsByCase[caseItem.id] || [];
+                        const caseContradictions = runs.reduce((sum, r) => sum + (r.contradictions_count || 0), 0);
+                        return caseContradictions > 0 ? (
+                          <div className="flex items-center gap-1 text-warning-600">
+                            <AlertTriangle className="w-4 h-4" />
+                            <span>{caseContradictions} סתירות</span>
+                          </div>
+                        ) : null;
+                      })()}
                       <div className="flex items-center gap-1">
                         <Clock className="w-4 h-4" />
                         <span>

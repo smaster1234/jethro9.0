@@ -31,6 +31,8 @@ import {
   ListOrdered,
   ThumbsUp,
   ThumbsDown,
+  Shield,
+  Crosshair,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi, feedbackApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
@@ -219,7 +221,7 @@ export const CaseDetailPage: React.FC = () => {
   // Analysis results view state
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
-  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions' | 'plan'>('contradictions');
+  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions' | 'plan' | 'battle'>('contradictions');
   const [insightsByContradiction, setInsightsByContradiction] = useState<Record<string, ContradictionInsight>>({});
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
@@ -1812,6 +1814,14 @@ export const CaseDetailPage: React.FC = () => {
                         >
                           תכנית חקירה
                         </Button>
+                        <Button
+                          variant={analysisResultsTab === 'battle' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('battle')}
+                          leftIcon={<Crosshair className="w-4 h-4" />}
+                        >
+                          מפת קרב
+                        </Button>
                       </div>
                       {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
                         <div className="flex gap-2">
@@ -1974,6 +1984,150 @@ export const CaseDetailPage: React.FC = () => {
 
                             return (
                               <>
+                                {/* --- Analytics Summary Panel --- */}
+                                {(() => {
+                                  const allC = selectedRun.contradictions || [];
+                                  const severityCounts: Record<string, number> = {};
+                                  const typeCounts: Record<string, number> = {};
+                                  const categoryCounts: Record<string, number> = {};
+                                  allC.forEach((c) => {
+                                    const s = c.severity || 'unknown';
+                                    const t = c.contradiction_type || c.type || 'unknown';
+                                    const cat = c.category || 'unclassified';
+                                    severityCounts[s] = (severityCounts[s] || 0) + 1;
+                                    typeCounts[t] = (typeCounts[t] || 0) + 1;
+                                    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+                                  });
+                                  const severityOrder = ['critical', 'high', 'medium', 'low'];
+                                  const severityColors: Record<string, string> = { critical: 'bg-red-600', high: 'bg-red-400', medium: 'bg-orange-400', low: 'bg-yellow-400' };
+                                  const severityLabels: Record<string, string> = { critical: 'קריטי', high: 'גבוה', medium: 'בינוני', low: 'נמוך' };
+                                  const typeLabels: Record<string, string> = {
+                                    'TEMPORAL_DATE': 'תאריכים',
+                                    'QUANTITATIVE_AMOUNT': 'סכומים',
+                                    'ACTOR_ATTRIBUTION': 'ייחוס',
+                                    'PRESENCE_PARTICIPATION': 'נוכחות',
+                                    'DOCUMENT_EXISTENCE': 'מסמכים',
+                                    'IDENTITY_BASIC': 'זהות',
+                                  };
+                                  const categoryLabels: Record<string, string> = {
+                                    'HARD_CONTRADICTION': 'סתירה קשיחה',
+                                    'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+                                    'LOGICAL_INCONSISTENCY': 'חוסר עקביות',
+                                    'RHETORICAL_SHIFT': 'שינוי רטורי',
+                                    'unclassified': 'לא מסווג',
+                                  };
+                                  const categoryColors: Record<string, string> = {
+                                    'HARD_CONTRADICTION': 'bg-red-500',
+                                    'NARRATIVE_AMBIGUITY': 'bg-orange-400',
+                                    'LOGICAL_INCONSISTENCY': 'bg-blue-400',
+                                    'RHETORICAL_SHIFT': 'bg-slate-400',
+                                    'unclassified': 'bg-slate-300',
+                                  };
+                                  const verified = allC.filter((c) => c.verified || c.status === 'confirmed').length;
+                                  const maxTotal = allC.length || 1;
+
+                                  return (
+                                    <Card className="bg-gradient-to-br from-slate-50 to-slate-100 border-slate-200">
+                                      <div className="space-y-4">
+                                        {/* Top KPI row */}
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-slate-900">{allC.length}</div>
+                                            <div className="text-xs text-slate-500">סתירות זוהו</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-red-600">{severityCounts['critical'] || 0}</div>
+                                            <div className="text-xs text-slate-500">קריטיות</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-green-600">{verified}</div>
+                                            <div className="text-xs text-slate-500">מאומתות</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-primary-600">{Object.keys(typeCounts).length}</div>
+                                            <div className="text-xs text-slate-500">סוגים שונים</div>
+                                          </div>
+                                        </div>
+
+                                        {/* Severity Distribution Bar */}
+                                        <div className="space-y-1">
+                                          <div className="text-xs text-slate-500 font-medium">התפלגות לפי חומרה</div>
+                                          <div className="flex h-4 rounded-full overflow-hidden bg-slate-200">
+                                            {severityOrder.map((s) => {
+                                              const count = severityCounts[s] || 0;
+                                              if (count === 0) return null;
+                                              return (
+                                                <div
+                                                  key={s}
+                                                  className={`${severityColors[s]} transition-all`}
+                                                  style={{ width: `${(count / maxTotal) * 100}%` }}
+                                                  title={`${severityLabels[s]}: ${count}`}
+                                                />
+                                              );
+                                            })}
+                                          </div>
+                                          <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                            {severityOrder.map((s) => {
+                                              const count = severityCounts[s] || 0;
+                                              if (count === 0) return null;
+                                              return (
+                                                <div key={s} className="flex items-center gap-1">
+                                                  <div className={`w-2.5 h-2.5 rounded-full ${severityColors[s]}`} />
+                                                  <span>{severityLabels[s]}: {count}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+
+                                        {/* Type Distribution */}
+                                        <div className="space-y-2">
+                                          <div className="text-xs text-slate-500 font-medium">התפלגות לפי סוג</div>
+                                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                            {Object.entries(typeCounts)
+                                              .sort((a, b) => b[1] - a[1])
+                                              .map(([type, count]) => (
+                                                <div key={type} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-slate-100">
+                                                  <span className="text-xs text-slate-700 truncate">{typeLabels[type] || type}</span>
+                                                  <span className="text-sm font-bold text-slate-900 mr-2">{count}</span>
+                                                </div>
+                                              ))}
+                                          </div>
+                                        </div>
+
+                                        {/* Category Distribution */}
+                                        {Object.keys(categoryCounts).length > 1 && (
+                                          <div className="space-y-1">
+                                            <div className="text-xs text-slate-500 font-medium">התפלגות לפי קטגוריה</div>
+                                            <div className="flex h-4 rounded-full overflow-hidden bg-slate-200">
+                                              {Object.entries(categoryCounts)
+                                                .sort((a, b) => b[1] - a[1])
+                                                .map(([cat, count]) => (
+                                                  <div
+                                                    key={cat}
+                                                    className={`${categoryColors[cat] || 'bg-slate-400'} transition-all`}
+                                                    style={{ width: `${(count / maxTotal) * 100}%` }}
+                                                    title={`${categoryLabels[cat] || cat}: ${count}`}
+                                                  />
+                                                ))}
+                                            </div>
+                                            <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                              {Object.entries(categoryCounts)
+                                                .sort((a, b) => b[1] - a[1])
+                                                .map(([cat, count]) => (
+                                                  <div key={cat} className="flex items-center gap-1">
+                                                    <div className={`w-2.5 h-2.5 rounded-full ${categoryColors[cat] || 'bg-slate-400'}`} />
+                                                    <span>{categoryLabels[cat] || cat}: {count}</span>
+                                                  </div>
+                                                ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </Card>
+                                  );
+                                })()}
+
                                 <p className="text-sm text-slate-500">
                                   מציג {sorted.length} מתוך {selectedRun.contradictions.length} סתירות
                                 </p>
@@ -2169,6 +2323,189 @@ export const CaseDetailPage: React.FC = () => {
                               description="לחץ על יצירת תכנית כדי לבנות תכנית מדורגת"
                             />
                           )}
+                        </motion.div>
+                      )}
+
+                      {analysisResultsTab === 'battle' && (
+                        <motion.div
+                          key="battle"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          {(() => {
+                            const allC = selectedRun?.contradictions || [];
+                            if (allC.length === 0) {
+                              return (
+                                <EmptyState
+                                  icon={<Crosshair className="w-12 h-12" />}
+                                  title="אין נתונים למפת קרב"
+                                  description="הריצו ניתוח כדי לראות את התמונה האסטרטגית"
+                                />
+                              );
+                            }
+
+                            // Classify contradictions by claim party
+                            const oursWeaknesses: Contradiction[] = [];
+                            const theirsWeaknesses: Contradiction[] = [];
+                            const disputed: Contradiction[] = [];
+
+                            allC.forEach((c) => {
+                              const partyA = c.claim_a?.metadata?.party as string || '';
+                              const partyB = c.claim_b?.metadata?.party as string || '';
+                              if (partyA === 'ours' && partyB === 'ours') {
+                                oursWeaknesses.push(c);
+                              } else if (partyA === 'theirs' && partyB === 'theirs') {
+                                theirsWeaknesses.push(c);
+                              } else {
+                                disputed.push(c);
+                              }
+                            });
+
+                            const severityWeight = (s?: string) => {
+                              switch (s) { case 'critical': return 4; case 'high': return 3; case 'medium': return 2; case 'low': return 1; default: return 1; }
+                            };
+                            const calcScore = (arr: Contradiction[]) => arr.reduce((sum, c) => sum + severityWeight(c.severity), 0);
+                            const oursScore = calcScore(oursWeaknesses);
+                            const theirsScore = calcScore(theirsWeaknesses);
+                            const disputeScore = calcScore(disputed);
+                            const totalScore = oursScore + theirsScore + disputeScore || 1;
+
+                            return (
+                              <div className="space-y-6">
+                                {/* Strategic Overview */}
+                                <Card className="bg-gradient-to-br from-slate-900 to-slate-800 text-white border-0">
+                                  <div className="space-y-4">
+                                    <h3 className="text-lg font-bold flex items-center gap-2">
+                                      <Crosshair className="w-5 h-5" />
+                                      מפת קרב — תמונה אסטרטגית
+                                    </h3>
+
+                                    {/* Score Bar */}
+                                    <div className="space-y-2">
+                                      <div className="flex justify-between text-sm">
+                                        <span className="text-green-400">חולשות שלהם ({theirsWeaknesses.length})</span>
+                                        <span className="text-slate-400">שנוי במחלוקת ({disputed.length})</span>
+                                        <span className="text-red-400">חולשות שלנו ({oursWeaknesses.length})</span>
+                                      </div>
+                                      <div className="flex h-6 rounded-full overflow-hidden bg-slate-700">
+                                        {theirsScore > 0 && (
+                                          <div className="bg-gradient-to-r from-green-500 to-green-400 flex items-center justify-center text-xs font-bold" style={{ width: `${(theirsScore / totalScore) * 100}%` }}>
+                                            {theirsScore > 2 ? theirsScore : ''}
+                                          </div>
+                                        )}
+                                        {disputeScore > 0 && (
+                                          <div className="bg-gradient-to-r from-yellow-500 to-orange-400 flex items-center justify-center text-xs font-bold" style={{ width: `${(disputeScore / totalScore) * 100}%` }}>
+                                            {disputeScore > 2 ? disputeScore : ''}
+                                          </div>
+                                        )}
+                                        {oursScore > 0 && (
+                                          <div className="bg-gradient-to-r from-red-400 to-red-500 flex items-center justify-center text-xs font-bold" style={{ width: `${(oursScore / totalScore) * 100}%` }}>
+                                            {oursScore > 2 ? oursScore : ''}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Summary */}
+                                    <div className="grid grid-cols-3 gap-4 text-center">
+                                      <div className="bg-green-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-green-400">{theirsWeaknesses.length}</div>
+                                        <div className="text-xs text-green-300">נקודות תורפה שלהם</div>
+                                      </div>
+                                      <div className="bg-yellow-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-yellow-400">{disputed.length}</div>
+                                        <div className="text-xs text-yellow-300">שנוי במחלוקת</div>
+                                      </div>
+                                      <div className="bg-red-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-red-400">{oursWeaknesses.length}</div>
+                                        <div className="text-xs text-red-300">נקודות תורפה שלנו</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </Card>
+
+                                {/* Their Weaknesses - Opportunities */}
+                                {theirsWeaknesses.length > 0 && (
+                                  <Card className="border-r-4 border-green-500">
+                                    <h4 className="font-bold text-green-700 mb-3 flex items-center gap-2">
+                                      <Shield className="w-5 h-5" />
+                                      נקודות תורפה של הצד השני — הזדמנויות תקיפה
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {theirsWeaknesses.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-green-50 rounded-lg border border-green-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="success">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בטענות הצד השני'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Our Weaknesses - Risks */}
+                                {oursWeaknesses.length > 0 && (
+                                  <Card className="border-r-4 border-red-500">
+                                    <h4 className="font-bold text-red-700 mb-3 flex items-center gap-2">
+                                      <AlertTriangle className="w-5 h-5" />
+                                      נקודות תורפה שלנו — סיכונים להיערכות
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {oursWeaknesses.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-red-50 rounded-lg border border-red-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="danger">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בטענות שלנו'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Cross-Party Disputes */}
+                                {disputed.length > 0 && (
+                                  <Card className="border-r-4 border-yellow-500">
+                                    <h4 className="font-bold text-yellow-700 mb-3 flex items-center gap-2">
+                                      <Crosshair className="w-5 h-5" />
+                                      סתירות בין הצדדים — נקודות עימות
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {disputed.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-yellow-50 rounded-lg border border-yellow-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="warning">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בין הצדדים'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Strategic Recommendation */}
+                                <Card className="bg-primary-50 border-primary-200">
+                                  <div className="space-y-2">
+                                    <h4 className="font-bold text-primary-900">המלצה אסטרטגית</h4>
+                                    <p className="text-sm text-primary-800">
+                                      {theirsScore > oursScore
+                                        ? `יש לכם יתרון — נמצאו ${theirsWeaknesses.length} סתירות פנימיות בטענות הצד השני. מומלץ להתמקד בנקודות אלו בחקירה הנגדית.`
+                                        : oursScore > theirsScore
+                                        ? `שימו לב — נמצאו ${oursWeaknesses.length} סתירות פנימיות בטענות שלכם. מומלץ להכין הסברים ופתרונות לנקודות אלו לפני הדיון.`
+                                        : `מצב מאוזן — סתירות נמצאו בשני הצדדים. מומלץ לתת עדיפות לתיקון הנקודות הפגיעות שלכם תוך תכנון תקיפה על נקודות התורפה של הצד השני.`
+                                      }
+                                    </p>
+                                  </div>
+                                </Card>
+                              </div>
+                            );
+                          })()}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -3638,6 +3975,25 @@ const ContradictionCard: React.FC<{
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
+  const getCategoryLabel = (cat?: string) => {
+    const labels: Record<string, string> = {
+      'HARD_CONTRADICTION': 'סתירה קשיחה',
+      'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+      'LOGICAL_INCONSISTENCY': 'חוסר עקביות לוגי',
+      'RHETORICAL_SHIFT': 'שינוי רטורי',
+    };
+    return cat ? labels[cat] || cat : null;
+  };
+  const getCategoryColor = (cat?: string) => {
+    switch (cat) {
+      case 'HARD_CONTRADICTION': return 'danger';
+      case 'NARRATIVE_AMBIGUITY': return 'warning';
+      case 'LOGICAL_INCONSISTENCY': return 'accent';
+      case 'RHETORICAL_SHIFT': return 'neutral';
+      default: return 'neutral';
+    }
+  };
+
   const claimAText =
     contradiction.claim_a?.text || contradiction.claim1_text || contradiction.quote1 || 'לא זמין';
   const claimBText =
@@ -3669,13 +4025,21 @@ const ContradictionCard: React.FC<{
               <AlertTriangle className="w-5 h-5 text-warning-500" />
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {usageBadge}
               {feedbackTag}
               <Badge variant={getSeverityColor(severity) as any}>
                 {getSeverityLabel(severity)}
               </Badge>
               <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
+              {getCategoryLabel(contradiction.category) && (
+                <Badge variant={getCategoryColor(contradiction.category) as any}>
+                  {getCategoryLabel(contradiction.category)}
+                </Badge>
+              )}
+              {contradiction.verified && (
+                <Badge variant="success">מאומת</Badge>
+              )}
             </div>
           </div>
 
@@ -3809,19 +4173,110 @@ const ContradictionCard: React.FC<{
           )}
 
           {insight && (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
-              <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-                <Badge variant="neutral">השפעה: {renderScore(insight.impact_score)}</Badge>
-                <Badge variant="neutral">סיכון: {renderScore(insight.risk_score)}</Badge>
-                <Badge variant="neutral">אימות: {renderScore(insight.verifiability_score)}</Badge>
-                {insight.stage_recommendation && (
-                  <Badge variant="warning">שלב: {insight.stage_recommendation}</Badge>
-                )}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+              {/* Score Meters */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500 font-medium">השפעה</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
+                      <div className="h-full bg-gradient-to-r from-red-400 to-red-600 rounded-full transition-all" style={{ width: `${(insight.impact_score || 0) * 100}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.impact_score)}</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500 font-medium">סיכון</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
+                      <div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 rounded-full transition-all" style={{ width: `${(insight.risk_score || 0) * 100}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.risk_score)}</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500 font-medium">אימות</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
+                      <div className="h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full transition-all" style={{ width: `${(insight.verifiability_score || 0) * 100}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.verifiability_score)}</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500 font-medium">ציון כולל</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
+                      <div className="h-full bg-gradient-to-r from-primary-400 to-primary-600 rounded-full transition-all" style={{ width: `${(insight.composite_score || 0) * 100}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.composite_score)}</span>
+                  </div>
+                </div>
               </div>
+
+              {/* Stage Recommendation */}
+              {insight.stage_recommendation && (
+                <div className="flex items-center gap-2">
+                  <Badge variant="warning">
+                    {insight.stage_recommendation === 'early' ? 'שלב מוקדם' : insight.stage_recommendation === 'mid' ? 'שלב אמצעי' : insight.stage_recommendation === 'late' ? 'שלב מתקדם' : `שלב: ${insight.stage_recommendation}`}
+                  </Badge>
+                  <span className="text-xs text-slate-500">מתי לשאול בחקירה</span>
+                </div>
+              )}
+
+              {/* Do Not Ask Warning */}
               {insight.do_not_ask_flag && (
-                <div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-2">
-                  <strong>אל תשאל/י זאת:</strong>{' '}
-                  {insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}
+                <div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-3 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong>אל תשאל/י זאת:</strong>{' '}
+                    {insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}
+                  </div>
+                </div>
+              )}
+
+              {/* Prerequisites */}
+              {insight.prerequisites && insight.prerequisites.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-500 font-medium">דרישות קדם — מה לבסס לפני השאלה:</div>
+                  <ul className="space-y-1">
+                    {insight.prerequisites.map((pre, i) => (
+                      <li key={i} className="text-sm text-slate-700 flex items-start gap-2">
+                        <span className="text-primary-400 font-bold">{i + 1}.</span>
+                        {pre}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Expected Evasions */}
+              {insight.expected_evasions && insight.expected_evasions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs text-orange-600 font-medium">התחמקויות צפויות של העד:</div>
+                  <div className="bg-orange-50 border border-orange-100 rounded-lg p-3 space-y-2">
+                    {insight.expected_evasions.map((evasion, i) => (
+                      <div key={i} className="text-sm text-orange-800 flex items-start gap-2">
+                        <span className="text-orange-400">⚠</span>
+                        {evasion}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Best Counter Questions */}
+              {insight.best_counter_questions && insight.best_counter_questions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs text-green-600 font-medium">שאלות נגד מומלצות:</div>
+                  <div className="bg-green-50 border border-green-100 rounded-lg p-3 space-y-2">
+                    {insight.best_counter_questions.map((question, i) => (
+                      <div key={i} className="text-sm text-green-800 flex items-start gap-2">
+                        <span className="text-green-500 font-bold">{i + 1}.</span>
+                        &ldquo;{question}&rdquo;
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -3834,17 +4289,33 @@ const ContradictionCard: React.FC<{
           </div>
 
           {/* Confidence */}
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <span>רמת ביטחון:</span>
-            <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
-              <div
-                className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
-                style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
-              />
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <span>ביטחון ניתוח:</span>
+              <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                <div
+                  className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
+                  style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
+                />
+              </div>
+              <span className="font-medium">
+                {Math.round((contradiction.confidence || 0) * 100)}%
+              </span>
             </div>
-            <span className="font-medium">
-              {Math.round((contradiction.confidence || 0) * 100)}%
-            </span>
+            {contradiction.verifier_confidence != null && (
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <span>ביטחון מאמת:</span>
+                <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                  <div
+                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full"
+                    style={{ width: `${(contradiction.verifier_confidence || 0) * 100}%` }}
+                  />
+                </div>
+                <span className="font-medium text-green-700">
+                  {Math.round((contradiction.verifier_confidence || 0) * 100)}%
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </Card>
