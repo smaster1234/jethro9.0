@@ -31,6 +31,7 @@ from .extractor import (
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
     SPEAKER_MODE_LAW_CITATION,
+    SPEAKER_MODE_OPINION,
     MODALITY_CERTAIN,
     MODALITY_POSSIBLE,
     MODALITY_OBLIGATION,
@@ -375,6 +376,12 @@ def _detect_speaker(text: str) -> Tuple[Optional[str], Optional[str]]:
     for pat in _FINDING_PATTERNS:
         if pat.search(text):
             return "court", SPEAKER_MODE_FINDING
+
+    # Check opinion/speculation patterns (Cursor 5.2 §3: speaker_mode = OPINION)
+    # "may argue", "appears", "allegedly", "it seems" — speculation, not assertion
+    for pat in _OPINION_PATTERNS:
+        if pat.search(text):
+            return None, SPEAKER_MODE_OPINION
 
     # Default: could not determine
     return None, None

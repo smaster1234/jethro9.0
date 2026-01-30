@@ -1,8 +1,8 @@
 """
-Unit Tests — Contradiction Analysis V2
-=======================================
+Unit Tests — Contradiction Analysis V2 + Cursor 5.2 Spec
+=========================================================
 
-Covers the edge-cases required by §7.1:
+Covers the edge-cases required by §7.1 and Cursor 5.2 spec:
   1. Time shift NOT flagged as TRUE_CONTRADICTION
   2. Party disagreement flagged as DISAGREEMENT_BETWEEN_PARTIES
   3. Plane mismatch flagged correctly
@@ -11,7 +11,10 @@ Covers the edge-cases required by §7.1:
   6. Scope / condition ("if X then…" vs "when not-X…") detected
   7. Claim enrichment populates v2 fields
   8. Candidate hard-filter rejects incompatible planes
-  9. Reconciler returns correct 7-category outcome
+  9. Reconciler returns correct 9-category outcome (Cursor 5.2)
+  10. ROLE_OR_ATTRIBUTION_MISMATCH for quotes/citations/party-vs-finding
+  11. INSUFFICIENT_CONTEXT for missing claim fields
+  12. OPINION speaker_mode detection
 """
 
 import pytest
@@ -25,6 +28,7 @@ from backend_lite.extractor import (
     SPEAKER_MODE_FINDING,
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
+    SPEAKER_MODE_OPINION,
 )
 from backend_lite.claim_enricher import (
     enrich_claims,
@@ -42,9 +46,11 @@ from backend_lite.reconciler import (
     OUTCOME_TRUE_CONTRADICTION,
     OUTCOME_APPARENT_TENSION,
     OUTCOME_DISAGREEMENT,
+    OUTCOME_ROLE_MISMATCH,
     OUTCOME_PLANE_MISMATCH,
     OUTCOME_TIME_SHIFT,
     OUTCOME_AMBIGUITY,
+    OUTCOME_INSUFFICIENT_CONTEXT,
     OUTCOME_DUPLICATE,
 )
 from backend_lite.candidate_filter import (
@@ -282,8 +288,8 @@ class TestReconcilerOutcomes:
         assert r.outcome == OUTCOME_TRUE_CONTRADICTION
 
     def test_low_confidence_yields_ambiguity(self):
-        a = _claim("אולי הנתבע שילם", plane=PLANE_FACT)
-        b = _claim("אולי הנתבע לא שילם", plane=PLANE_FACT)
+        a = _claim("אולי הנתבע שילם", plane=PLANE_FACT, speaker_mode=SPEAKER_MODE_FINDING)
+        b = _claim("אולי הנתבע לא שילם", plane=PLANE_FACT, speaker_mode=SPEAKER_MODE_FINDING)
         r = reconcile_pair(a, b, detector_confidence=0.3)
         assert r.outcome == OUTCOME_AMBIGUITY
 
@@ -332,8 +338,8 @@ class TestIntegration:
 class TestDeltaFixAttributionOverride:
     """§9: Text containing attribution patterns → never TRUE_CONTRADICTION."""
 
-    def test_letenaat_yields_disagreement(self):
-        """'לטענת' in claim text → DISAGREEMENT."""
+    def test_letenaat_yields_role_mismatch(self):
+        """'לטענת' in claim text → ROLE_OR_ATTRIBUTION_MISMATCH (Cursor 5.2)."""
         a = _claim(
             "לטענת התובע הנתבע לא שילם את הסכום",
             plane=PLANE_FACT, negation=True, entities=["הנתבע", "התובע"],
@@ -345,8 +351,8 @@ class TestDeltaFixAttributionOverride:
             speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        # party_claim vs finding → DISAGREEMENT at speaker layer
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        # party_claim vs finding → ROLE_OR_ATTRIBUTION_MISMATCH at speaker layer
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
 
     def test_asuyim_litoan_yields_disagreement(self):
         """'עשויים לטעון' in claim text → never TRUE_CONTRADICTION."""
@@ -433,7 +439,7 @@ class TestDeltaFixLawCitation:
         assert mode == SPEAKER_MODE_LAW_CITATION
 
     def test_law_citation_blocks_true_contradiction(self):
-        """Law citation vs factual claim → DISAGREEMENT, never TRUE_CONTRADICTION."""
+        """Law citation vs factual claim → ROLE_OR_ATTRIBUTION_MISMATCH, never TRUE_CONTRADICTION."""
         from backend_lite.extractor import SPEAKER_MODE_LAW_CITATION
         a = _claim(
             'בע"א 1234/05 נקבע כי התשלום אינו חובה',
@@ -446,7 +452,7 @@ class TestDeltaFixLawCitation:
             speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
         assert r.outcome != OUTCOME_TRUE_CONTRADICTION
 
 
@@ -512,7 +518,7 @@ class TestDeltaFixPartyClaimVsNonPartyClaim:
     """§2: party_claim vs non-party_claim → DISAGREEMENT."""
 
     def test_party_claim_vs_finding(self):
-        """party_claim vs finding → DISAGREEMENT."""
+        """party_claim vs finding → ROLE_OR_ATTRIBUTION_MISMATCH (Cursor 5.2 §5)."""
         a = _claim(
             "התובע טען שהנתבע הפר את ההסכם",
             plane=PLANE_FACT, negation=False, entities=["הנתבע"],
@@ -524,10 +530,10 @@ class TestDeltaFixPartyClaimVsNonPartyClaim:
             speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
 
     def test_party_claim_vs_quote(self):
-        """party_claim vs quote → DISAGREEMENT (quote blocked)."""
+        """party_claim vs quote → ROLE_OR_ATTRIBUTION_MISMATCH (quote blocked, Cursor 5.2)."""
         a = _claim(
             "לטענת המבקש החוב סולק",
             plane=PLANE_FACT, negation=False, entities=["החוב"],
@@ -539,7 +545,7 @@ class TestDeltaFixPartyClaimVsNonPartyClaim:
             speaker_mode=SPEAKER_MODE_QUOTE,
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
 
     def test_two_party_claims_same_side_not_disagreement(self):
         """Two party_claims from same party → NOT DISAGREEMENT (can be TRUE_CONTRADICTION)."""
@@ -568,11 +574,13 @@ class TestDeltaFixEntityOverlapRequired:
         a = _claim(
             "התובע שילם את מלוא הסכום",
             plane=PLANE_FACT, negation=False, entities=["התובע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="הקדמה.", context_after="סיום.",
         )
         b = _claim(
             "הנתבע לא שילם דבר",
             plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="הקדמה.", context_after="סיום.",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
@@ -599,11 +607,13 @@ class TestDeltaFixEntityOverlapRequired:
         a = _claim(
             "שולם הסכום במלואו",
             plane=PLANE_FACT, negation=False, entities=[],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="הקדמה.", context_after="סיום.",
         )
         b = _claim(
             "לא שולם דבר",
             plane=PLANE_FACT, negation=True, entities=[],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="הקדמה.", context_after="סיום.",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
@@ -618,25 +628,31 @@ class TestDeltaFixConfidenceThreshold:
         a = _claim(
             "הנתבע שילם",
             plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
         )
         b = _claim(
             "הנתבע לא שילם",
             plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
         )
         r = reconcile_pair(a, b, detector_confidence=0.6)
         # Below threshold, BUT hard negation + entity overlap + factual plane → override
         # This specific case has all 3 conditions, so it may pass
         # Test with weaker claims instead:
-        a2 = _claim("הסכום שולם", plane=PLANE_FACT, negation=False, entities=[])
-        b2 = _claim("הסכום לא שולם", plane=PLANE_FACT, negation=True, entities=[])
+        a2 = _claim("הסכום שולם", plane=PLANE_FACT, negation=False, entities=[],
+                     speaker_mode=SPEAKER_MODE_FINDING)
+        b2 = _claim("הסכום לא שולם", plane=PLANE_FACT, negation=True, entities=[],
+                     speaker_mode=SPEAKER_MODE_FINDING)
         r2 = reconcile_pair(a2, b2, detector_confidence=0.6)
         assert r2.outcome == OUTCOME_AMBIGUITY
 
     def test_very_low_confidence(self):
         """Confidence 0.3 without hard evidence → AMBIGUITY."""
         # No entity overlap → hits entity gate before threshold can be overridden
-        a = _claim("הסכום שולם", plane=PLANE_FACT, entities=[], negation=False)
-        b = _claim("הסכום לא שולם", plane=PLANE_FACT, entities=[], negation=True)
+        a = _claim("הסכום שולם", plane=PLANE_FACT, entities=[], negation=False,
+                    speaker_mode=SPEAKER_MODE_FINDING)
+        b = _claim("הסכום לא שולם", plane=PLANE_FACT, entities=[], negation=True,
+                    speaker_mode=SPEAKER_MODE_FINDING)
         r = reconcile_pair(a, b, detector_confidence=0.3)
         assert r.outcome == OUTCOME_AMBIGUITY
 
@@ -762,23 +778,23 @@ class TestDeltaFixNoHardNegation:
         assert r.outcome != OUTCOME_TRUE_CONTRADICTION
 
     def test_no_negation_factual_plane_with_entities(self):
-        """No negation opposition + factual plane + entities → AMBIGUITY (no hard conflict)."""
+        """No negation opposition + factual plane + entities + complete claim → TRUE_CONTRADICTION."""
         a = _claim(
             "הנתבע שילם 100,000 ₪",
             plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
             context_before="פסק.", context_after="המשך.",
         )
         b = _claim(
             "הנתבע שילם 50,000 ₪",
             plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
             context_before="פסק.", context_after="המשך.",
         )
         r = reconcile_pair(a, b, detector_confidence=0.9)
-        # Same negation (both False) → no hard negation → but factual plane → needs negation conflict check
-        # has_hard_negation=False but factual_plane=True → passes the "not has_hard_negation and not factual_plane" check
-        # Should reach TRUE_CONTRADICTION (the amounts differ but negation is same)
-        # Actually, this should pass through since the check is "not has_hard_negation AND not factual_plane"
-        # Here: not False AND not True → False AND False → False → passes
+        # Same negation (both False) → no hard negation → but factual plane
+        # Claims have speaker_mode + plane → completeness check passes
+        # has_hard_negation=False but factual_plane=True → "not False AND not True" → False → passes
         assert r.outcome == OUTCOME_TRUE_CONTRADICTION
 
 
@@ -883,10 +899,10 @@ class TestDeltaFixEnricherNewPatterns:
 
 
 class TestDeltaFixQuoteBlocking:
-    """Quotes → DISAGREEMENT, never TRUE_CONTRADICTION."""
+    """Quotes → ROLE_OR_ATTRIBUTION_MISMATCH, never TRUE_CONTRADICTION (Cursor 5.2)."""
 
-    def test_quote_vs_factual_yields_disagreement(self):
-        """Quote claim vs factual claim → DISAGREEMENT."""
+    def test_quote_vs_factual_yields_role_mismatch(self):
+        """Quote claim vs factual claim → ROLE_OR_ATTRIBUTION_MISMATCH."""
         a = _claim(
             'נאמר כי "הנתבע לא שילם"',
             plane=PLANE_FACT, negation=True, entities=["הנתבע"],
@@ -898,10 +914,10 @@ class TestDeltaFixQuoteBlocking:
             speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
 
-    def test_both_quotes_yield_disagreement(self):
-        """Two quotes → DISAGREEMENT."""
+    def test_both_quotes_yield_role_mismatch(self):
+        """Two quotes → ROLE_OR_ATTRIBUTION_MISMATCH."""
         a = _claim(
             '"שולם הכל"',
             plane=PLANE_FACT, negation=False, entities=["הנתבע"],
@@ -913,7 +929,7 @@ class TestDeltaFixQuoteBlocking:
             speaker_mode=SPEAKER_MODE_QUOTE,
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
-        assert r.outcome == OUTCOME_DISAGREEMENT
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
 
 
 class TestDeltaFixFullGateIntegration:
@@ -947,11 +963,13 @@ class TestDeltaFixFullGateIntegration:
         a = _claim(
             "יוסף שילם 100,000 ₪",
             plane=PLANE_FACT, negation=False, entities=["יוסף"],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="רקע.", context_after="סיכום.",
         )
         b = _claim(
             "דוד לא שילם דבר",
             plane=PLANE_FACT, negation=True, entities=["דוד"],
+            speaker_mode=SPEAKER_MODE_FINDING,
             context_before="עדות.", context_after="המשך.",
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
@@ -975,3 +993,263 @@ class TestDeltaFixFullGateIntegration:
         r = reconcile_pair(a, b, detector_confidence=0.8)
         # Time layer (L1) triggers first
         assert r.outcome == OUTCOME_TIME_SHIFT
+
+
+# ====================================================================
+# CURSOR 5.2 SPEC — NEW TESTS
+# ====================================================================
+# These tests verify the Cursor 5.2 spec additions:
+#   §3: OPINION speaker_mode detection
+#   §4: INSUFFICIENT_CONTEXT for incomplete claims
+#   §5: ROLE_OR_ATTRIBUTION_MISMATCH for attribution/role mismatches
+#   §7: 9-category outcome validation
+
+
+class TestCursor52OpinionSpeakerMode:
+    """Cursor 5.2 §3: OPINION as speaker_mode (not just plane)."""
+
+    def test_opinion_speaker_mode_detection(self):
+        """'נראה' / 'ייתכן' → OPINION speaker_mode."""
+        role, mode = _detect_speaker("נראה כי הנתבע הפר את ההסכם")
+        assert mode == SPEAKER_MODE_OPINION
+
+    def test_opinion_speaker_mode_yitachen(self):
+        """'ייתכן' → OPINION speaker_mode."""
+        role, mode = _detect_speaker("ייתכן שהחוזה בוטל")
+        assert mode == SPEAKER_MODE_OPINION
+
+    def test_opinion_speaker_mode_savir(self):
+        """'סביר להניח' → OPINION speaker_mode."""
+        role, mode = _detect_speaker("סביר להניח שהתשלום לא בוצע")
+        assert mode == SPEAKER_MODE_OPINION
+
+    def test_opinion_speaker_mode_blocks_true_contradiction(self):
+        """OPINION speaker_mode vs finding → ROLE_OR_ATTRIBUTION_MISMATCH."""
+        a = _claim(
+            "נראה כי הנתבע הפר",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_OPINION,
+        )
+        b = _claim(
+            "הנתבע עמד בהתחייבויותיו",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+
+    def test_opinion_enrichment(self):
+        """Enricher detects OPINION speaker_mode on text with speculation."""
+        c = _claim("נראה כי הנזק הוא משמעותי", char_start=0, char_end=25)
+        enrich_claims([c], "נראה כי הנזק הוא משמעותי")
+        assert c.speaker_mode == SPEAKER_MODE_OPINION
+
+    def test_opinion_vs_opinion_not_true_contradiction(self):
+        """Two OPINION claims → ROLE_OR_ATTRIBUTION_MISMATCH, not TRUE_CONTRADICTION."""
+        a = _claim(
+            "נראה שהנתבע שילם",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_OPINION,
+        )
+        b = _claim(
+            "נראה שהנתבע לא שילם",
+            plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_OPINION,
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+        assert r.outcome != OUTCOME_TRUE_CONTRADICTION
+
+
+class TestCursor52InsufficientContext:
+    """Cursor 5.2 §4: INSUFFICIENT_CONTEXT for incomplete claims."""
+
+    def test_missing_speaker_mode_yields_insufficient(self):
+        """Claim with no speaker_mode → INSUFFICIENT_CONTEXT (unless hard override)."""
+        a = _claim(
+            "הנתבע ביצע עבודה",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+        )
+        b = _claim(
+            "הנתבע לא ביצע עבודה",
+            plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+        )
+        # Both claims missing speaker_mode → incomplete
+        # BUT has_hard_negation + entity_overlap + factual_plane → override
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        # Hard evidence overrides completeness check
+        assert r.outcome == OUTCOME_TRUE_CONTRADICTION
+
+    def test_missing_speaker_mode_without_hard_evidence(self):
+        """Missing speaker_mode + no hard evidence → INSUFFICIENT_CONTEXT."""
+        a = _claim(
+            "הנתבע ביצע את העבודה",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+        )
+        b = _claim(
+            "הנתבע ביצע עבודה חלקית",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+        )
+        # Missing speaker_mode + no hard negation → INSUFFICIENT_CONTEXT
+        r = reconcile_pair(a, b, detector_confidence=0.85)
+        assert r.outcome == OUTCOME_INSUFFICIENT_CONTEXT
+
+    def test_missing_plane_yields_insufficient(self):
+        """Claim with no plane → INSUFFICIENT_CONTEXT (unless hard override)."""
+        a = _claim(
+            "הנתבע ביצע עבודה",
+            speaker_mode=SPEAKER_MODE_FINDING, negation=False, entities=["הנתבע"],
+        )
+        b = _claim(
+            "הנתבע ביצע עבודה אחרת",
+            speaker_mode=SPEAKER_MODE_FINDING, negation=False, entities=["הנתבע"],
+        )
+        # Missing plane + no hard negation → INSUFFICIENT_CONTEXT
+        r = reconcile_pair(a, b, detector_confidence=0.85)
+        assert r.outcome == OUTCOME_INSUFFICIENT_CONTEXT
+
+    def test_complete_claim_no_insufficient_context(self):
+        """Claims with all fields → no INSUFFICIENT_CONTEXT."""
+        a = _claim(
+            "הנתבע שילם",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            context_before="הקדמה.",
+        )
+        b = _claim(
+            "הנתבע לא שילם",
+            plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            context_before="הקדמה.",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome != OUTCOME_INSUFFICIENT_CONTEXT
+        assert r.outcome == OUTCOME_TRUE_CONTRADICTION
+
+    def test_no_context_no_hard_evidence_insufficient(self):
+        """No context + no hard evidence → INSUFFICIENT_CONTEXT."""
+        a = _claim(
+            "הנתבע ביצע עבודה",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
+        )
+        b = _claim(
+            "הנתבע ביצע עבודה אחרת",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING,
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.85)
+        # No context + no hard negation → INSUFFICIENT_CONTEXT
+        assert r.outcome == OUTCOME_INSUFFICIENT_CONTEXT
+
+
+class TestCursor52RoleOrAttributionMismatch:
+    """Cursor 5.2 §5: ROLE_OR_ATTRIBUTION_MISMATCH for role/attribution mismatches."""
+
+    def test_party_claim_vs_court_finding(self):
+        """party_claim vs court finding → ROLE_OR_ATTRIBUTION_MISMATCH."""
+        a = _claim(
+            "לטענת התובע הנתבע חייב",
+            plane=PLANE_FACT, entities=["הנתבע", "התובע"],
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="plaintiff",
+        )
+        b = _claim(
+            "בית המשפט קובע כי הנתבע אינו חייב",
+            plane=PLANE_FACT, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+
+    def test_cross_party_remains_disagreement(self):
+        """Two party-claims from different sides → DISAGREEMENT (not role mismatch)."""
+        a = _claim(
+            "התובע טען שהחוזה בוטל",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="plaintiff", plane=PLANE_FACT,
+        )
+        b = _claim(
+            "הנתבע טען שהחוזה תקף",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="defendant", plane=PLANE_FACT,
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.9)
+        assert r.outcome == OUTCOME_DISAGREEMENT
+
+    def test_law_citation_vs_finding_role_mismatch(self):
+        """Law citation vs finding → ROLE_OR_ATTRIBUTION_MISMATCH."""
+        from backend_lite.extractor import SPEAKER_MODE_LAW_CITATION
+        a = _claim(
+            'בע"א 1234/05 נקבע כי אין חובה',
+            plane=PLANE_FACT, entities=["חובה"],
+            speaker_mode=SPEAKER_MODE_LAW_CITATION,
+        )
+        b = _claim(
+            "קיימת חובה ברורה",
+            plane=PLANE_FACT, entities=["חובה"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+
+    def test_opinion_vs_finding_role_mismatch(self):
+        """OPINION speaker_mode vs finding → ROLE_OR_ATTRIBUTION_MISMATCH."""
+        a = _claim(
+            "נראה שהנתבע חייב",
+            plane=PLANE_FACT, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_OPINION,
+        )
+        b = _claim(
+            "הנתבע אינו חייב",
+            plane=PLANE_FACT, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+
+
+class TestCursor52NineCategoryOutcomes:
+    """Verify all 9 outcome categories can be produced."""
+
+    def test_all_nine_outcomes_defined(self):
+        """Verify 9 outcome constants exist."""
+        from backend_lite.reconciler import ALL_OUTCOMES
+        assert len(ALL_OUTCOMES) == 9
+        assert OUTCOME_TRUE_CONTRADICTION in ALL_OUTCOMES
+        assert OUTCOME_APPARENT_TENSION in ALL_OUTCOMES
+        assert OUTCOME_DISAGREEMENT in ALL_OUTCOMES
+        assert OUTCOME_ROLE_MISMATCH in ALL_OUTCOMES
+        assert OUTCOME_PLANE_MISMATCH in ALL_OUTCOMES
+        assert OUTCOME_TIME_SHIFT in ALL_OUTCOMES
+        assert OUTCOME_AMBIGUITY in ALL_OUTCOMES
+        assert OUTCOME_INSUFFICIENT_CONTEXT in ALL_OUTCOMES
+        assert OUTCOME_DUPLICATE in ALL_OUTCOMES
+
+    def test_duplicate_outcome(self):
+        """Nearly identical claims → DUPLICATE_OR_RESTATEMENT."""
+        a = _claim("הנתבע שילם את הסכום", plane=PLANE_FACT)
+        b = _claim("הנתבע שילם את הסכום", plane=PLANE_FACT)
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_DUPLICATE
+
+    def test_plane_mismatch_outcome(self):
+        """FACT vs LAW → PLANE_MISMATCH."""
+        a = _claim("הנתבע שילם", plane=PLANE_FACT)
+        b = _claim("סעיף 10 קובע חובת תשלום", plane=PLANE_LAW)
+        r = reconcile_pair(a, b, detector_confidence=0.9)
+        assert r.outcome == OUTCOME_PLANE_MISMATCH
+
+    def test_true_contradiction_nine_categories(self):
+        """Full conditions → TRUE_CONTRADICTION (one of 9)."""
+        a = _claim(
+            "הנתבע שילם",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            context_before="הקדמה.",
+        )
+        b = _claim(
+            "הנתבע לא שילם",
+            plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            context_before="הקדמה.",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_TRUE_CONTRADICTION

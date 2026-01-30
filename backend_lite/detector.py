@@ -1176,11 +1176,11 @@ class RuleBasedDetector:
         for text in texts_to_check:
             for pat in self._ATTRIBUTION_TEXT_PATTERNS:
                 if pat.search(text):
-                    # Determine specific override based on pattern
+                    # Cursor 5.2 §5: Attribution patterns → ROLE_OR_ATTRIBUTION_MISMATCH
                     if 'ייחוס' in text:
-                        return "DISAGREEMENT_BETWEEN_PARTIES"
+                        return "ROLE_OR_ATTRIBUTION_MISMATCH"
                     if any(p.search(text) for p in self._ATTRIBUTION_TEXT_PATTERNS[:9]):
-                        return "DISAGREEMENT_BETWEEN_PARTIES"
+                        return "ROLE_OR_ATTRIBUTION_MISMATCH"
                     return "AMBIGUITY_OR_VAGUENESS"
         return None
 

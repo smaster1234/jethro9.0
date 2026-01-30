@@ -1,12 +1,12 @@
 """
-Reconciler — "Can be reconciled?" 6-layer test and 7-category outcome
+Reconciler — "Can be reconciled?" 6-layer test and 9-category outcome
 ======================================================================
 
 For each candidate pair (A, B) the reconciler attempts to reconcile them
 through 6 ordered layers.  If any layer succeeds, the pair is NOT a
 TRUE_CONTRADICTION.
 
-Layers (§5.2 of spec):
+Layers (§6 of Cursor 5.2 spec):
     1. Time / period alignment
     2. Scope / condition alignment
     3. Quantifier mismatch ("all" vs "part")
@@ -14,13 +14,15 @@ Layers (§5.2 of spec):
     5. Speaker / role mismatch (finding vs party-claim)
     6. Plane mismatch (FACT vs LAW)
 
-Outcome categories (§5.1):
+Outcome categories (§7 of Cursor 5.2 spec):
     TRUE_CONTRADICTION
     APPARENT_TENSION_RESOLVABLE
     DISAGREEMENT_BETWEEN_PARTIES
+    ROLE_OR_ATTRIBUTION_MISMATCH
     PLANE_MISMATCH
     TIME_OR_STAGE_SHIFT
     AMBIGUITY_OR_VAGUENESS
+    INSUFFICIENT_CONTEXT
     DUPLICATE_OR_RESTATEMENT
 """
 
@@ -38,29 +40,34 @@ from .extractor import (
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
     SPEAKER_MODE_LAW_CITATION,
+    SPEAKER_MODE_OPINION,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Outcome constants — matching §5.1
+# Outcome constants — matching §7 of Cursor 5.2 spec
 # ---------------------------------------------------------------------------
 OUTCOME_TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
 OUTCOME_APPARENT_TENSION = "APPARENT_TENSION_RESOLVABLE"
 OUTCOME_DISAGREEMENT = "DISAGREEMENT_BETWEEN_PARTIES"
+OUTCOME_ROLE_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
 OUTCOME_PLANE_MISMATCH = "PLANE_MISMATCH"
 OUTCOME_TIME_SHIFT = "TIME_OR_STAGE_SHIFT"
 OUTCOME_AMBIGUITY = "AMBIGUITY_OR_VAGUENESS"
+OUTCOME_INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
 OUTCOME_DUPLICATE = "DUPLICATE_OR_RESTATEMENT"
 
 ALL_OUTCOMES = [
     OUTCOME_TRUE_CONTRADICTION,
     OUTCOME_APPARENT_TENSION,
     OUTCOME_DISAGREEMENT,
+    OUTCOME_ROLE_MISMATCH,
     OUTCOME_PLANE_MISMATCH,
     OUTCOME_TIME_SHIFT,
     OUTCOME_AMBIGUITY,
+    OUTCOME_INSUFFICIENT_CONTEXT,
     OUTCOME_DUPLICATE,
 ]
 
@@ -97,18 +104,28 @@ def reconcile_pair(
 ) -> ReconciliationResult:
     """
     Attempt to reconcile claim pair.  Returns a ReconciliationResult with
-    the final 7-category outcome.
+    the final 9-category outcome (Cursor 5.2 spec §7).
 
     The function tries to *resolve* the tension.  If it fails through all
     6 layers, the outcome is TRUE_CONTRADICTION (if confidence is above
     threshold) or AMBIGUITY_OR_VAGUENESS.
+
+    Pre-gates (§3, §4):
+    - Claim completeness check → INSUFFICIENT_CONTEXT if missing fields
+    - Duplicate / restatement check → DUPLICATE_OR_RESTATEMENT
     """
     metadata = metadata or {}
     debug: Dict[str, Any] = {}
 
-    # --- Pre-checks ---
+    # --- Pre-gate 0: Claim completeness (§3/§4) ---
+    # If critical enrichment fields are missing, we cannot confirm TRUE_CONTRADICTION.
+    # "No claim may be interpreted without context."
+    incomplete_a = _check_claim_completeness(claim_a)
+    incomplete_b = _check_claim_completeness(claim_b)
+    debug["claim_a_complete"] = not incomplete_a
+    debug["claim_b_complete"] = not incomplete_b
 
-    # 0. Duplicate / restatement check
+    # --- Pre-gate 1: Duplicate / restatement check ---
     if _is_duplicate(claim_a, claim_b):
         return ReconciliationResult(
             outcome=OUTCOME_DUPLICATE,
@@ -192,17 +209,19 @@ def reconcile_pair(
         )
 
     # --- Layer 5: Speaker / role (finding vs party-claim) ---
-    speaker_ok, speaker_note = _check_speaker_mode(claim_a, claim_b)
+    speaker_ok, speaker_note, speaker_outcome = _check_speaker_mode(claim_a, claim_b)
     debug["speaker_match"] = speaker_ok
     if not speaker_ok:
         deciding.append("speaker_mode")
         return ReconciliationResult(
-            outcome=OUTCOME_DISAGREEMENT,
+            outcome=speaker_outcome,
             contradiction_score=0.3,
             severity="low",
             severity_score=0.25,
             reconciliation_attempt=speaker_note,
-            rationale="מדובר בגרסאות של צדדים שונים — מחלוקת, לא סתירה פנימית",
+            rationale="מדובר בגרסאות של צדדים שונים — מחלוקת, לא סתירה פנימית"
+                      if speaker_outcome == OUTCOME_DISAGREEMENT
+                      else "ייחוס/תפקיד שונה — אי-התאמה בייחוס, לא סתירה עובדתית",
             conflict_predicate="speaker_mode",
             deciding_fields=deciding,
             debug=debug,
@@ -254,6 +273,24 @@ def reconcile_pair(
             rationale="טענות במישור הערכה או פרוצדורלי אינן סותרות עובדתית",
             conflict_predicate="plane_opinion_or_procedural",
             deciding_fields=["plane"],
+            debug=debug,
+        )
+
+    # §3/§4: Claim completeness — if either claim is missing critical fields
+    # and no hard evidence overrides, return INSUFFICIENT_CONTEXT
+    # Check early so that missing plane/speaker_mode gets caught before
+    # downstream gates that depend on these fields.
+    if (incomplete_a or incomplete_b) and not (has_hard_negation and has_entity_overlap and factual_plane):
+        missing = incomplete_a or incomplete_b
+        return ReconciliationResult(
+            outcome=OUTCOME_INSUFFICIENT_CONTEXT,
+            contradiction_score=min(detector_confidence, 0.4),
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt=f"שדות חסרים בטענה: {', '.join(missing)}",
+            rationale="לא ניתן לקבוע סתירה אמיתית ללא כל השדות הנדרשים (§3)",
+            conflict_predicate="incomplete_claim",
+            deciding_fields=missing,
             debug=debug,
         )
 
@@ -310,7 +347,7 @@ def reconcile_pair(
         # No context available → cannot confirm TRUE_CONTRADICTION (§4 rule)
         if not (has_hard_negation and has_entity_overlap):
             return ReconciliationResult(
-                outcome=OUTCOME_AMBIGUITY,
+                outcome=OUTCOME_INSUFFICIENT_CONTEXT,
                 contradiction_score=min(detector_confidence, 0.5),
                 severity="low",
                 severity_score=0.3,
@@ -340,6 +377,23 @@ def reconcile_pair(
 # ---------------------------------------------------------------------------
 # Layer implementations
 # ---------------------------------------------------------------------------
+
+def _check_claim_completeness(claim: Claim) -> Optional[List[str]]:
+    """
+    Cursor 5.2 §3: Check if a claim has all mandatory fields populated.
+
+    Returns None if complete, or a list of missing field names if incomplete.
+    Fields required for TRUE_CONTRADICTION eligibility:
+    - speaker_mode
+    - plane
+    """
+    missing: List[str] = []
+    if not claim.speaker_mode:
+        missing.append("speaker_mode")
+    if not claim.plane:
+        missing.append("plane")
+    return missing if missing else None
+
 
 def _is_duplicate(a: Claim, b: Claim) -> bool:
     na = a.normalized_claim or a.text.lower()
@@ -403,43 +457,49 @@ def _check_modality(a: Claim, b: Claim):
 
 def _check_speaker_mode(a: Claim, b: Claim):
     """
-    Delta-fix §2/§5/§9: Block TRUE_CONTRADICTION when claims come from
+    Cursor 5.2 §5/§6: Block TRUE_CONTRADICTION when claims come from
     different speaker modes.
 
-    Rules:
-    - Two party-claims from different sides → DISAGREEMENT
-    - One party-claim + one non-party-claim (different speaker) → DISAGREEMENT
-    - One is a quote → not a real assertion, block
-    - One is a law_citation → citing precedent, not the author's own claim
+    Returns 3-tuple: (ok, note, outcome_category).
+    - ok=True  → pass through (modes are compatible)
+    - ok=False → block, use the returned outcome category
+
+    Outcome routing:
+    - Quote/law_citation/opinion → ROLE_OR_ATTRIBUTION_MISMATCH
+    - Cross-party claims → DISAGREEMENT_BETWEEN_PARTIES
+    - party_claim vs non-party_claim → ROLE_OR_ATTRIBUTION_MISMATCH
     """
     sa = a.speaker_mode
     sb = b.speaker_mode
     ra = a.speaker_role
     rb = b.speaker_role
 
-    # One is a quote → don't treat as contradiction
+    # §2.5: OPINION speaker mode — speculation, not assertive → ROLE_OR_ATTRIBUTION_MISMATCH
+    if sa == SPEAKER_MODE_OPINION or sb == SPEAKER_MODE_OPINION:
+        return False, "אחת הטענות היא הערכה/ספקולציה — לא קביעה עובדתית", OUTCOME_ROLE_MISMATCH
+
+    # One is a quote → not a real assertion → ROLE_OR_ATTRIBUTION_MISMATCH
     if sa == SPEAKER_MODE_QUOTE or sb == SPEAKER_MODE_QUOTE:
-        return False, "אחת הטענות היא ציטוט — לא קביעה של הדובר"
+        return False, "אחת הטענות היא ציטוט — לא קביעה של הדובר", OUTCOME_ROLE_MISMATCH
 
-    # One is a law citation → citing precedent, not a factual assertion
+    # One is a law citation → citing precedent → ROLE_OR_ATTRIBUTION_MISMATCH
     if sa == SPEAKER_MODE_LAW_CITATION or sb == SPEAKER_MODE_LAW_CITATION:
-        return False, "אחת הטענות היא ציטוט פסיקה/חקיקה — לא עובדה של הדובר"
+        return False, "אחת הטענות היא ציטוט פסיקה/חקיקה — לא עובדה של הדובר", OUTCOME_ROLE_MISMATCH
 
-    # Both are party claims from different parties
+    # Both are party claims from different parties → DISAGREEMENT
     if sa == SPEAKER_MODE_PARTY_CLAIM and sb == SPEAKER_MODE_PARTY_CLAIM:
         if ra and rb and ra != rb:
-            return False, f"מחלוקת בין צדדים: {ra} לעומת {rb}"
+            return False, f"מחלוקת בין צדדים: {ra} לעומת {rb}", OUTCOME_DISAGREEMENT
 
-    # Delta-fix §2: One is a party-claim and the other is NOT party_claim
-    # from the same speaker → this is a disagreement, never TRUE_CONTRADICTION
+    # party_claim vs non-party_claim → ROLE_OR_ATTRIBUTION_MISMATCH
     if sa == SPEAKER_MODE_PARTY_CLAIM and sb != SPEAKER_MODE_PARTY_CLAIM:
         if sb is not None:
-            return False, f"טענת צד ({ra or 'צד'}) מול {sb} — מחלוקת בייחוס, לא סתירה פנימית"
+            return False, f"טענת צד ({ra or 'צד'}) מול {sb} — אי-התאמה בייחוס", OUTCOME_ROLE_MISMATCH
     if sb == SPEAKER_MODE_PARTY_CLAIM and sa != SPEAKER_MODE_PARTY_CLAIM:
         if sa is not None:
-            return False, f"טענת צד ({rb or 'צד'}) מול {sa} — מחלוקת בייחוס, לא סתירה פנימית"
+            return False, f"טענת צד ({rb or 'צד'}) מול {sa} — אי-התאמה בייחוס", OUTCOME_ROLE_MISMATCH
 
-    return True, ""
+    return True, "", OUTCOME_DISAGREEMENT  # default (unused when ok=True)
 
 
 def _check_plane(a: Claim, b: Claim):
