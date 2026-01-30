@@ -262,7 +262,7 @@ def decode_token(token: str) -> Optional[dict]:
         payload = jwt_mod.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload
     except Exception as e:
-        logger.warning(f"Invalid JWT token: {e}")
+        logger.info(f"Invalid JWT token: {e}")
         return None
 
 

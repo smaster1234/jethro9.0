@@ -40,11 +40,13 @@ const getApiBaseUrl = (): string => {
 };
 
 // Create axios instance
+// Note: Do NOT set a global Content-Type header here.
+// Setting 'Content-Type': 'application/json' globally breaks FormData uploads
+// because it overrides the automatic multipart/form-data boundary that axios
+// sets when the request body is a FormData object.
+// Axios automatically sets Content-Type to application/json for object payloads.
 export const apiClient: AxiosInstance = axios.create({
   baseURL: getApiBaseUrl(),
-  headers: {
-    'Content-Type': 'application/json',
-  },
 });
 
 // Token management
