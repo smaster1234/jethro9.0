@@ -127,19 +127,31 @@ class ContradictionCategory(str, Enum):
     """
     Category that distinguishes hard contradictions from narrative ambiguity.
 
-    - HARD_CONTRADICTION: Clear factual contradiction - both claims cannot be true together.
-      Same object, same aspect, same timeframe, no reasonable reconciliation.
-    - LOGICAL_INCONSISTENCY: Logically incompatible statements about the same situation.
-      Not necessarily direct contradiction, but cannot coexist.
-    - NARRATIVE_AMBIGUITY: Apparent discrepancy that may have a reasonable explanation.
-      Different aspects, different timeframes, or possible reconciliation exists.
-    - RHETORICAL_SHIFT: Change in emphasis or framing without factual contradiction.
-      Same facts presented differently, may affect credibility but not factual truth.
+    V1 categories (preserved for backward compat):
+    - HARD_CONTRADICTION, LOGICAL_INCONSISTENCY, NARRATIVE_AMBIGUITY, RHETORICAL_SHIFT
+
+    V2 outcome categories (§5.1):
+    - TRUE_CONTRADICTION – irreconcilable
+    - APPARENT_TENSION_RESOLVABLE – looks contradictory but resolvable
+    - DISAGREEMENT_BETWEEN_PARTIES – cross-party dispute
+    - PLANE_MISMATCH – fact vs law/opinion
+    - TIME_OR_STAGE_SHIFT – different time periods
+    - AMBIGUITY_OR_VAGUENESS – vague/unclear
+    - DUPLICATE_OR_RESTATEMENT – same idea rephrased
     """
+    # V1 (backward compat)
     HARD_CONTRADICTION = "hard_contradiction"  # סתירה מוכרחת
     LOGICAL_INCONSISTENCY = "logical_inconsistency"  # אי-עקביות לוגית
     NARRATIVE_AMBIGUITY = "narrative_ambiguity"  # עמימות נרטיבית
     RHETORICAL_SHIFT = "rhetorical_shift"  # שינוי רטורי
+    # V2 (7-category outcomes)
+    TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
+    APPARENT_TENSION_RESOLVABLE = "APPARENT_TENSION_RESOLVABLE"
+    DISAGREEMENT_BETWEEN_PARTIES = "DISAGREEMENT_BETWEEN_PARTIES"
+    PLANE_MISMATCH = "PLANE_MISMATCH"
+    TIME_OR_STAGE_SHIFT = "TIME_OR_STAGE_SHIFT"
+    AMBIGUITY_OR_VAGUENESS = "AMBIGUITY_OR_VAGUENESS"
+    DUPLICATE_OR_RESTATEMENT = "DUPLICATE_OR_RESTATEMENT"
 
 
 class AmbiguityExplanation(BaseModel):

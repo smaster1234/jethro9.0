@@ -2,12 +2,13 @@
 Claim Extractor - Extract claims from Hebrew legal text
 ========================================================
 
-Simple, rule-based claim extraction:
+Rule-based claim extraction with context enrichment:
 1. Sanitize input (remove report/meta sections)
 2. Split text into paragraphs/sentences
 3. Normalize Hebrew text
 4. Filter signatures/contact info
-5. Return minimal Claim objects (max 500 chars)
+5. Enrich with context window, speaker, plane, time, modality
+6. Return enriched Claim objects
 """
 
 import re
@@ -37,13 +38,38 @@ __all__ = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Plane / Speaker / Modality constants
+# ---------------------------------------------------------------------------
+PLANE_FACT = "FACT"
+PLANE_LAW = "LAW"
+PLANE_OPINION = "OPINION"
+PLANE_PROCEDURAL = "PROCEDURAL"
+
+SPEAKER_MODE_FINDING = "finding"
+SPEAKER_MODE_PARTY_CLAIM = "party_claim"
+SPEAKER_MODE_QUOTE = "quote"
+
+MODALITY_CERTAIN = "certain"
+MODALITY_POSSIBLE = "possible"
+MODALITY_OBLIGATION = "obligation"
+MODALITY_PERMISSION = "permission"
+MODALITY_UNCERTAIN = "uncertain"
+
+
 @dataclass
 class Claim:
     """
-    Minimal claim representation for detection.
-    Compatible with core/models.py Claim but standalone.
+    Enriched claim representation for detection.
 
-    Now includes locator fields for evidence tracking.
+    Includes:
+    - Core text and locator fields (backward compatible)
+    - Context window (sentences before/after)
+    - Speaker / role / speaker_mode
+    - Plane (FACT/LAW/OPINION/PROCEDURAL)
+    - Time reference and modality
+    - Scope/quantifiers, entities, negation
+    - Confidence of extraction
     """
     id: str
     text: str
@@ -68,6 +94,33 @@ class Claim:
     # Metadata
     metadata: dict = field(default_factory=dict)
 
+    # --- V2 enrichment fields ---
+    # Normalized claim text for comparison
+    normalized_claim: Optional[str] = None
+    # Context: 1-3 sentences before / after
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
+    # Section / heading path
+    section_path: Optional[str] = None
+    # Speaker role
+    speaker_role: Optional[str] = None          # court / plaintiff / defendant / witness / counsel / external
+    speaker_mode: Optional[str] = None          # finding / party_claim / quote
+    # Plane
+    plane: Optional[str] = None                 # FACT / LAW / OPINION / PROCEDURAL
+    # Time
+    time_reference: Optional[str] = None        # date/period text extracted
+    # Modality
+    modality: Optional[str] = None              # certain / possible / obligation / permission / uncertain
+    # Scope / quantifiers
+    scope_quantifiers: Optional[str] = None     # all/part/always/usually/conditional
+    # Entities and relations
+    entities: List[str] = field(default_factory=list)
+    relations: Optional[str] = None             # "who did what to whom" summary
+    # Negation
+    negation: bool = False
+    # Extraction confidence
+    confidence_extraction: float = 1.0
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -85,7 +138,22 @@ class Claim:
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            # V2 fields
+            "normalized_claim": self.normalized_claim,
+            "context_before": self.context_before,
+            "context_after": self.context_after,
+            "section_path": self.section_path,
+            "speaker_role": self.speaker_role,
+            "speaker_mode": self.speaker_mode,
+            "plane": self.plane,
+            "time_reference": self.time_reference,
+            "modality": self.modality,
+            "scope_quantifiers": self.scope_quantifiers,
+            "entities": self.entities,
+            "relations": self.relations,
+            "negation": self.negation,
+            "confidence_extraction": self.confidence_extraction,
         }
 
 

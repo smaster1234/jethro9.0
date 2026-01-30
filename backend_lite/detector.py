@@ -263,12 +263,23 @@ class RuleBasedDetector:
             'ה', 'ו', 'ב', 'ל', 'מ', 'ש', 'כ', 'התובע', 'הנתבע'
         }
 
-    def detect(self, claims: List[Claim]) -> DetectionResult:
+    def detect(
+        self,
+        claims: List[Claim],
+        full_text: str = "",
+        enrich: bool = True,
+    ) -> DetectionResult:
         """
         Detect contradictions in claims using rule-based methods.
 
+        V2: optionally enriches claims first (speaker, plane, time, entities,
+        negation, context) and applies the 6-layer reconciliation engine
+        to reduce false positives.
+
         Args:
             claims: List of claims to analyze
+            full_text: Full document text for context extraction
+            enrich: If True, run claim enrichment before detection
 
         Returns:
             DetectionResult with contradictions
@@ -277,6 +288,16 @@ class RuleBasedDetector:
         contradictions = []
 
         logger.info(f"Rule-based detection: analyzing {len(claims)} claims")
+
+        # --- V2: Enrich claims ---
+        if enrich:
+            try:
+                from .claim_enricher import enrich_claims, resolve_entities
+                enrich_claims(claims, full_text)
+                resolve_entities(claims)
+                logger.info("Claims enriched with v2 fields (speaker, plane, time, entities, negation)")
+            except Exception as e:
+                logger.warning(f"Claim enrichment failed (non-fatal): {e}")
 
         # Tier 1 detection
         temporal = self._detect_temporal(claims)
@@ -300,6 +321,13 @@ class RuleBasedDetector:
         # Deduplicate
         contradictions = self._deduplicate(contradictions)
 
+        # --- V2: Run reconciler to filter false positives ---
+        if enrich:
+            pre_reconcile = len(contradictions)
+            contradictions = self._apply_reconciliation(contradictions)
+            filtered = pre_reconcile - len(contradictions)
+            logger.info(f"Reconciliation filtered {filtered}/{pre_reconcile} candidates")
+
         # Apply categorization (hard contradiction vs narrative ambiguity)
         contradictions = self._apply_categorization(contradictions)
 
@@ -309,6 +337,12 @@ class RuleBasedDetector:
         status_counts = {}
         for c in contradictions:
             status_counts[c.status.value] = status_counts.get(c.status.value, 0) + 1
+
+        # V2: count by outcome category
+        outcome_counts: dict = {}
+        for c in contradictions:
+            cat = getattr(c, '_reconciler_outcome', None) or (c.category.value if c.category else 'unknown')
+            outcome_counts[cat] = outcome_counts.get(cat, 0) + 1
 
         logger.info(
             f"Rule-based detection complete: {len(contradictions)} contradictions "
@@ -321,7 +355,7 @@ class RuleBasedDetector:
         return DetectionResult(
             contradictions=contradictions,
             detection_time_ms=elapsed_ms,
-            method="rule_based",
+            method="rule_based_v2" if enrich else "rule_based",
             metadata={
                 "temporal_count": len(temporal),
                 "quantitative_count": len(quantitative),
@@ -331,7 +365,8 @@ class RuleBasedDetector:
                 "identity_count": len(identity),
                 "claims_analyzed": len(claims),
                 "status_counts": status_counts,
-                "tier1_count": len(contradictions)
+                "outcome_counts": outcome_counts,
+                "tier1_count": len(contradictions),
             }
         )
 
@@ -1037,6 +1072,57 @@ class RuleBasedDetector:
                 unique.append(contr)
 
         return unique
+
+    def _apply_reconciliation(
+        self,
+        contradictions: List[DetectedContradiction],
+    ) -> List[DetectedContradiction]:
+        """
+        V2: Run the 6-layer reconciliation engine on each candidate.
+
+        Pairs that reconcile to non-TRUE_CONTRADICTION outcomes are
+        either downgraded or removed depending on the outcome:
+        - DUPLICATE_OR_RESTATEMENT → removed
+        - DISAGREEMENT / PLANE_MISMATCH / TIME_SHIFT → kept but flagged
+        - APPARENT_TENSION / AMBIGUITY → kept with adjusted severity
+        - TRUE_CONTRADICTION → kept as-is
+        """
+        from .reconciler import reconcile_pair, OUTCOME_TRUE_CONTRADICTION, OUTCOME_DUPLICATE
+
+        kept: List[DetectedContradiction] = []
+        for contr in contradictions:
+            result = reconcile_pair(
+                claim_a=contr.claim1,
+                claim_b=contr.claim2,
+                detector_type=contr.type.value if hasattr(contr.type, 'value') else str(contr.type),
+                detector_confidence=contr.confidence,
+                normalized_a=contr.normalized1,
+                normalized_b=contr.normalized2,
+                metadata=contr.metadata,
+            )
+
+            # Store outcome on the contradiction for later use
+            contr._reconciler_outcome = result.outcome  # type: ignore[attr-defined]
+            contr.metadata["reconciler_outcome"] = result.outcome
+            contr.metadata["reconciler_rationale"] = result.rationale
+            contr.metadata["reconciler_score"] = result.contradiction_score
+            contr.metadata["reconciler_deciding"] = result.deciding_fields
+
+            if result.outcome == OUTCOME_DUPLICATE:
+                # Remove duplicates / restatements entirely
+                logger.debug(f"Removed {contr.id}: DUPLICATE_OR_RESTATEMENT")
+                continue
+
+            if result.outcome == OUTCOME_TRUE_CONTRADICTION:
+                # True contradiction — update severity from reconciler
+                contr.severity = Severity(result.severity) if result.severity in ('low', 'medium', 'high', 'critical') else contr.severity
+            else:
+                # Non-true outcomes: adjust severity downward
+                contr.severity = Severity.LOW if result.severity == "low" else Severity.MEDIUM
+
+            kept.append(contr)
+
+        return kept
 
     def _apply_categorization(
         self,
