@@ -235,35 +235,84 @@ export const AnalyzePage: React.FC = () => {
                         {/* Severity mini-bar */}
                         {result.contradictions && result.contradictions.length > 0 && (() => {
                           const sevCounts: Record<string, number> = {};
+                          const catCounts: Record<string, number> = {};
                           result.contradictions.forEach((c) => {
                             const s = c.severity || 'medium';
                             sevCounts[s] = (sevCounts[s] || 0) + 1;
+                            const cat = c.category || 'unclassified';
+                            catCounts[cat] = (catCounts[cat] || 0) + 1;
                           });
                           const total = result.contradictions.length;
                           const order = ['critical', 'high', 'medium', 'low'];
                           const colors: Record<string, string> = { critical: 'bg-red-600', high: 'bg-red-400', medium: 'bg-orange-400', low: 'bg-yellow-400' };
                           const labels: Record<string, string> = { critical: 'קריטי', high: 'גבוה', medium: 'בינוני', low: 'נמוך' };
+                          const catLabels: Record<string, string> = {
+                            'HARD_CONTRADICTION': 'סתירה מוכרחת',
+                            'TRUE_CONTRADICTION': 'סתירה אמיתית',
+                            'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה',
+                            'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת',
+                            'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+                            'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות',
+                            'RHETORICAL_SHIFT': 'שינוי רטורי',
+                            'PLANE_MISMATCH': 'חוסר התאמה',
+                            'TIME_OR_STAGE_SHIFT': 'שינוי זמן',
+                            'AMBIGUITY_OR_VAGUENESS': 'עמימות',
+                            'DUPLICATE_OR_RESTATEMENT': 'כפילות',
+                            'unclassified': 'לא מסווג',
+                          };
+                          const catColors: Record<string, string> = {
+                            'HARD_CONTRADICTION': 'bg-red-500', 'TRUE_CONTRADICTION': 'bg-red-600',
+                            'APPARENT_TENSION_RESOLVABLE': 'bg-amber-400', 'DISAGREEMENT_BETWEEN_PARTIES': 'bg-indigo-400',
+                            'NARRATIVE_AMBIGUITY': 'bg-orange-400', 'LOGICAL_INCONSISTENCY': 'bg-blue-400',
+                            'RHETORICAL_SHIFT': 'bg-slate-400', 'PLANE_MISMATCH': 'bg-purple-400',
+                            'TIME_OR_STAGE_SHIFT': 'bg-cyan-400', 'AMBIGUITY_OR_VAGUENESS': 'bg-yellow-400',
+                            'DUPLICATE_OR_RESTATEMENT': 'bg-slate-300', 'unclassified': 'bg-slate-300',
+                          };
+                          const hasMultipleCategories = Object.keys(catCounts).length > 1 || (Object.keys(catCounts).length === 1 && !catCounts['unclassified']);
                           return (
-                            <div className="space-y-1">
-                              <div className="flex h-3 rounded-full overflow-hidden bg-slate-200">
-                                {order.map((s) => {
-                                  const count = sevCounts[s] || 0;
-                                  if (count === 0) return null;
-                                  return <div key={s} className={`${colors[s]}`} style={{ width: `${(count / total) * 100}%` }} title={`${labels[s]}: ${count}`} />;
-                                })}
+                            <div className="space-y-3">
+                              {/* Severity bar */}
+                              <div className="space-y-1">
+                                <div className="text-xs text-slate-500 font-medium">חומרה</div>
+                                <div className="flex h-3 rounded-full overflow-hidden bg-slate-200">
+                                  {order.map((s) => {
+                                    const count = sevCounts[s] || 0;
+                                    if (count === 0) return null;
+                                    return <div key={s} className={`${colors[s]}`} style={{ width: `${(count / total) * 100}%` }} title={`${labels[s]}: ${count}`} />;
+                                  })}
+                                </div>
+                                <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                  {order.map((s) => {
+                                    const count = sevCounts[s] || 0;
+                                    if (count === 0) return null;
+                                    return (
+                                      <div key={s} className="flex items-center gap-1">
+                                        <div className={`w-2 h-2 rounded-full ${colors[s]}`} />
+                                        <span>{labels[s]}: {count}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                              <div className="flex flex-wrap gap-3 text-xs text-slate-600">
-                                {order.map((s) => {
-                                  const count = sevCounts[s] || 0;
-                                  if (count === 0) return null;
-                                  return (
-                                    <div key={s} className="flex items-center gap-1">
-                                      <div className={`w-2 h-2 rounded-full ${colors[s]}`} />
-                                      <span>{labels[s]}: {count}</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
+                              {/* Category bar */}
+                              {hasMultipleCategories && (
+                                <div className="space-y-1">
+                                  <div className="text-xs text-slate-500 font-medium">קטגוריה</div>
+                                  <div className="flex h-3 rounded-full overflow-hidden bg-slate-200">
+                                    {Object.entries(catCounts).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                                      <div key={cat} className={`${catColors[cat] || 'bg-slate-400'}`} style={{ width: `${(count / total) * 100}%` }} title={`${catLabels[cat] || cat}: ${count}`} />
+                                    ))}
+                                  </div>
+                                  <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                    {Object.entries(catCounts).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                                      <div key={cat} className="flex items-center gap-1">
+                                        <div className={`w-2 h-2 rounded-full ${catColors[cat] || 'bg-slate-400'}`} />
+                                        <span>{catLabels[cat] || cat}: {count}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           );
                         })()}
@@ -511,21 +560,62 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
       'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
       'RHETORICAL_SHIFT': 'שינוי רטורי',
+      'TRUE_CONTRADICTION': 'סתירה אמיתית',
+      'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה — ניתן ליישוב',
+      'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+      'PLANE_MISMATCH': 'חוסר התאמה במישור',
+      'TIME_OR_STAGE_SHIFT': 'שינוי זמן או שלב',
+      'AMBIGUITY_OR_VAGUENESS': 'עמימות או אי\u2011בהירות',
+      'DUPLICATE_OR_RESTATEMENT': 'כפילות או ניסוח מחדש',
     };
     return cat ? labels[cat] || cat : null;
   };
   const getCategoryColor = (cat?: string) => {
     switch (cat) {
-      case 'HARD_CONTRADICTION': return 'danger';
-      case 'NARRATIVE_AMBIGUITY': return 'warning';
-      case 'LOGICAL_INCONSISTENCY': return 'accent';
-      case 'RHETORICAL_SHIFT': return 'neutral';
+      case 'HARD_CONTRADICTION':
+      case 'TRUE_CONTRADICTION': return 'danger';
+      case 'NARRATIVE_AMBIGUITY':
+      case 'APPARENT_TENSION_RESOLVABLE': return 'warning';
+      case 'LOGICAL_INCONSISTENCY':
+      case 'DISAGREEMENT_BETWEEN_PARTIES': return 'accent';
+      case 'RHETORICAL_SHIFT':
+      case 'PLANE_MISMATCH':
+      case 'TIME_OR_STAGE_SHIFT': return 'neutral';
+      case 'AMBIGUITY_OR_VAGUENESS': return 'warning';
+      case 'DUPLICATE_OR_RESTATEMENT': return 'neutral';
       default: return 'neutral';
     }
   };
 
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
+
+  const getBucketLabel = (bucket?: string) => {
+    const labels: Record<string, string> = {
+      'internal_ours': 'חולשה שלנו',
+      'internal_theirs': 'חולשה שלהם',
+      'dispute': 'שנוי במחלוקת',
+      'unknown': 'לא מסווג',
+    };
+    return bucket ? labels[bucket] || bucket : null;
+  };
+  const getBucketColor = (bucket?: string) => {
+    switch (bucket) {
+      case 'internal_ours': return 'text-red-600 bg-red-50 border-red-200';
+      case 'internal_theirs': return 'text-green-600 bg-green-50 border-green-200';
+      case 'dispute': return 'text-yellow-600 bg-yellow-50 border-yellow-200';
+      default: return 'text-slate-500 bg-slate-50 border-slate-200';
+    }
+  };
+  const getStatusLabel = (status?: string) => {
+    const labels: Record<string, string> = {
+      'new': 'חדש',
+      'reviewed': 'נבדק',
+      'confirmed': 'מאושר',
+      'dismissed': 'נדחה',
+    };
+    return status ? labels[status] || status : null;
+  };
 
   return (
     <motion.div
@@ -535,6 +625,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
     >
       <Card className="border-r-4 border-warning-500">
         <div className="space-y-4">
+          {/* Header with badges */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-warning-500" />
@@ -556,13 +647,37 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
             </div>
           </div>
 
+          {/* Metadata row: bucket, status */}
+          {(contradiction.bucket || contradiction.status) && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              {getBucketLabel(contradiction.bucket) && (
+                <span className={`px-2 py-1 rounded-md border ${getBucketColor(contradiction.bucket)}`}>
+                  {getBucketLabel(contradiction.bucket)}
+                </span>
+              )}
+              {getStatusLabel(contradiction.status) && (
+                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-slate-600">
+                  {getStatusLabel(contradiction.status)}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Claims */}
           <div className="space-y-3">
             <div className="p-4 bg-red-50 rounded-xl border border-red-100">
-              <div className="text-xs text-red-500 font-medium mb-1">טענה א'</div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs text-red-500 font-medium">טענה א'</div>
+                {contradiction.claim_a?.source_name && (
+                  <div className="text-xs text-slate-400">{contradiction.claim_a.source_name}</div>
+                )}
+              </div>
               <p className="text-slate-800">
                 {contradiction.claim_a?.text || 'לא זמין'}
               </p>
+              {contradiction.claim_a?.speaker && (
+                <div className="text-xs text-slate-500 mt-1">דובר: {contradiction.claim_a.speaker}</div>
+              )}
             </div>
 
             <div className="flex justify-center">
@@ -572,10 +687,18 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
             </div>
 
             <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
-              <div className="text-xs text-orange-500 font-medium mb-1">טענה ב'</div>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs text-orange-500 font-medium">טענה ב'</div>
+                {contradiction.claim_b?.source_name && (
+                  <div className="text-xs text-slate-400">{contradiction.claim_b.source_name}</div>
+                )}
+              </div>
               <p className="text-slate-800">
                 {contradiction.claim_b?.text || 'לא זמין'}
               </p>
+              {contradiction.claim_b?.speaker && (
+                <div className="text-xs text-slate-500 mt-1">דובר: {contradiction.claim_b.speaker}</div>
+              )}
             </div>
           </div>
 
