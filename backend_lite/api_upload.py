@@ -235,6 +235,42 @@ def _normalize_party(party: Optional[str]) -> Optional[str]:
     }
     return mapping.get(p, p)
 
+
+def _normalize_role(role: Optional[str]) -> Optional[str]:
+    """
+    Normalize UI/legacy role values into valid DocumentRole enum strings.
+
+    DB enum expects: statement_of_claim/defense/reply/motion/response/
+    summations/judgment/exhibit/affidavit/protocol/expert_opinion/
+    contract/letter/unknown.
+    """
+    if not role:
+        return None
+    r = role.strip().lower()
+    mapping = {
+        "claim": "statement_of_claim",
+        "statement_of_claim": "statement_of_claim",
+        "defense": "defense",
+        "reply": "reply",
+        "motion": "motion",
+        "response": "response",
+        "summaries": "summations",
+        "summations": "summations",
+        "judgment": "judgment",
+        "court_decision": "judgment",
+        "exhibit": "exhibit",
+        "evidence": "exhibit",
+        "affidavit": "affidavit",
+        "protocol": "protocol",
+        "expert_opinion": "expert_opinion",
+        "contract": "contract",
+        "correspondence": "letter",
+        "letter": "letter",
+        "other": "unknown",
+        "unknown": "unknown",
+    }
+    return mapping.get(r, "unknown")
+
 def _storage_provider_name() -> str:
     return (os.environ.get("STORAGE_BACKEND") or os.environ.get("STORAGE_TYPE") or "local").strip().lower() or "local"
 
@@ -1048,7 +1084,7 @@ async def upload_documents(
                     original_filename=safe_filename,
                     mime_type=mime_type,
                     party=normalized_party,
-                    role=file_meta.get('role'),
+                    role=_normalize_role(file_meta.get('role')),
                     author=file_meta.get('author'),
                     version_label=file_meta.get('version_label'),
                     status=DocumentStatus.UPLOADED,
