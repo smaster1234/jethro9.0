@@ -22,27 +22,35 @@ from .openrouter_base import OpenRouterBaseClient
 logger = logging.getLogger(__name__)
 
 
-# Verifier system prompt - strict and focused
-VERIFIER_SYSTEM_PROMPT = """You are a verification judge for legal contradictions.
+# Verifier system prompt (v2 – precision-first with 7-category outcome)
+VERIFIER_SYSTEM_PROMPT = """You are a verification judge for Hebrew legal contradictions.
 
-Your job: Determine if two claims contradict each other.
+Your job: determine the PRECISE relationship between two claims.
 
-Critical Rules:
-1. Case numbers like 17682-06-25 are NOT dates - never flag as temporal contradiction
-2. If claims refer to different events/subjects - no contradiction
-3. Never invent facts not stated in the claims
-4. Contradiction = same subject, two versions that cannot both be true
+## Key rules
+1. Case numbers (17682-06-25) are NOT dates.
+2. Never invent facts; only use what is stated.
+3. A TRUE contradiction means: same subject, same plane, irreconcilable.
 
-Return ONLY valid JSON. No explanation outside JSON."""
+## What is NOT a contradiction
+- Two party claims from different sides → DISAGREEMENT_BETWEEN_PARTIES
+- Different time periods / stages → TIME_OR_STAGE_SHIFT
+- Fact vs law/opinion/assessment → PLANE_MISMATCH
+- Vague wording / approximate numbers → AMBIGUITY_OR_VAGUENESS
+- Rephrasing of the same idea → DUPLICATE_OR_RESTATEMENT
+- Resolvable via scope/condition/quantifier → APPARENT_TENSION_RESOLVABLE
+
+Return ONLY valid JSON."""
 
 
 VERIFIER_USER_TEMPLATE = """Schema (strict):
 {{
   "same_fact": "yes|no|unclear",
-  "contradiction": "yes|no|unclear",
+  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|DUPLICATE_OR_RESTATEMENT",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
-  "reason": "Hebrew, max 20 words"
+  "reason": "Hebrew, max 30 words",
+  "reconciliation_tried": "short description of reconciliation attempt"
 }}
 
 Claim A: {claim_a}
@@ -51,7 +59,7 @@ Claim B: {claim_b}
 
 Suggested type: {suggested_type}
 
-Are these claims contradictory?"""
+Determine the precise relationship."""
 
 
 @dataclass
@@ -69,10 +77,12 @@ class VerifierStats:
 class VerifierResult:
     """Result from verifier"""
     same_fact: str = "unclear"      # yes|no|unclear
-    contradiction: str = "unclear"  # yes|no|unclear
+    contradiction: str = "unclear"  # yes|no|unclear  (legacy compat)
+    outcome: str = ""               # 7-category outcome (v2)
     type: str = "none"              # temporal|quant|presence|actor|document|identity|none
     confidence: float = 0.5
     reason: str = ""
+    reconciliation_tried: str = ""  # v2: reconciliation attempt summary
     success: bool = True
     error: Optional[str] = None
     raw_response: Optional[Dict] = None
@@ -186,18 +196,31 @@ class VerifierLLM:
         try:
             data = json.loads(result.content) if result.content else {}
 
+            # v2: parse outcome field; fall back to legacy contradiction field
+            outcome = data.get("outcome", "")
+            legacy_contradiction = data.get("contradiction", "unclear")
+            # Derive legacy field from outcome for backward compat
+            if outcome == "TRUE_CONTRADICTION":
+                legacy_contradiction = "yes"
+            elif outcome and outcome != "TRUE_CONTRADICTION":
+                legacy_contradiction = "no"
+
             verdict = VerifierResult(
                 same_fact=data.get("same_fact", "unclear"),
-                contradiction=data.get("contradiction", "unclear"),
+                contradiction=legacy_contradiction,
+                outcome=outcome,
                 type=data.get("type", "none"),
                 confidence=float(data.get("confidence", 0.5)),
                 reason=data.get("reason", ""),
+                reconciliation_tried=data.get("reconciliation_tried", ""),
                 success=True,
-                raw_response=data
+                raw_response=data,
             )
 
             # Update stats
-            if verdict.contradiction == "yes" and verdict.confidence >= 0.7:
+            if verdict.outcome == "TRUE_CONTRADICTION" or (
+                verdict.contradiction == "yes" and verdict.confidence >= 0.7
+            ):
                 self.stats.promoted += 1
             elif verdict.contradiction == "no":
                 self.stats.rejected += 1
