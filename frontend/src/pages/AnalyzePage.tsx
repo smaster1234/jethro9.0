@@ -507,9 +507,9 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
 
   const getCategoryLabel = (cat?: string) => {
     const labels: Record<string, string> = {
-      'HARD_CONTRADICTION': 'סתירה קשיחה',
+      'HARD_CONTRADICTION': 'סתירה מוכרחת',
       'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
-      'LOGICAL_INCONSISTENCY': 'חוסר עקביות לוגי',
+      'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
       'RHETORICAL_SHIFT': 'שינוי רטורי',
     };
     return cat ? labels[cat] || cat : null;

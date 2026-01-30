@@ -2301,9 +2301,9 @@ async def list_contradiction_insights(
             response = []
             for insight, contr in rows:
                 composite = round(
-                    (insight.impact_score or 0.0)
-                    * (insight.risk_score or 0.0)
-                    * (insight.verifiability_score or 0.0),
+                    0.45 * (insight.impact_score or 0.0)
+                    + 0.35 * (insight.verifiability_score or 0.0)
+                    + 0.20 * (1.0 - (insight.risk_score or 0.0)),
                     4,
                 )
                 response.append(ContradictionInsightResponse(
@@ -3420,3 +3420,92 @@ async def analyze_case(
     except Exception as e:
         logger.exception("Failed to start analysis")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# STATS OVERVIEW
+# =============================================================================
+
+
+class StatsOverviewResponse(BaseModel):
+    """System-wide stats for the authenticated firm."""
+    cases_total: int = 0
+    cases_active: int = 0
+    documents_total: int = 0
+    contradictions_total: int = 0
+    analysis_runs_total: int = 0
+    latest_run_at: Optional[str] = None
+    jobs_active: int = 0
+
+
+@router.get("/stats/overview", response_model=StatsOverviewResponse)
+async def get_stats_overview(
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Return high-level stats for the authenticated firm."""
+    try:
+        from .db.session import get_db_session
+        from .db.models import Case as CaseModel, Document, AnalysisRun, Contradiction, Job
+        from sqlalchemy import func
+
+        with get_db_session() as db:
+            firm_filter = CaseModel.firm_id == auth.firm_id
+
+            cases_total = db.query(func.count(CaseModel.id)).filter(firm_filter).scalar() or 0
+            cases_active = (
+                db.query(func.count(CaseModel.id))
+                .filter(firm_filter, CaseModel.status == "active")
+                .scalar()
+                or 0
+            )
+
+            documents_total = (
+                db.query(func.count(Document.id))
+                .join(CaseModel, CaseModel.id == Document.case_id)
+                .filter(firm_filter)
+                .scalar()
+                or 0
+            )
+
+            contradictions_total = (
+                db.query(func.count(Contradiction.id))
+                .join(AnalysisRun, AnalysisRun.id == Contradiction.run_id)
+                .filter(AnalysisRun.firm_id == auth.firm_id)
+                .scalar()
+                or 0
+            )
+
+            analysis_runs_total = (
+                db.query(func.count(AnalysisRun.id))
+                .filter(AnalysisRun.firm_id == auth.firm_id)
+                .scalar()
+                or 0
+            )
+
+            latest_run = (
+                db.query(func.max(AnalysisRun.created_at))
+                .filter(AnalysisRun.firm_id == auth.firm_id)
+                .scalar()
+            )
+
+            jobs_active = (
+                db.query(func.count(Job.id))
+                .filter(
+                    Job.firm_id == auth.firm_id,
+                    Job.status.in_(["queued", "started", "running"]),
+                )
+                .scalar()
+                or 0
+            )
+
+            return StatsOverviewResponse(
+                cases_total=cases_total,
+                cases_active=cases_active,
+                documents_total=documents_total,
+                contradictions_total=contradictions_total,
+                analysis_runs_total=analysis_runs_total,
+                latest_run_at=latest_run.isoformat() if latest_run else None,
+                jobs_active=jobs_active,
+            )
+    except Exception:
+        return StatsOverviewResponse()

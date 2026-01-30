@@ -22,3 +22,21 @@ export const healthApi = {
     return response.data;
   },
 };
+
+// Stats
+export interface StatsOverview {
+  cases_total: number;
+  cases_active: number;
+  documents_total: number;
+  contradictions_total: number;
+  analysis_runs_total: number;
+  latest_run_at: string | null;
+  jobs_active: number;
+}
+
+export const statsApi = {
+  overview: async (): Promise<StatsOverview> => {
+    const response = await apiClient.get<StatsOverview>('/api/v1/stats/overview');
+    return response.data;
+  },
+};
