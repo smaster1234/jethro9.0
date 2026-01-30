@@ -37,6 +37,7 @@ from .extractor import (
     SPEAKER_MODE_FINDING,
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
+    SPEAKER_MODE_LAW_CITATION,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,14 +225,43 @@ def reconcile_pair(
             debug=debug,
         )
 
-    # --- All layers passed: irreconcilable ---
-    # Apply confidence threshold (§8.1 "quiet is better")
+    # --- All layers passed: attempt final gate for TRUE_CONTRADICTION ---
+    # Delta-fix §1: TRUE_CONTRADICTION requires ALL of:
+    #   1. same entities/event + same time window + same scope
+    #   2. same plane (FACT↔FACT or LAW↔LAW)
+    #   3. negation/quantifier conflict that cannot be reconciled
+    #   4. reconciliation_attempt failed with rationale
+
+    # §1.a: Entity overlap required
+    entity_overlap = set(claim_a.entities or []) & set(claim_b.entities or [])
+    has_entity_overlap = bool(entity_overlap)
+
+    # §1.b: Negation opposition
+    has_hard_negation = (claim_a.negation != claim_b.negation)
+
+    # §1.c: Same plane (FACT↔FACT or LAW↔LAW)
+    same_plane = (claim_a.plane and claim_b.plane and claim_a.plane == claim_b.plane)
+    factual_plane = same_plane and claim_a.plane in (PLANE_FACT, PLANE_LAW)
+
+    # §3: OPINION/PROCEDURAL never qualify for TRUE_CONTRADICTION
+    if claim_a.plane in (PLANE_OPINION, PLANE_PROCEDURAL) or claim_b.plane in (PLANE_OPINION, PLANE_PROCEDURAL):
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=min(detector_confidence, 0.4),
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt="מישור הערכה/פרוצדורלי לא מאפשר סתירה אמיתית",
+            rationale="טענות במישור הערכה או פרוצדורלי אינן סותרות עובדתית",
+            conflict_predicate="plane_opinion_or_procedural",
+            deciding_fields=["plane"],
+            debug=debug,
+        )
+
+    # §7: Apply confidence threshold ("quiet is better")
     if detector_confidence < TRUE_CONTRADICTION_THRESHOLD:
         # Below threshold → AMBIGUITY unless hard logical conflict
-        has_hard_negation = (claim_a.negation != claim_b.negation)
-        same_entities = bool(set(claim_a.entities) & set(claim_b.entities))
-        if has_hard_negation and same_entities:
-            # Hard logical conflict — override threshold
+        if has_hard_negation and has_entity_overlap and factual_plane:
+            # Hard logical conflict with full evidence — override threshold
             pass
         else:
             return ReconciliationResult(
@@ -243,6 +273,51 @@ def reconcile_pair(
                 rationale="עוצמת הביטחון אינה מספיקה לקביעת סתירה אמיתית",
                 conflict_predicate="confidence",
                 deciding_fields=["confidence"],
+                debug=debug,
+            )
+
+    # §1 final gate: require entity overlap + negation/predicate conflict
+    if not has_entity_overlap:
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=min(detector_confidence, 0.5),
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt="אין חפיפת ישויות — לא ניתן לקבוע סתירה אמיתית",
+            rationale="הטענות אינן מתייחסות לאותן ישויות/אירועים — מתח לכאורה",
+            conflict_predicate="missing_entity_overlap",
+            deciding_fields=["entities"],
+            debug=debug,
+        )
+
+    if not has_hard_negation and not factual_plane:
+        return ReconciliationResult(
+            outcome=OUTCOME_AMBIGUITY,
+            contradiction_score=min(detector_confidence, 0.5),
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt="אין התנגשות לוגית ברורה (שלילה/חיוב) ולא אותו מישור",
+            rationale="לא זוהה ניגוד ברור בין הטענות — עמימות",
+            conflict_predicate="no_hard_conflict",
+            deciding_fields=["negation", "plane"],
+            debug=debug,
+        )
+
+    # §4: If neither claim has context_before/after, block TRUE_CONTRADICTION
+    has_context_a = bool(claim_a.context_before or claim_a.context_after)
+    has_context_b = bool(claim_b.context_before or claim_b.context_after)
+    if not has_context_a and not has_context_b:
+        # No context available → cannot confirm TRUE_CONTRADICTION (§4 rule)
+        if not (has_hard_negation and has_entity_overlap):
+            return ReconciliationResult(
+                outcome=OUTCOME_AMBIGUITY,
+                contradiction_score=min(detector_confidence, 0.5),
+                severity="low",
+                severity_score=0.3,
+                reconciliation_attempt="אין הקשר מלא (context) — לא ניתן לאשר סתירה אמיתית",
+                rationale="ללא הקשר מלא לטענות לא ניתן לאשר סתירה",
+                conflict_predicate="missing_context",
+                deciding_fields=["context_before", "context_after"],
                 debug=debug,
             )
 
@@ -327,20 +402,42 @@ def _check_modality(a: Claim, b: Claim):
 
 
 def _check_speaker_mode(a: Claim, b: Claim):
-    """Two party-claims from different sides → DISAGREEMENT."""
+    """
+    Delta-fix §2/§5/§9: Block TRUE_CONTRADICTION when claims come from
+    different speaker modes.
+
+    Rules:
+    - Two party-claims from different sides → DISAGREEMENT
+    - One party-claim + one non-party-claim (different speaker) → DISAGREEMENT
+    - One is a quote → not a real assertion, block
+    - One is a law_citation → citing precedent, not the author's own claim
+    """
     sa = a.speaker_mode
     sb = b.speaker_mode
     ra = a.speaker_role
     rb = b.speaker_role
+
+    # One is a quote → don't treat as contradiction
+    if sa == SPEAKER_MODE_QUOTE or sb == SPEAKER_MODE_QUOTE:
+        return False, "אחת הטענות היא ציטוט — לא קביעה של הדובר"
+
+    # One is a law citation → citing precedent, not a factual assertion
+    if sa == SPEAKER_MODE_LAW_CITATION or sb == SPEAKER_MODE_LAW_CITATION:
+        return False, "אחת הטענות היא ציטוט פסיקה/חקיקה — לא עובדה של הדובר"
 
     # Both are party claims from different parties
     if sa == SPEAKER_MODE_PARTY_CLAIM and sb == SPEAKER_MODE_PARTY_CLAIM:
         if ra and rb and ra != rb:
             return False, f"מחלוקת בין צדדים: {ra} לעומת {rb}"
 
-    # One is a quote → don't treat as contradiction
-    if sa == SPEAKER_MODE_QUOTE or sb == SPEAKER_MODE_QUOTE:
-        return False, "אחת הטענות היא ציטוט — לא קביעה של הדובר"
+    # Delta-fix §2: One is a party-claim and the other is NOT party_claim
+    # from the same speaker → this is a disagreement, never TRUE_CONTRADICTION
+    if sa == SPEAKER_MODE_PARTY_CLAIM and sb != SPEAKER_MODE_PARTY_CLAIM:
+        if sb is not None:
+            return False, f"טענת צד ({ra or 'צד'}) מול {sb} — מחלוקת בייחוס, לא סתירה פנימית"
+    if sb == SPEAKER_MODE_PARTY_CLAIM and sa != SPEAKER_MODE_PARTY_CLAIM:
+        if sa is not None:
+            return False, f"טענת צד ({rb or 'צד'}) מול {sa} — מחלוקת בייחוס, לא סתירה פנימית"
 
     return True, ""
 
