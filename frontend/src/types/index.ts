@@ -362,6 +362,18 @@ export interface Claim {
   category?: string;
   confidence?: number;
   metadata?: Record<string, unknown>;
+  // V2 enrichment fields
+  speaker_role?: string;
+  speaker_mode?: string;   // finding | party_claim | quote | law_citation
+  plane?: string;          // FACT | LAW | OPINION | PROCEDURAL
+  time_reference?: string;
+  modality?: string;       // certain | possible | obligation | permission
+  scope_quantifiers?: string;
+  entities?: string[];
+  negation?: boolean;
+  context_before?: string;
+  context_after?: string;
+  section_path?: string;
 }
 
 export interface EvidenceAnchor {

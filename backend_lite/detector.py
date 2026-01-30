@@ -1086,11 +1086,17 @@ class RuleBasedDetector:
         - DISAGREEMENT / PLANE_MISMATCH / TIME_SHIFT → kept but flagged
         - APPARENT_TENSION / AMBIGUITY → kept with adjusted severity
         - TRUE_CONTRADICTION → kept as-is
+
+        Delta-fix §9: Rule-based override for attribution patterns.
         """
         from .reconciler import reconcile_pair, OUTCOME_TRUE_CONTRADICTION, OUTCOME_DUPLICATE
 
         kept: List[DetectedContradiction] = []
         for contr in contradictions:
+            # Delta-fix §9: Rule-based attribution override BEFORE reconciler
+            # If explanation or quotes contain attribution markers → never TRUE_CONTRADICTION
+            attribution_override = self._check_attribution_override(contr)
+
             result = reconcile_pair(
                 claim_a=contr.claim1,
                 claim_b=contr.claim2,
@@ -1101,12 +1107,21 @@ class RuleBasedDetector:
                 metadata=contr.metadata,
             )
 
+            # Apply attribution override if triggered
+            if attribution_override and result.outcome == OUTCOME_TRUE_CONTRADICTION:
+                result.outcome = attribution_override
+                result.reconciliation_attempt = "זוהה ייחוס/טענת צד — סיווג מחדש"
+                result.rationale = "הטענות מכילות דפוסי ייחוס (לטענת/עשויים לטעון/נטען) — לא סתירה אמיתית"
+                result.contradiction_score = min(result.contradiction_score, 0.4)
+                logger.debug(f"Attribution override: {contr.id} → {attribution_override}")
+
             # Store outcome on the contradiction for later use
             contr._reconciler_outcome = result.outcome  # type: ignore[attr-defined]
             contr.metadata["reconciler_outcome"] = result.outcome
             contr.metadata["reconciler_rationale"] = result.rationale
             contr.metadata["reconciler_score"] = result.contradiction_score
             contr.metadata["reconciler_deciding"] = result.deciding_fields
+            contr.metadata["reconciliation_attempt"] = result.reconciliation_attempt
 
             if result.outcome == OUTCOME_DUPLICATE:
                 # Remove duplicates / restatements entirely
@@ -1123,6 +1138,51 @@ class RuleBasedDetector:
             kept.append(contr)
 
         return kept
+
+    # Delta-fix §9: Attribution pattern detection
+    _ATTRIBUTION_TEXT_PATTERNS = [
+        re.compile(r'ייחוס', re.UNICODE),
+        re.compile(r'עשויים\s+לטעון', re.UNICODE),
+        re.compile(r'עשוי\s+לטעון', re.UNICODE),
+        re.compile(r'עשויה\s+לטעון', re.UNICODE),
+        re.compile(r'לטענת\s', re.UNICODE),
+        re.compile(r'נטען\s+כי', re.UNICODE),
+        re.compile(r'טען\s+כי', re.UNICODE),
+        re.compile(r'לכאורה', re.UNICODE),
+        re.compile(r'דומה\s+כי', re.UNICODE),
+        re.compile(r'לדברי\s', re.UNICODE),
+        re.compile(r'לגרסת\s', re.UNICODE),
+        re.compile(r'לגישת\s', re.UNICODE),
+        re.compile(r'לשיטת\s', re.UNICODE),
+        re.compile(r'לעמדת\s', re.UNICODE),
+        re.compile(r'(?:המשיב|המערער|התובע|הנתבע)\s+טען', re.UNICODE),
+    ]
+
+    def _check_attribution_override(self, contr: DetectedContradiction) -> Optional[str]:
+        """
+        Delta-fix §9: Check if explanation or claim text contains attribution
+        patterns that should prevent TRUE_CONTRADICTION classification.
+
+        Returns the override outcome category string, or None if no override.
+        """
+        texts_to_check = [
+            contr.explanation or "",
+            contr.quote1 or "",
+            contr.quote2 or "",
+            contr.claim1.text,
+            contr.claim2.text,
+        ]
+
+        for text in texts_to_check:
+            for pat in self._ATTRIBUTION_TEXT_PATTERNS:
+                if pat.search(text):
+                    # Determine specific override based on pattern
+                    if 'ייחוס' in text:
+                        return "DISAGREEMENT_BETWEEN_PARTIES"
+                    if any(p.search(text) for p in self._ATTRIBUTION_TEXT_PATTERNS[:9]):
+                        return "DISAGREEMENT_BETWEEN_PARTIES"
+                    return "AMBIGUITY_OR_VAGUENESS"
+        return None
 
     def _apply_categorization(
         self,

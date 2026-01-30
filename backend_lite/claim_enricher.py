@@ -30,6 +30,7 @@ from .extractor import (
     SPEAKER_MODE_FINDING,
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
+    SPEAKER_MODE_LAW_CITATION,
     MODALITY_CERTAIN,
     MODALITY_POSSIBLE,
     MODALITY_OBLIGATION,
@@ -52,12 +53,37 @@ _PARTY_CLAIM_PATTERNS = [
     re.compile(r'לדברי\s+\S+', re.UNICODE),
     re.compile(r'כטענת\s+\S+', re.UNICODE),
     re.compile(r'(?:המערער|המשיבה?|העורר|העוררת)\s+(?:טען|טענה|הוסיף|הוסיפה)', re.UNICODE),
+    # Delta-fix: additional attribution patterns for Hebrew legal text
+    re.compile(r'עשויים\s+לטעון', re.UNICODE),
+    re.compile(r'עשוי\s+לטעון', re.UNICODE),
+    re.compile(r'עשויה\s+לטעון', re.UNICODE),
+    re.compile(r'נטען\s+כי', re.UNICODE),
+    re.compile(r'טענת\s+\S+', re.UNICODE),
+    re.compile(r'לכאורה', re.UNICODE),
+    re.compile(r'דומה\s+כי', re.UNICODE),
+    re.compile(r'ניתן\s+לטעון', re.UNICODE),
+    re.compile(r'יש\s+הטוענים', re.UNICODE),
+    re.compile(r'(?:לגרסת|גרסת|לגישת|גישת|לעמדת|עמדת)\s+\S+', re.UNICODE),
+    re.compile(r'(?:לשיטת|שיטת)\s+\S+', re.UNICODE),
+    re.compile(r'(?:המבקשים|המשיבים|התובעים|הנתבעים)\s+(?:טענו|טוענים|טוענות|הצהירו|ציינו|סבורים)', re.UNICODE),
 ]
 
 _QUOTE_PATTERNS = [
     re.compile(r'[""״].*?[""״]', re.UNICODE),
     re.compile(r'(?:ציטוט|כלשונו|כדלקמן):', re.UNICODE),
     re.compile(r'נאמר כי\s', re.UNICODE),
+]
+
+# Law citation patterns (separate from LAW plane — these are direct case/statute references)
+_LAW_CITATION_PATTERNS = [
+    re.compile(r'ע"א\s+\d+/\d+', re.UNICODE),
+    re.compile(r'רע"א\s+\d+/\d+', re.UNICODE),
+    re.compile(r'בג"ץ\s+\d+/\d+', re.UNICODE),
+    re.compile(r'ע"ע\s+\d+/\d+', re.UNICODE),
+    re.compile(r'ת"א\s+\d+', re.UNICODE),
+    re.compile(r'(?:נפסק|נקבע)\s+ב[פע]', re.UNICODE),
+    re.compile(r'כפי\s+שנקבע\s+ב', re.UNICODE),
+    re.compile(r'על[- ]?פי\s+הלכת', re.UNICODE),
 ]
 
 # Finding / ruling markers
@@ -333,12 +359,17 @@ def _detect_speaker(text: str) -> Tuple[Optional[str], Optional[str]]:
         if pat.search(text):
             return None, SPEAKER_MODE_QUOTE
 
-    # Check party-claim patterns
+    # Check party-claim patterns (expanded for delta-fix)
     for pat in _PARTY_CLAIM_PATTERNS:
         m = pat.search(text)
         if m:
             role = _extract_speaker_role_from_match(m.group())
             return role, SPEAKER_MODE_PARTY_CLAIM
+
+    # Check law citation patterns (citing precedent/statute)
+    for pat in _LAW_CITATION_PATTERNS:
+        if pat.search(text):
+            return None, SPEAKER_MODE_LAW_CITATION
 
     # Check finding patterns (court ruling)
     for pat in _FINDING_PATTERNS:

@@ -965,16 +965,50 @@ export const CaseDetailPage: React.FC = () => {
     const date = new Date().toISOString().split('T')[0];
 
     if (format === 'csv') {
-      // CSV export
-      const headers = ['מספר', 'חומרה', 'סטטוס', 'קטגוריה', 'הסבר', 'ציטוט 1', 'ציטוט 2'];
+      // CSV export — enriched schema (delta-fix §6)
+      const esc = (s: string) => `"${(s || '').replace(/"/g, '""')}"`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = (c: Contradiction, key: string) => {
+        const v = (c as any)?.[key] ?? (c as any)?.metadata?.[key] ?? '';
+        return typeof v === 'object' ? JSON.stringify(v) : String(v);
+      };
+      const headers = [
+        'מספר', 'חומרה', 'סטטוס', 'קטגוריה', 'outcome_category', 'contradiction_score',
+        'ציטוט 1', 'ציטוט 2', 'הסבר',
+        'claimA_speaker_mode', 'claimB_speaker_mode',
+        'claimA_plane', 'claimB_plane',
+        'claimA_time_ref', 'claimB_time_ref',
+        'claimA_scope', 'claimB_scope',
+        'claimA_context_before', 'claimA_context_after',
+        'claimB_context_before', 'claimB_context_after',
+        'reconciliation_attempt', 'rationale', 'bucket', 'confidence',
+      ];
       const rows = contradictions.map((c, i) => [
         i + 1,
         c.severity || '',
         c.status || '',
         c.category || '',
-        `"${(c.explanation || '').replace(/"/g, '""')}"`,
-        `"${(c.quote1 || '').replace(/"/g, '""')}"`,
-        `"${(c.quote2 || '').replace(/"/g, '""')}"`,
+        md(c, 'reconciler_outcome'),
+        md(c, 'reconciler_score'),
+        esc(c.quote1 || ''),
+        esc(c.quote2 || ''),
+        esc(c.explanation || ''),
+        c.claim_a?.speaker_mode || '',
+        c.claim_b?.speaker_mode || '',
+        c.claim_a?.plane || '',
+        c.claim_b?.plane || '',
+        c.claim_a?.time_reference || '',
+        c.claim_b?.time_reference || '',
+        c.claim_a?.scope_quantifiers || '',
+        c.claim_b?.scope_quantifiers || '',
+        esc(c.claim_a?.context_before || ''),
+        esc(c.claim_a?.context_after || ''),
+        esc(c.claim_b?.context_before || ''),
+        esc(c.claim_b?.context_after || ''),
+        esc(md(c, 'reconciliation_attempt')),
+        esc(md(c, 'reconciler_rationale')),
+        c.bucket || '',
+        c.confidence != null ? String(c.confidence) : '',
       ]);
 
       const csvContent = '\uFEFF' + headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
@@ -988,7 +1022,7 @@ export const CaseDetailPage: React.FC = () => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } else {
-      // Text report export
+      // Text report export — enriched (delta-fix §6)
       let report = `דוח סתירות - ${caseName}\n`;
       report += `תאריך: ${new Date().toLocaleDateString('he-IL')}\n`;
       report += `סה"כ סתירות: ${contradictions.length}\n`;
@@ -999,10 +1033,17 @@ export const CaseDetailPage: React.FC = () => {
         report += `-`.repeat(30) + '\n';
         report += `חומרה: ${c.severity || 'לא מוגדר'}\n`;
         report += `סטטוס: ${c.status || 'לא מוגדר'}\n`;
-        report += `קטגוריה: ${c.category || 'לא מוגדר'}\n\n`;
+        report += `קטגוריה: ${c.category || 'לא מוגדר'}\n`;
+        report += `bucket: ${c.bucket || 'לא מוגדר'}\n`;
+        report += `ביטחון: ${c.confidence != null ? Math.round(c.confidence * 100) + '%' : 'לא מוגדר'}\n\n`;
         report += `הסבר:\n${c.explanation || 'אין הסבר'}\n\n`;
-        if (c.quote1) report += `ציטוט 1:\n"${c.quote1}"\n\n`;
-        if (c.quote2) report += `ציטוט 2:\n"${c.quote2}"\n\n`;
+        if (c.quote1) report += `ציטוט 1:\n"${c.quote1}"\n`;
+        if (c.claim_a?.speaker_mode) report += `  דובר: ${c.claim_a.speaker_mode} | מישור: ${c.claim_a.plane || '-'}\n`;
+        if (c.claim_a?.context_before) report += `  הקשר לפני: ${c.claim_a.context_before.slice(0, 120)}\n`;
+        report += '\n';
+        if (c.quote2) report += `ציטוט 2:\n"${c.quote2}"\n`;
+        if (c.claim_b?.speaker_mode) report += `  דובר: ${c.claim_b.speaker_mode} | מישור: ${c.claim_b.plane || '-'}\n`;
+        if (c.claim_b?.context_before) report += `  הקשר לפני: ${c.claim_b.context_before.slice(0, 120)}\n`;
         report += '\n';
       });
 
