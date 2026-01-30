@@ -181,6 +181,45 @@ class LLMMode(str, Enum):
     DEEPSEEK = "deepseek"   # DeepSeek API (primary analyzer)
 
 
+class SpeakerRole(str, Enum):
+    """Role of the speaker in a claim"""
+    COURT = "court"
+    PARTY = "party"
+    ATTORNEY = "attorney"
+    WITNESS = "witness"
+    EXTERNAL = "external"
+
+
+class SpeakerMode(str, Enum):
+    """Speaker attribution mode"""
+    COURT_FINDING = "COURT_FINDING"
+    PARTY_CLAIM = "PARTY_CLAIM"
+    QUOTE = "QUOTE"
+    LAW_CITATION = "LAW_CITATION"
+    OPINION = "OPINION"
+
+
+class ClaimPlane(str, Enum):
+    """Logical plane for a claim"""
+    FACT = "FACT"
+    LAW = "LAW"
+    OPINION = "OPINION"
+    PROCEDURAL = "PROCEDURAL"
+
+
+class OutcomeCategory(str, Enum):
+    """Outcome categories for pair analysis"""
+    TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
+    DISAGREEMENT_BETWEEN_PARTIES = "DISAGREEMENT_BETWEEN_PARTIES"
+    ROLE_OR_ATTRIBUTION_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
+    PLANE_MISMATCH = "PLANE_MISMATCH"
+    TIME_OR_STAGE_SHIFT = "TIME_OR_STAGE_SHIFT"
+    APPARENT_TENSION_RESOLVABLE = "APPARENT_TENSION_RESOLVABLE"
+    AMBIGUITY_OR_VAGUENESS = "AMBIGUITY_OR_VAGUENESS"
+    INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
+    DUPLICATE_RESTATEMENT = "DUPLICATE_RESTATEMENT"
+
+
 # =============================================================================
 # ENUMS - Attack Angles (Future - NOT in MVP)
 # =============================================================================
@@ -234,6 +273,21 @@ class ClaimInput(BaseModel):
     char_end: Optional[int] = Field(None, description="Character end offset")
     speaker: Optional[str] = Field(None, description="Who made this claim")
     anchor: Optional[EvidenceAnchor] = Field(None, description="Optional evidence anchor")
+    # Expert contradiction model fields
+    text_span: Optional[str] = Field(None, description="Exact quote span for the claim")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before the quote")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after the quote")
+    section_path: Optional[str] = Field(None, description="Section path in document")
+    speaker_role: Optional[SpeakerRole] = Field(None, description="court/party/attorney/witness/external")
+    speaker_mode: Optional[SpeakerMode] = Field(None, description="Attribution mode")
+    plane: Optional[ClaimPlane] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    time_reference: Optional[str] = Field(None, description="Time reference string")
+    scope_conditions: Optional[str] = Field(None, description="Scope conditions")
+    quantifiers: Optional[List[str]] = Field(None, description="Quantifiers in claim")
+    modality: Optional[str] = Field(None, description="must/may/possible/uncertain")
+    negation: Optional[bool] = Field(None, description="Negation flag")
+    entities_relations: Optional[List[str]] = Field(None, description="Entities/relations list")
+    extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Extraction confidence")
 
     class Config:
         json_schema_extra = {
@@ -590,6 +644,21 @@ class ClaimOutput(BaseModel):
     locator: Optional[Locator] = Field(None, description="Location in document")
     anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     features: Optional[ClaimFeatures] = Field(None, description="Extracted features")
+    # Expert contradiction model fields
+    text_span: Optional[str] = Field(None, description="Exact quote span for the claim")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before the quote")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after the quote")
+    section_path: Optional[str] = Field(None, description="Section path in document")
+    speaker_role: Optional[SpeakerRole] = Field(None, description="court/party/attorney/witness/external")
+    speaker_mode: Optional[SpeakerMode] = Field(None, description="Attribution mode")
+    plane: Optional[ClaimPlane] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    time_reference: Optional[str] = Field(None, description="Time reference string")
+    scope_conditions: Optional[str] = Field(None, description="Scope conditions")
+    quantifiers: Optional[List[str]] = Field(None, description="Quantifiers in claim")
+    modality: Optional[str] = Field(None, description="must/may/possible/uncertain")
+    negation: Optional[bool] = Field(None, description="Negation flag")
+    entities_relations: Optional[List[str]] = Field(None, description="Entities/relations list")
+    extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Extraction confidence")
 
     class Config:
         json_schema_extra = {
@@ -784,6 +853,35 @@ class ContradictionOutput(BaseModel):
                 "explanation": "סתירה בתאריך חתימת החוזה: 15.3.2020 מול 20.5.2021"
             }
         }
+
+
+class PairEvidence(BaseModel):
+    """Evidence bundle for pair analysis"""
+    quote: str = Field(..., description="Exact quoted text")
+    context_before: str = Field(..., description="Context before")
+    context_after: str = Field(..., description="Context after")
+    doc_id: Optional[str] = Field(None, description="Document ID")
+    section_path: Optional[str] = Field(None, description="Section path")
+
+
+class PairAnalysisRow(BaseModel):
+    """Pair analysis table row"""
+    claimA_id: str = Field(..., description="Claim A ID")
+    claimB_id: str = Field(..., description="Claim B ID")
+    outcome_category: OutcomeCategory = Field(..., description="Outcome category")
+    contradiction_score: float = Field(..., ge=0.0, le=1.0, description="Contradiction score")
+    reconciliation_attempt: Dict[str, Any] = Field(..., description="Reconciliation attempt details")
+    rationale: str = Field(..., description="Pair rationale")
+    evidence_A: PairEvidence = Field(..., description="Evidence for claim A")
+    evidence_B: PairEvidence = Field(..., description="Evidence for claim B")
+
+
+class SummaryReport(BaseModel):
+    """Summary report for expert contradiction analysis"""
+    true_contradictions: int = Field(..., description="Count of true contradictions")
+    distribution: Dict[str, int] = Field(default_factory=dict, description="Outcome distribution")
+    top_findings: List[Dict[str, Any]] = Field(default_factory=list, description="Top findings")
+    noise_to_signal_ratio: float = Field(..., description="Noise-to-signal ratio")
 
 
 # =============================================================================
@@ -995,6 +1093,14 @@ class AnalysisResponse(BaseModel):
     contradictions: List[ContradictionOutput] = Field(..., description="Detected contradictions")
     cross_exam_questions: List[CrossExamQuestionsOutput] = Field(..., description="Cross-exam questions")
     metadata: AnalysisMetadata = Field(..., description="Analysis metadata")
+    pair_analysis: List[PairAnalysisRow] = Field(
+        default_factory=list,
+        description="Pair analysis table"
+    )
+    summary_report: Optional[SummaryReport] = Field(
+        None,
+        description="Expert summary report"
+    )
 
     # Attribution Layer additions
     disputes: List[DisputeIssue] = Field(
