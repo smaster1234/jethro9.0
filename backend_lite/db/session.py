@@ -120,6 +120,8 @@ def _ensure_notebook_schema(engine) -> None:
     """
     Ensure Notebook-era columns exist (lightweight migration).
     Adds doc_class to documents table.
+    Also cleans up any stale PostgreSQL native enum types that may have been
+    created by an earlier model definition using Enum(DocClass).
     """
     try:
         inspector = inspect(engine)
@@ -131,6 +133,14 @@ def _ensure_notebook_schema(engine) -> None:
                 ))
     except Exception:
         pass
+
+    # Clean up stale native enum types that conflict with VARCHAR columns
+    for enum_name in ("docclass", "versionchangetype", "credittransactiontype"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP TYPE IF EXISTS {enum_name} CASCADE"))
+        except Exception:
+            pass
 
 
 def drop_db():

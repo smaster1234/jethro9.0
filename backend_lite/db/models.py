@@ -608,7 +608,7 @@ class Document(Base):
     # Legal metadata
     party = Column(Enum(DocumentParty), default=DocumentParty.UNKNOWN)
     role = Column(Enum(DocumentRole), default=DocumentRole.UNKNOWN)
-    doc_class = Column(Enum(DocClass), default=DocClass.SUPPORTING)  # Derived from role
+    doc_class = Column(String(20), default="supporting")  # Derived from role; uses DocClass values
     author = Column(String(255), nullable=True)
     version_label = Column(String(50), nullable=True)  # "מתוקן", "טיוטה", "הוגש"
     occurred_at = Column(DateTime, nullable=True)  # When the document was created/signed
@@ -1174,14 +1174,14 @@ class FactAppearance(Base):
 
     # Document context (denormalized for query performance)
     doc_date = Column(DateTime, nullable=True)  # Copy of document.occurred_at
-    doc_class = Column(Enum(DocClass), nullable=True)  # Copy of document.doc_class
+    doc_class = Column(String(20), nullable=True)  # Copy of document.doc_class
     doc_role = Column(Enum(DocumentRole), nullable=True)
     doc_party = Column(Enum(DocumentParty), nullable=True)
     doc_name = Column(String(255), nullable=True)
 
     # Content
     text = Column(Text, nullable=True)  # Quoted text from this document (null = absent)
-    status = Column(Enum(VersionChangeType), default=VersionChangeType.NEW)
+    status = Column(String(30), default="new")  # Uses VersionChangeType values
     change_detail = Column(Text, nullable=True)  # "500K → 450K" or "הושמט בתצהיר"
 
     # Comparison
@@ -1219,7 +1219,7 @@ class CreditLedger(Base):
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     # Transaction
-    transaction_type = Column(Enum(CreditTransactionType), nullable=False)
+    transaction_type = Column(String(20), nullable=False)  # Uses CreditTransactionType values
     amount = Column(Integer, nullable=False)  # Positive = credit added, negative = consumed
     balance_after = Column(Integer, nullable=False)  # Running balance after this transaction
 
