@@ -11,9 +11,10 @@ import {
   ChevronRight,
   FileText,
   Scale,
+  Coins,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { casesApi } from '../../api';
+import { casesApi, creditsApi } from '../../api';
 import { cn } from '../../utils/cn';
 import type { Case } from '../../types';
 
@@ -28,6 +29,7 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({ isCollapsed, onTog
   const { notebookId } = useParams();
   const [notebooks, setNotebooks] = useState<Case[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [creditBalance, setCreditBalance] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -42,6 +44,22 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({ isCollapsed, onTog
       }
     };
     fetchNotebooks();
+  }, []);
+
+  // Fetch credit balance
+  useEffect(() => {
+    const fetchCredits = async () => {
+      try {
+        const info = await creditsApi.getMyCredits();
+        setCreditBalance(info.balance);
+      } catch {
+        // Silently fail — credits display is non-critical
+      }
+    };
+    fetchCredits();
+    // Refresh every 60 seconds
+    const interval = setInterval(fetchCredits, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleLogout = () => {
@@ -195,6 +213,32 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({ isCollapsed, onTog
           <Settings className="w-4 h-4" />
           {!isCollapsed && <span>הגדרות</span>}
         </NavLink>
+
+        {/* Credit balance */}
+        {creditBalance !== null && (
+          <div
+            className={cn(
+              'flex items-center gap-2 px-3 py-2 mx-2 mb-1 rounded-lg',
+              creditBalance > 20 ? 'bg-emerald-50' : creditBalance > 0 ? 'bg-amber-50' : 'bg-red-50',
+              isCollapsed && 'justify-center mx-1 px-1'
+            )}
+          >
+            <Coins className={cn(
+              'w-4 h-4 flex-shrink-0',
+              creditBalance > 20 ? 'text-emerald-500' : creditBalance > 0 ? 'text-amber-500' : 'text-red-500'
+            )} />
+            {!isCollapsed && (
+              <div className="flex-1 min-w-0">
+                <p className={cn(
+                  'text-xs font-semibold',
+                  creditBalance > 20 ? 'text-emerald-700' : creditBalance > 0 ? 'text-amber-700' : 'text-red-700'
+                )}>
+                  {creditBalance} <span className="font-normal">קרדיטים</span>
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {user && !isCollapsed && (
           <div className="flex items-center gap-2 px-3 py-2">

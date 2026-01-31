@@ -11,6 +11,8 @@ export { default as crossExamPlanApi } from './crossExamPlan';
 export { default as trainingApi } from './training';
 export { default as usageApi } from './usage';
 export { default as feedbackApi } from './feedback';
+export { default as creditsApi } from './credits';
+export type { UserCreditsInfo, CreditTransaction } from './credits';
 
 // Health check
 import apiClient from './client';

@@ -644,16 +644,43 @@ class RuleBasedDetector:
         amounts1: List[Tuple[float, str, ContradictionSubtype]],
         amounts2: List[Tuple[float, str, ContradictionSubtype]]
     ) -> Optional[Tuple[float, float, str, ContradictionSubtype]]:
-        """Check if two amount sets conflict"""
+        """Check if two amount sets conflict (adaptive threshold)."""
         for val1, type1, sub1 in amounts1:
             for val2, type2, sub2 in amounts2:
-                # Same type but different value (>10% difference)
                 if type1 == type2 and val1 != val2:
                     diff = abs(val1 - val2) / max(val1, val2, 1)
-                    if diff > 0.1:
+                    abs_diff = abs(val1 - val2)
+                    threshold = self._adaptive_amount_threshold(
+                        max(val1, val2), type1
+                    )
+                    # Minimum absolute difference to avoid rounding noise
+                    min_abs = (
+                        10 if type1 in ('shekel', 'dollar', 'thousands', 'millions')
+                        else 1
+                    )
+                    if diff > threshold and abs_diff > min_abs:
                         return (val1, val2, type1, sub1)
 
         return None
+
+    @staticmethod
+    def _adaptive_amount_threshold(magnitude: float, amt_type: str) -> float:
+        """
+        Adaptive threshold based on amount magnitude.
+
+        Small amounts need larger % difference (rounding errors common).
+        Large amounts need smaller % difference (5% of ₪1M = ₪50K).
+        """
+        if amt_type == 'percent':
+            return 0.10  # 10% relative for percentages
+        if magnitude < 100:
+            return 0.20  # 20% for small amounts (< 100)
+        elif magnitude < 10_000:
+            return 0.10  # 10% for medium amounts (100 – 10K)
+        elif magnitude < 1_000_000:
+            return 0.05  # 5% for large amounts (10K – 1M)
+        else:
+            return 0.03  # 3% for very large amounts (> 1M)
 
     def _format_amount(self, value: float, amt_type: str) -> str:
         """Format amount for display"""
