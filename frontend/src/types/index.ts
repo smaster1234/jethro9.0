@@ -404,6 +404,36 @@ export interface AnchorResolveResponse {
   bbox?: Record<string, unknown>;
 }
 
+export interface ClaimEvidence {
+  claim_id: string;
+  doc_id?: string;
+  locator?: Record<string, unknown>;
+  anchor?: EvidenceAnchor;
+  quote: string;
+  normalized?: string;
+  // Enrichment fields (Cursor 5.2 §10 — Expert Notebook)
+  speaker_mode?: string;   // finding | party_claim | quote | law_citation | opinion
+  speaker_role?: string;
+  plane?: string;          // FACT | LAW | OPINION | PROCEDURAL
+  modality?: string;       // certain | possible | obligation | permission
+  negation?: boolean;
+  entities?: string[];
+  context_before?: string;
+  context_after?: string;
+}
+
+export interface GateResults {
+  claim_a_complete?: boolean;
+  claim_b_complete?: boolean;
+  time_match?: boolean;
+  scope_match?: boolean;
+  quantifier_match?: boolean;
+  modality_match?: boolean;
+  speaker_mode_ok?: boolean;
+  plane_match?: boolean;
+  [key: string]: unknown;
+}
+
 export interface Contradiction {
   id: string;
   // Claim IDs (backend uses both naming conventions)
@@ -414,6 +444,9 @@ export interface Contradiction {
   // Claim objects
   claim_a?: Claim;
   claim_b?: Claim;
+  // Enriched claim evidence (from API response)
+  claim1?: ClaimEvidence;
+  claim2?: ClaimEvidence;
   // Claim text (from enriched responses)
   claim1_text?: string;
   claim2_text?: string;
@@ -441,6 +474,12 @@ export interface Contradiction {
   claim2_locator?: EvidenceAnchor | Record<string, unknown>;
   // Timestamps
   created_at?: string;
+  // Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
+  reconciler_outcome?: string;
+  reconciler_rationale?: string;
+  reconciliation_attempt?: string;
+  deciding_fields?: string[];
+  gate_results?: GateResults;
 }
 
 export interface CrossExamQuestion {

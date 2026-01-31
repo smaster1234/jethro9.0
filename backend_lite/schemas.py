@@ -616,6 +616,15 @@ class ClaimEvidence(BaseModel):
     anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     quote: str = Field(..., description="Relevant quote")
     normalized: Optional[str] = Field(None, description="Normalized value (date, amount, etc.)")
+    # Enrichment fields (Cursor 5.2 §3 — Expert Notebook)
+    speaker_mode: Optional[str] = Field(None, description="finding/party_claim/quote/law_citation/opinion")
+    speaker_role: Optional[str] = Field(None, description="Speaker role (e.g. plaintiff, defendant, court)")
+    plane: Optional[str] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    modality: Optional[str] = Field(None, description="certain/possible/obligation/permission")
+    negation: Optional[bool] = Field(None, description="Whether claim contains negation")
+    entities: Optional[List[str]] = Field(None, description="Extracted entities")
+    context_before: Optional[str] = Field(None, description="Context before claim")
+    context_after: Optional[str] = Field(None, description="Context after claim")
 
 
 class TextSpan(BaseModel):
@@ -840,6 +849,13 @@ class ContradictionOutput(BaseModel):
         default=False,
         description="Computed flag: True when status is verified/likely, has locators, and quotes"
     )
+
+    # Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
+    reconciler_outcome: Optional[str] = Field(None, description="9-category reconciliation outcome")
+    reconciler_rationale: Optional[str] = Field(None, description="Reconciliation rationale (Hebrew)")
+    reconciliation_attempt: Optional[str] = Field(None, description="What was tried to reconcile")
+    deciding_fields: Optional[List[str]] = Field(None, description="Fields that decided the outcome")
+    gate_results: Optional[Dict[str, Any]] = Field(None, description="Gate check results (pass/fail)")
 
     class Config:
         json_schema_extra = {

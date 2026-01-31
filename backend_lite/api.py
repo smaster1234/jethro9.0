@@ -1207,7 +1207,7 @@ def convert_contradiction_to_output(
             char_end=getattr(contr.claim2, 'char_end', None)
         )
 
-    # Build ClaimEvidence for each side
+    # Build ClaimEvidence for each side (with enrichment fields for Expert Notebook)
     claim1_evidence = ClaimEvidence(
         claim_id=contr.claim1.id,
         doc_id=getattr(contr.claim1, 'doc_id', None),
@@ -1223,7 +1223,15 @@ def convert_contradiction_to_output(
             bbox=getattr(contr.claim1, 'bbox', None),
         ) if getattr(contr.claim1, 'doc_id', None) else None,
         quote=contr.quote1,
-        normalized=getattr(contr, 'normalized1', None)
+        normalized=getattr(contr, 'normalized1', None),
+        speaker_mode=getattr(contr.claim1, 'speaker_mode', None),
+        speaker_role=getattr(contr.claim1, 'speaker_role', None),
+        plane=getattr(contr.claim1, 'plane', None),
+        modality=getattr(contr.claim1, 'modality', None),
+        negation=getattr(contr.claim1, 'negation', None),
+        entities=getattr(contr.claim1, 'entities', None) or None,
+        context_before=getattr(contr.claim1, 'context_before', None),
+        context_after=getattr(contr.claim1, 'context_after', None),
     )
 
     claim2_evidence = ClaimEvidence(
@@ -1241,11 +1249,20 @@ def convert_contradiction_to_output(
             bbox=getattr(contr.claim2, 'bbox', None),
         ) if getattr(contr.claim2, 'doc_id', None) else None,
         quote=contr.quote2,
-        normalized=getattr(contr, 'normalized2', None)
+        normalized=getattr(contr, 'normalized2', None),
+        speaker_mode=getattr(contr.claim2, 'speaker_mode', None),
+        speaker_role=getattr(contr.claim2, 'speaker_role', None),
+        plane=getattr(contr.claim2, 'plane', None),
+        modality=getattr(contr.claim2, 'modality', None),
+        negation=getattr(contr.claim2, 'negation', None),
+        entities=getattr(contr.claim2, 'entities', None) or None,
+        context_before=getattr(contr.claim2, 'context_before', None),
+        context_after=getattr(contr.claim2, 'context_after', None),
     )
 
-    # Get status
+    # Get status and metadata
     status = getattr(contr, 'status', ContradictionStatus.SUSPICIOUS)
+    meta = getattr(contr, 'metadata', {}) or {}
 
     # Compute "usable" flag: Only What I Can Use
     # A contradiction is usable when:
@@ -1281,6 +1298,12 @@ def convert_contradiction_to_output(
         ambiguity_explanation=getattr(contr, 'ambiguity_explanation', None),
         category_badge=getattr(contr, 'category_badge', None),
         category_label_short=getattr(contr, 'category_label_short', None),
+        # Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
+        reconciler_outcome=meta.get("reconciler_outcome"),
+        reconciler_rationale=meta.get("reconciler_rationale"),
+        reconciliation_attempt=meta.get("reconciliation_attempt"),
+        deciding_fields=meta.get("reconciler_deciding"),
+        gate_results=meta.get("reconciler_debug"),
     )
 
 

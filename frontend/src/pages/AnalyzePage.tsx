@@ -10,10 +10,17 @@ import {
   ArrowDown,
   Sparkles,
   MessageSquare,
+  Shield,
+  ShieldCheck,
+  ShieldX,
+  Lock,
+  Eye,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { analysisApi, handleApiError } from '../api';
 import { Card, Button, Badge, Progress, Spinner, EmptyState } from '../components/ui';
-import type { AnalysisResponse, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+import type { AnalysisResponse, Contradiction, ClaimEvidence, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
 
 // Helper to flatten cross-exam questions from nested structure
 const flattenCrossExamQuestions = (
@@ -494,10 +501,171 @@ export const AnalyzePage: React.FC = () => {
 };
 
 // Contradiction Card Component
+// --- Attribution phrase highlighting (Cursor 5.2 §10h) ---
+const ATTRIBUTION_PATTERNS = [
+  /לטענת[ו]?/g, /נטען/g, /לכאורה/g, /ייתכן/g, /סביר להניח/g,
+  /נראה כי/g, /ככל הנראה/g, /כנטען/g, /לדבריו/g, /לדבריה/g,
+  /טוען/g, /טוענת/g, /הנתבע טען/g, /התובע טען/g,
+];
+
+function highlightAttribution(text: string): React.ReactNode[] {
+  if (!text) return [text];
+  const parts: React.ReactNode[] = [];
+  let lastIdx = 0;
+  const matches: { start: number; end: number }[] = [];
+  for (const pat of ATTRIBUTION_PATTERNS) {
+    pat.lastIndex = 0;
+    let m;
+    while ((m = pat.exec(text)) !== null) {
+      matches.push({ start: m.index, end: m.index + m[0].length });
+    }
+  }
+  matches.sort((a, b) => a.start - b.start);
+  // Merge overlapping
+  const merged: { start: number; end: number }[] = [];
+  for (const m of matches) {
+    if (merged.length && m.start <= merged[merged.length - 1].end) {
+      merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, m.end);
+    } else {
+      merged.push({ ...m });
+    }
+  }
+  for (const m of merged) {
+    if (m.start > lastIdx) parts.push(text.slice(lastIdx, m.start));
+    parts.push(
+      <mark key={m.start} className="bg-amber-200 text-amber-900 px-0.5 rounded" title="ביטוי ייחוס">
+        {text.slice(m.start, m.end)}
+      </mark>
+    );
+    lastIdx = m.end;
+  }
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return parts;
+}
+
+// --- Speaker mode / plane badge helpers ---
+const speakerModeLabel: Record<string, string> = {
+  finding: 'קביעה שיפוטית',
+  party_claim: 'טענת צד',
+  quote: 'ציטוט',
+  law_citation: 'אזכור חוק',
+  opinion: 'דעה / הערכה',
+};
+const planeLabel: Record<string, string> = {
+  FACT: 'עובדה',
+  LAW: 'חוק',
+  OPINION: 'דעה',
+  PROCEDURAL: 'פרוצדורלי',
+};
+const speakerModeBadgeColor: Record<string, string> = {
+  finding: 'bg-blue-100 text-blue-800 border-blue-200',
+  party_claim: 'bg-orange-100 text-orange-800 border-orange-200',
+  quote: 'bg-purple-100 text-purple-800 border-purple-200',
+  law_citation: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  opinion: 'bg-pink-100 text-pink-800 border-pink-200',
+};
+const planeBadgeColor: Record<string, string> = {
+  FACT: 'bg-sky-100 text-sky-800 border-sky-200',
+  LAW: 'bg-teal-100 text-teal-800 border-teal-200',
+  OPINION: 'bg-pink-100 text-pink-800 border-pink-200',
+  PROCEDURAL: 'bg-slate-100 text-slate-700 border-slate-200',
+};
+
+// --- Gate labels ---
+const gateLabels: Record<string, string> = {
+  claim_a_complete: 'שלמות טענה א׳',
+  claim_b_complete: 'שלמות טענה ב׳',
+  time_match: 'תאימות זמן',
+  scope_match: 'תאימות היקף',
+  quantifier_match: 'כמת (quantifier)',
+  modality_match: 'מודאליות',
+  speaker_mode_ok: 'מצב דובר',
+  plane_match: 'מישור',
+};
+
+// --- Claim panel with context + badges ---
+const ClaimPanel: React.FC<{
+  label: string;
+  color: string;
+  claim?: { text?: string; source_name?: string; speaker?: string };
+  evidence?: ClaimEvidence;
+}> = ({ label, color, claim, evidence }) => {
+  const [showContext, setShowContext] = useState(true);
+  const text = evidence?.quote || claim?.text || 'לא זמין';
+  const sm = evidence?.speaker_mode;
+  const pl = evidence?.plane;
+  const ctxBefore = evidence?.context_before;
+  const ctxAfter = evidence?.context_after;
+
+  const borderColor = color === 'red' ? 'border-red-200' : 'border-orange-200';
+  const bgColor = color === 'red' ? 'bg-red-50' : 'bg-orange-50';
+  const labelColor = color === 'red' ? 'text-red-600' : 'text-orange-600';
+
+  return (
+    <div className={`p-4 ${bgColor} rounded-xl border ${borderColor}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-bold ${labelColor}`}>{label}</span>
+          {sm && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${speakerModeBadgeColor[sm] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+              {speakerModeLabel[sm] || sm}
+            </span>
+          )}
+          {pl && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${planeBadgeColor[pl] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+              {planeLabel[pl] || pl}
+            </span>
+          )}
+          {evidence?.negation && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-red-100 text-red-700 border-red-200">שלילה</span>
+          )}
+        </div>
+        {claim?.source_name && (
+          <span className="text-xs text-slate-400">{claim.source_name}</span>
+        )}
+      </div>
+
+      {/* Context before */}
+      {ctxBefore && showContext && (
+        <p className="text-xs text-slate-400 italic mb-1 leading-relaxed">...{ctxBefore}</p>
+      )}
+
+      {/* Claim text with attribution highlighting */}
+      <p className="text-slate-800 leading-relaxed">{highlightAttribution(text)}</p>
+
+      {/* Context after */}
+      {ctxAfter && showContext && (
+        <p className="text-xs text-slate-400 italic mt-1 leading-relaxed">{ctxAfter}...</p>
+      )}
+
+      {/* Footer: speaker, entities, toggle */}
+      <div className="flex items-center justify-between mt-2">
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          {claim?.speaker && <span>דובר: {claim.speaker}</span>}
+          {evidence?.entities && evidence.entities.length > 0 && (
+            <span className="text-slate-400">ישויות: {evidence.entities.join(', ')}</span>
+          )}
+        </div>
+        {(ctxBefore || ctxAfter) && (
+          <button
+            onClick={() => setShowContext(!showContext)}
+            className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+          >
+            <Eye className="w-3 h-3" />
+            {showContext ? 'הסתר הקשר' : 'הצג הקשר'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number }> = ({
   contradiction,
   index,
 }) => {
+  const [gatesOpen, setGatesOpen] = useState(false);
+
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'critical':
@@ -541,20 +709,16 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
   const getExplanation = () => {
     if (contradiction.explanation_he) return contradiction.explanation_he;
     if (contradiction.explanation) return contradiction.explanation;
-
-    // Generate a basic explanation based on contradiction type
-    const explanations: Record<string, string> = {
-      'TEMPORAL_DATE': `התאריכים בשתי הטענות אינם תואמים. יש לברר איזה תאריך הוא הנכון.`,
-      'QUANTITATIVE_AMOUNT': `הכמויות או הסכומים המצוינים בשתי הטענות שונים זה מזה.`,
-      'ACTOR_ATTRIBUTION': `יש אי-התאמה לגבי מי ביצע את הפעולה המתוארת.`,
-      'PRESENCE_PARTICIPATION': `הטענות סותרות זו את זו לגבי נוכחות או השתתפות במאורע.`,
-      'DOCUMENT_EXISTENCE': `יש סתירה לגבי קיומו או אי-קיומו של מסמך.`,
-      'IDENTITY_BASIC': `פרטי הזיהוי בשתי הטענות אינם תואמים.`,
-    };
-
     const key = contradiction.contradiction_type || contradiction.type || '';
-    return explanations[key] ||
-      `שתי הטענות מכילות מידע סותר שדורש בירור נוסף.`;
+    const explanations: Record<string, string> = {
+      'TEMPORAL_DATE': 'התאריכים בשתי הטענות אינם תואמים. יש לברר איזה תאריך הוא הנכון.',
+      'QUANTITATIVE_AMOUNT': 'הכמויות או הסכומים המצוינים בשתי הטענות שונים זה מזה.',
+      'ACTOR_ATTRIBUTION': 'יש אי-התאמה לגבי מי ביצע את הפעולה המתוארת.',
+      'PRESENCE_PARTICIPATION': 'הטענות סותרות זו את זו לגבי נוכחות או השתתפות במאורע.',
+      'DOCUMENT_EXISTENCE': 'יש סתירה לגבי קיומו או אי-קיומו של מסמך.',
+      'IDENTITY_BASIC': 'פרטי הזיהוי בשתי הטענות אינם תואמים.',
+    };
+    return explanations[key] || 'שתי הטענות מכילות מידע סותר שדורש בירור נוסף.';
   };
 
   const getCategoryLabel = (cat?: string) => {
@@ -566,7 +730,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       'TRUE_CONTRADICTION': 'סתירה אמיתית',
       'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה — ניתן ליישוב',
       'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
-      'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
+      'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי\u2011התאמה בייחוס/תפקיד',
       'PLANE_MISMATCH': 'חוסר התאמה במישור',
       'TIME_OR_STAGE_SHIFT': 'שינוי זמן או שלב',
       'AMBIGUITY_OR_VAGUENESS': 'עמימות או אי\u2011בהירות',
@@ -596,33 +760,24 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
 
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
+  const gates = contradiction.gate_results;
+  const ev1 = contradiction.claim1;
+  const ev2 = contradiction.claim2;
 
-  const getBucketLabel = (bucket?: string) => {
-    const labels: Record<string, string> = {
-      'internal_ours': 'חולשה שלנו',
-      'internal_theirs': 'חולשה שלהם',
-      'dispute': 'שנוי במחלוקת',
-      'unknown': 'לא מסווג',
-    };
-    return bucket ? labels[bucket] || bucket : null;
-  };
-  const getBucketColor = (bucket?: string) => {
-    switch (bucket) {
-      case 'internal_ours': return 'text-red-600 bg-red-50 border-red-200';
-      case 'internal_theirs': return 'text-green-600 bg-green-50 border-green-200';
-      case 'dispute': return 'text-yellow-600 bg-yellow-50 border-yellow-200';
-      default: return 'text-slate-500 bg-slate-50 border-slate-200';
-    }
-  };
-  const getStatusLabel = (status?: string) => {
-    const labels: Record<string, string> = {
-      'new': 'חדש',
-      'reviewed': 'נבדק',
-      'confirmed': 'מאושר',
-      'dismissed': 'נדחה',
-    };
-    return status ? labels[status] || status : null;
-  };
+  // Hard UI stops (§10f): disable "mark as contradiction" when conditions are not met
+  const hasContext = !!(ev1?.context_before || ev1?.context_after || ev2?.context_before || ev2?.context_after);
+  const hasPartyClaimBlock = ev1?.speaker_mode === 'party_claim' || ev2?.speaker_mode === 'party_claim';
+  const hasPlaneMismatch = ev1?.plane && ev2?.plane && ev1.plane !== ev2.plane;
+  const reconciliationSucceeded = contradiction.reconciler_outcome
+    && contradiction.reconciler_outcome !== 'TRUE_CONTRADICTION'
+    && contradiction.reconciler_outcome !== 'APPARENT_TENSION_RESOLVABLE';
+  const markDisabled = !hasContext || hasPartyClaimBlock || hasPlaneMismatch || !!reconciliationSucceeded;
+
+  const disableReasons: string[] = [];
+  if (!hasContext) disableReasons.push('הקשר חסר');
+  if (hasPartyClaimBlock) disableReasons.push('טענת צד');
+  if (hasPlaneMismatch) disableReasons.push('חוסר התאמה במישור');
+  if (reconciliationSucceeded) disableReasons.push('יישוב הצליח');
 
   return (
     <motion.div
@@ -632,7 +787,7 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
     >
       <Card className="border-r-4 border-warning-500">
         <div className="space-y-4">
-          {/* Header with badges */}
+          {/* 1) Header with badges */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-warning-500" />
@@ -654,65 +809,119 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
             </div>
           </div>
 
-          {/* Metadata row: bucket, status */}
-          {(contradiction.bucket || contradiction.status) && (
-            <div className="flex flex-wrap gap-2 text-xs">
-              {getBucketLabel(contradiction.bucket) && (
-                <span className={`px-2 py-1 rounded-md border ${getBucketColor(contradiction.bucket)}`}>
-                  {getBucketLabel(contradiction.bucket)}
-                </span>
-              )}
-              {getStatusLabel(contradiction.status) && (
-                <span className="px-2 py-1 rounded-md border border-slate-200 bg-slate-50 text-slate-600">
-                  {getStatusLabel(contradiction.status)}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Claims */}
+          {/* 2) Claims with context + speaker/plane badges (§10a, §10b) */}
           <div className="space-y-3">
-            <div className="p-4 bg-red-50 rounded-xl border border-red-100">
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs text-red-500 font-medium">טענה א'</div>
-                {contradiction.claim_a?.source_name && (
-                  <div className="text-xs text-slate-400">{contradiction.claim_a.source_name}</div>
-                )}
-              </div>
-              <p className="text-slate-800">
-                {contradiction.claim_a?.text || 'לא זמין'}
-              </p>
-              {contradiction.claim_a?.speaker && (
-                <div className="text-xs text-slate-500 mt-1">דובר: {contradiction.claim_a.speaker}</div>
-              )}
-            </div>
-
+            <ClaimPanel
+              label="טענה א'"
+              color="red"
+              claim={contradiction.claim_a}
+              evidence={ev1}
+            />
             <div className="flex justify-center">
               <div className="w-8 h-8 rounded-full bg-warning-100 flex items-center justify-center">
                 <ArrowDown className="w-4 h-4 text-warning-600" />
               </div>
             </div>
-
-            <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs text-orange-500 font-medium">טענה ב'</div>
-                {contradiction.claim_b?.source_name && (
-                  <div className="text-xs text-slate-400">{contradiction.claim_b.source_name}</div>
-                )}
-              </div>
-              <p className="text-slate-800">
-                {contradiction.claim_b?.text || 'לא זמין'}
-              </p>
-              {contradiction.claim_b?.speaker && (
-                <div className="text-xs text-slate-500 mt-1">דובר: {contradiction.claim_b.speaker}</div>
-              )}
-            </div>
+            <ClaimPanel
+              label="טענה ב'"
+              color="orange"
+              claim={contradiction.claim_b}
+              evidence={ev2}
+            />
           </div>
 
-          {/* Explanation - always shown */}
+          {/* 3) Gate checks with pass/fail indicators (§10c) */}
+          {gates && Object.keys(gates).length > 0 && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <button
+                onClick={() => setGatesOpen(!gatesOpen)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
+              >
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Shield className="w-4 h-4" />
+                  <span>בדיקות שערים ({Object.keys(gates).length})</span>
+                </div>
+                {gatesOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+              </button>
+              {gatesOpen && (
+                <div className="p-3 grid grid-cols-2 gap-2">
+                  {Object.entries(gates).map(([key, val]) => {
+                    const passed = val === true;
+                    const failed = val === false;
+                    return (
+                      <div key={key} className="flex items-center gap-2 text-xs">
+                        {passed ? (
+                          <ShieldCheck className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                        ) : failed ? (
+                          <ShieldX className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                        ) : (
+                          <Shield className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
+                        )}
+                        <span className={passed ? 'text-green-700' : failed ? 'text-red-700' : 'text-slate-500'}>
+                          {gateLabels[key] || key}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 4) Reconciliation attempt (§10d) */}
+          {(contradiction.reconciliation_attempt || contradiction.reconciler_rationale) && (
+            <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+              <div className="text-xs text-indigo-600 font-medium mb-1 flex items-center gap-1">
+                <Search className="w-3 h-3" />
+                ניסיון יישוב
+              </div>
+              {contradiction.reconciliation_attempt && (
+                <p className="text-sm text-slate-700">{contradiction.reconciliation_attempt}</p>
+              )}
+              {contradiction.reconciler_rationale && (
+                <p className="text-sm text-indigo-800 mt-1">{contradiction.reconciler_rationale}</p>
+              )}
+              {contradiction.deciding_fields && contradiction.deciding_fields.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {contradiction.deciding_fields.map((f) => (
+                    <span key={f} className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 5) Final decision with lock indicator (§10e) */}
           <div className="p-4 bg-slate-50 rounded-xl">
-            <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
+            <div className="flex items-center gap-2 mb-1">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              <span className="text-xs text-slate-500 font-medium">החלטה סופית</span>
+            </div>
             <p className="text-slate-700">{getExplanation()}</p>
+          </div>
+
+          {/* 6) Hard UI stops — Mark as contradiction button (§10f) */}
+          <div className="flex items-center justify-between">
+            <button
+              disabled={markDisabled}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                markDisabled
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-red-600 text-white hover:bg-red-700'
+              }`}
+              title={markDisabled ? `חסום: ${disableReasons.join(', ')}` : 'סמן כסתירה'}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              סמן כסתירה
+            </button>
+            {markDisabled && disableReasons.length > 0 && (
+              <span className="text-xs text-slate-400 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                {disableReasons.join(' | ')}
+              </span>
+            )}
           </div>
 
           {/* Confidence */}

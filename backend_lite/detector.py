@@ -1122,6 +1122,7 @@ class RuleBasedDetector:
             contr.metadata["reconciler_score"] = result.contradiction_score
             contr.metadata["reconciler_deciding"] = result.deciding_fields
             contr.metadata["reconciliation_attempt"] = result.reconciliation_attempt
+            contr.metadata["reconciler_debug"] = result.debug
 
             if result.outcome == OUTCOME_DUPLICATE:
                 # Remove duplicates / restatements entirely
