@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from .openrouter_base import OpenRouterBaseClient
+from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,24 @@ class VerifierLLM:
         """Check if verifier can make more calls"""
         return self.enabled and self.stats.calls < self.max_calls
 
+    def _parse_verifier_response(self, content: str) -> Optional[Dict]:
+        """Parse verifier response using robust JSON parser with logging."""
+        if not content or not content.strip():
+            logger.warning("Verifier response content is empty")
+            return None
+
+        data, ok, error = parse_json_robust(content)
+        if ok and data is not None:
+            return data
+
+        # Log the raw content for debugging (truncated)
+        raw_preview = content[:200].replace('\n', '\\n')
+        logger.error(
+            f"Verifier JSON parse failed: {error} | "
+            f"raw_len={len(content)} raw_preview='{raw_preview}'"
+        )
+        return None
+
     async def verify(
         self,
         claim_a: str,
@@ -205,50 +224,65 @@ class VerifierLLM:
                 error=result.error
             )
 
-        # Parse JSON response
-        try:
-            data = json.loads(result.content) if result.content else {}
+        # Parse JSON response using robust parser
+        data = self._parse_verifier_response(result.content)
 
-            # v2: parse outcome field; fall back to legacy contradiction field
-            outcome = data.get("outcome", "")
-            legacy_contradiction = data.get("contradiction", "unclear")
-            # Derive legacy field from outcome for backward compat
-            if outcome == "TRUE_CONTRADICTION":
-                legacy_contradiction = "yes"
-            elif outcome and outcome != "TRUE_CONTRADICTION":
-                legacy_contradiction = "no"
-
-            verdict = VerifierResult(
-                same_fact=data.get("same_fact", "unclear"),
-                contradiction=legacy_contradiction,
-                outcome=outcome,
-                type=data.get("type", "none"),
-                confidence=float(data.get("confidence", 0.5)),
-                reason=data.get("reason", ""),
-                reconciliation_tried=data.get("reconciliation_tried", ""),
-                success=True,
-                raw_response=data,
+        # If robust parse failed and content was empty/whitespace, retry once
+        if data is None and (not result.content or not result.content.strip()):
+            logger.warning(
+                f"Verifier got empty content from {self.model}, retrying once"
             )
+            retry_result = await self.client.call(
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.1,  # Slight temperature nudge on retry
+                max_tokens=256
+            )
+            self.stats.total_input_tokens += retry_result.input_tokens
+            self.stats.total_output_tokens += retry_result.output_tokens
 
-            # Update stats
-            if verdict.outcome == "TRUE_CONTRADICTION" or (
-                verdict.contradiction == "yes" and verdict.confidence >= 0.7
-            ):
-                self.stats.promoted += 1
-            elif verdict.contradiction == "no":
-                self.stats.rejected += 1
-            else:
-                self.stats.unclear += 1
+            if retry_result.success and retry_result.content:
+                data = self._parse_verifier_response(retry_result.content)
 
-            return verdict
-
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Verifier JSON parse error: {e}")
+        if data is None:
             self.stats.unclear += 1
             return VerifierResult(
                 success=False,
-                error=f"JSON parse error: {e}"
+                error="Failed to parse verifier response"
             )
+
+        # v2: parse outcome field; fall back to legacy contradiction field
+        outcome = data.get("outcome", "")
+        legacy_contradiction = data.get("contradiction", "unclear")
+        # Derive legacy field from outcome for backward compat
+        if outcome == "TRUE_CONTRADICTION":
+            legacy_contradiction = "yes"
+        elif outcome and outcome != "TRUE_CONTRADICTION":
+            legacy_contradiction = "no"
+
+        verdict = VerifierResult(
+            same_fact=data.get("same_fact", "unclear"),
+            contradiction=legacy_contradiction,
+            outcome=outcome,
+            type=data.get("type", "none"),
+            confidence=float(data.get("confidence", 0.5)),
+            reason=data.get("reason", ""),
+            reconciliation_tried=data.get("reconciliation_tried", ""),
+            success=True,
+            raw_response=data,
+        )
+
+        # Update stats
+        if verdict.outcome == "TRUE_CONTRADICTION" or (
+            verdict.contradiction == "yes" and verdict.confidence >= 0.7
+        ):
+            self.stats.promoted += 1
+        elif verdict.contradiction == "no":
+            self.stats.rejected += 1
+        else:
+            self.stats.unclear += 1
+
+        return verdict
 
     def get_stats(self) -> Dict[str, Any]:
         """Get verifier statistics"""

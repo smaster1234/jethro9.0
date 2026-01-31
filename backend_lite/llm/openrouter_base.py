@@ -132,7 +132,13 @@ class OpenRouterBaseClient:
                 )
 
             if content is None:
+                logger.warning(f"OpenRouter returned null content for model {self.model}")
                 content = ""
+            elif not content.strip():
+                logger.warning(
+                    f"OpenRouter returned empty content for model {self.model} | "
+                    f"finish_reason={data.get('choices', [{}])[0].get('finish_reason', 'unknown')}"
+                )
 
             usage = data.get("usage", {})
 

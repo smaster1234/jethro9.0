@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from .openrouter_base import OpenRouterBaseClient, LLMCallResult
+from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -199,30 +200,38 @@ class AnalyzerLLM:
         content_preview = result.content[:500] if result.content else 'None'
         logger.info(f"Analyzer response ({result.output_tokens} tokens): {content_preview}...")
 
-        # Parse JSON response
-        try:
-            data = json.loads(result.content) if result.content else {}
-            contradictions = data.get("contradictions", [])
-            self.stats.contradictions_found += len(contradictions)
+        # Parse JSON response using robust parser
+        if not result.content or not result.content.strip():
+            logger.warning("Analyzer response content is empty")
+            data = {}
+        else:
+            data, ok, error = parse_json_robust(result.content)
+            if not ok or data is None:
+                raw_preview = result.content[:200].replace('\n', '\\n')
+                logger.error(
+                    f"Analyzer JSON parse failed: {error} | "
+                    f"raw_len={len(result.content)} raw_preview='{raw_preview}'"
+                )
+                return AnalyzerResult(
+                    success=False,
+                    error=f"JSON parse error: {error}",
+                    raw_content=result.content
+                )
 
-            logger.info(f"Analyzer found {len(contradictions)} contradictions")
-            for c in contradictions[:3]:  # Log first 3
-                logger.info(f"  - {c.get('claim1_id')} vs {c.get('claim2_id')}: {c.get('type')} (conf={c.get('confidence', 0):.2f})")
+        contradictions = data.get("contradictions", [])
+        self.stats.contradictions_found += len(contradictions)
 
-            return AnalyzerResult(
-                contradictions=contradictions,
-                success=True,
-                raw_content=result.content,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens
-            )
-        except json.JSONDecodeError as e:
-            logger.error(f"Analyzer JSON parse error: {e}")
-            return AnalyzerResult(
-                success=False,
-                error=f"JSON parse error: {e}",
-                raw_content=result.content
-            )
+        logger.info(f"Analyzer found {len(contradictions)} contradictions")
+        for c in contradictions[:3]:  # Log first 3
+            logger.info(f"  - {c.get('claim1_id')} vs {c.get('claim2_id')}: {c.get('type')} (conf={c.get('confidence', 0):.2f})")
+
+        return AnalyzerResult(
+            contradictions=contradictions,
+            success=True,
+            raw_content=result.content,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """Get analyzer statistics"""
