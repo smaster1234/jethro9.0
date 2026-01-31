@@ -991,7 +991,7 @@ export const CaseDetailPage: React.FC = () => {
         i + 1,
         c.severity || '',
         c.status || '',
-        c.category || '',
+        c.reconciler_outcome || c.category || '',
         md(c, 'reconciler_outcome'),
         md(c, 'reconciler_score'),
         esc(c.quote1 || ''),
@@ -1037,7 +1037,7 @@ export const CaseDetailPage: React.FC = () => {
         report += `-`.repeat(30) + '\n';
         report += `חומרה: ${c.severity || 'לא מוגדר'}\n`;
         report += `סטטוס: ${c.status || 'לא מוגדר'}\n`;
-        report += `קטגוריה: ${c.category || 'לא מוגדר'}\n`;
+        report += `קטגוריה: ${c.reconciler_outcome || c.category || 'לא מוגדר'}\n`;
         report += `bucket: ${c.bucket || 'לא מוגדר'}\n`;
         report += `ביטחון: ${c.confidence != null ? Math.round(c.confidence * 100) + '%' : 'לא מוגדר'}\n\n`;
         report += `הסבר:\n${c.explanation || 'אין הסבר'}\n\n`;
@@ -1974,7 +1974,7 @@ export const CaseDetailPage: React.FC = () => {
                                   c.quote2,
                                   c.claim1_text,
                                   c.claim2_text,
-                                  c.category,
+                                  c.reconciler_outcome || c.category,
                                   c.type,
                                 ].filter(Boolean).join(' ').toLowerCase();
                                 if (!matchText.includes(query)) {
@@ -2041,7 +2041,7 @@ export const CaseDetailPage: React.FC = () => {
                                   allC.forEach((c) => {
                                     const s = c.severity || 'unknown';
                                     const t = c.contradiction_type || c.type || 'unknown';
-                                    const cat = c.category || 'unclassified';
+                                    const cat = c.reconciler_outcome || c.category || 'unclassified';
                                     severityCounts[s] = (severityCounts[s] || 0) + 1;
                                     typeCounts[t] = (typeCounts[t] || 0) + 1;
                                     categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
@@ -4285,9 +4285,9 @@ const ContradictionCard: React.FC<{
                 {getSeverityLabel(severity)}
               </Badge>
               <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
-              {getCategoryLabel(contradiction.category) && (
-                <Badge variant={getCategoryColor(contradiction.category) as any}>
-                  {getCategoryLabel(contradiction.category)}
+              {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category) && (
+                <Badge variant={getCategoryColor(contradiction.reconciler_outcome || contradiction.category) as any}>
+                  {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category)}
                 </Badge>
               )}
               {contradiction.verified && (

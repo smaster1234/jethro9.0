@@ -50,17 +50,28 @@ def passes_hard_filters(a: Claim, b: Claim) -> bool:
     """
     Return True if the pair (a, b) may be a contradiction candidate.
     If False, skip this pair entirely.
+
+    Cursor 5.2 §4 — hard gates:
+    - Both claims must have speaker_mode set
+    - Both claims must have plane set (and be comparable)
+    - Two party claims → route to DISAGREEMENT, never TRUE_CONTRADICTION
+    - Entity/subject overlap required
     """
+    # Filter 0: speaker_mode must be present on both (Cursor 5.2 §4)
+    if not a.speaker_mode or not b.speaker_mode:
+        return False
+
     # Filter 1: entity / subject overlap
     if not _entity_overlap(a, b):
         return False
 
-    # Filter 2: plane match
+    # Filter 2: plane match (now returns False when plane missing)
     if not _plane_compatible(a, b):
         return False
 
-    # Filter 3: speaker mode — two party-claims from different parties → DISAGREEMENT (not internal)
-    if _is_cross_party_disagreement(a, b):
+    # Filter 3: speaker mode — two party-claims → DISAGREEMENT (not contradiction)
+    # Block ALL party_claim vs party_claim pairs, not just cross-party
+    if a.speaker_mode == SPEAKER_MODE_PARTY_CLAIM and b.speaker_mode == SPEAKER_MODE_PARTY_CLAIM:
         return False
 
     return True
@@ -77,11 +88,14 @@ def _entity_overlap(a: Claim, b: Claim) -> bool:
 
 
 def _plane_compatible(a: Claim, b: Claim) -> bool:
-    """Both claims must be on the same plane to be compared."""
+    """Both claims must be on the same plane to be compared.
+
+    Cursor 5.2 §4: missing plane → INSUFFICIENT_CONTEXT, not comparable.
+    """
     pa = a.plane
     pb = b.plane
     if not pa or not pb:
-        return True  # unknown → allow
+        return False  # missing plane → cannot compare (hard gate)
     return (pa, pb) in _COMPARABLE_PLANES or (pb, pa) in _COMPARABLE_PLANES
 
 
