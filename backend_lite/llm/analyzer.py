@@ -97,15 +97,25 @@ class AnalyzerResult:
 
 class AnalyzerLLM:
     """
-    Analyzer LLM using DeepSeek via OpenRouter.
+    Analyzer LLM for contradiction detection.
 
+    Supports OpenAI (GPT-4o), OpenRouter (DeepSeek), or any OpenAI-compatible API.
     Proposes contradiction candidates with broad detection.
     Optimized for recall - may over-detect, verifier filters.
     """
 
     def __init__(self):
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        model = os.getenv("OPENROUTER_ANALYZER_MODEL", "deepseek/deepseek-chat")
+        llm_mode = os.getenv("LLM_MODE", "none").lower()
+
+        # Resolve API key, model, and base URL based on LLM_MODE
+        if llm_mode == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            model = os.getenv("OPENAI_MODEL", "gpt-4o")
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
+        else:
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "deepseek/deepseek-chat")
+            base_url = None  # Use default OpenRouter URL
 
         self.enabled = bool(api_key)
         self.model = model
@@ -116,12 +126,13 @@ class AnalyzerLLM:
                 api_key=api_key,
                 model=model,
                 timeout=60,
-                app_name="JETHRO Analyzer"
+                app_name="JETHRO Analyzer",
+                base_url=base_url,
             )
-            logger.info(f"Analyzer initialized with model: {model}")
+            logger.info(f"Analyzer initialized with model: {model} (mode: {llm_mode})")
         else:
             self.client = None
-            logger.warning("Analyzer disabled: OPENROUTER_API_KEY not set")
+            logger.warning(f"Analyzer disabled: no API key set for mode '{llm_mode}'")
 
     async def close(self):
         """Close the client"""

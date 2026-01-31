@@ -1,9 +1,10 @@
 """
-OpenRouter Base Client
-======================
+LLM Base Client (OpenAI-compatible)
+====================================
 
-Shared async HTTP client for OpenRouter API.
+Shared async HTTP client for OpenAI-compatible APIs.
 Used by both Analyzer and Verifier.
+Supports: OpenAI, OpenRouter, DeepSeek, and any OpenAI-compatible endpoint.
 """
 
 import httpx
@@ -28,24 +29,27 @@ class LLMCallResult:
 
 class OpenRouterBaseClient:
     """
-    Base async client for OpenRouter API.
+    Base async client for OpenAI-compatible APIs.
 
-    Provides common functionality for all OpenRouter-based LLM calls.
+    Provides common functionality for all LLM calls via OpenAI-compatible
+    endpoints (OpenAI, OpenRouter, DeepSeek, etc.).
     """
 
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
     def __init__(
         self,
         api_key: str,
         model: str,
         timeout: int = 60,
-        app_name: str = "JETHRO Legal Analysis"
+        app_name: str = "JETHRO Legal Analysis",
+        base_url: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
         self.app_name = app_name
+        self.base_url = base_url or self.DEFAULT_BASE_URL
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -107,7 +111,7 @@ class OpenRouterBaseClient:
         try:
             client = await self._get_client()
             response = await client.post(
-                self.BASE_URL,
+                self.base_url,
                 json=payload,
                 headers=headers
             )
