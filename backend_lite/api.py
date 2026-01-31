@@ -194,7 +194,7 @@ app.add_middleware(
     allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-User-Id", "X-User-Email", "X-Firm-Id"],
 )
 
 # Security Headers Middleware
@@ -208,10 +208,12 @@ except ImportError:
 # Rate Limiting Middleware
 try:
     from .middleware.rate_limit import RateLimitMiddleware
-    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "false").lower() == "true"
+    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() != "false"
     if RATE_LIMIT_ENABLED:
         app.add_middleware(RateLimitMiddleware)
         logger.info("Rate limiting middleware enabled")
+    else:
+        logger.warning("⚠️  Rate limiting DISABLED — set RATE_LIMIT_ENABLED=true for production")
 except ImportError:
     logger.warning("Rate limiting middleware not available")
 
@@ -2316,7 +2318,10 @@ async def litigator_dashboard():
 
 @app.post("/debug/init-demo", tags=["System"], include_in_schema=False)
 async def init_demo_users(db: Session = Depends(get_db)):
-    """Initialize demo users (for debugging)"""
+    """Initialize demo users (for debugging). Blocked in production."""
+    is_production = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+    if is_production:
+        raise HTTPException(status_code=410, detail="Debug endpoints are not available in production")
     try:
         # Check if demo users exist
         existing = db.query(User).filter(User.email == "david@demo.com").first()
@@ -2386,7 +2391,10 @@ async def health_check():
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
-async def analyze_text(request: AnalyzeTextRequest):
+async def analyze_text(
+    request: AnalyzeTextRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Analyze free Hebrew text for contradictions.
 
@@ -2395,6 +2403,14 @@ async def analyze_text(request: AnalyzeTextRequest):
     """
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    # Enforce text length limit (100KB)
+    MAX_ANALYZE_TEXT_BYTES = 100_000
+    if len(request.text.encode("utf-8")) > MAX_ANALYZE_TEXT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text too large ({len(request.text.encode('utf-8'))} bytes). Max: {MAX_ANALYZE_TEXT_BYTES} bytes"
+        )
 
     try:
         # Extract claims from text
@@ -2441,7 +2457,10 @@ async def analyze_text(request: AnalyzeTextRequest):
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
-async def analyze_claims(request: AnalyzeClaimsRequest):
+async def analyze_claims(
+    request: AnalyzeClaimsRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Analyze pre-extracted claims for contradictions.
 
@@ -2450,6 +2469,10 @@ async def analyze_claims(request: AnalyzeClaimsRequest):
     """
     if not request.claims:
         raise HTTPException(status_code=400, detail="Claims list cannot be empty")
+
+    # Enforce claims count limit
+    if len(request.claims) > 500:
+        raise HTTPException(status_code=413, detail=f"Too many claims ({len(request.claims)}). Max: 500")
 
     try:
         # Convert to dict format

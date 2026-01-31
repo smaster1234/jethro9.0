@@ -3410,25 +3410,37 @@ async def analyze_case(
     Run analysis for a case and return results.
 
     The analysis pipeline:
-      1. Extract claims from documents (instant)
-      2. Rule-based contradiction detection (instant)
-      3. LLM verification with Gemini Flash (async, ~10-30s)
-      4. Save verified results
+      1. Check credit balance
+      2. Extract claims from documents (instant)
+      3. Rule-based contradiction detection (instant)
+      4. LLM verification with Gemini Flash (async, ~10-30s)
+      5. Deduct credits based on actual usage
+      6. Save verified results
     """
     try:
         from .db.session import get_db_session
         from .db.models import Case
         from .jobs.tasks import task_analyze_case
+        from .credits import check_balance, deduct_analysis
 
         with get_db_session() as db:
             # Verify case access
             case, _ = _require_case_access(db, auth, case_id)
 
+            # Check credit balance before analysis
+            has_credits, balance = check_balance(auth.user_id, auth.firm_id, db)
+            if not has_credits:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"אין מספיק קרדיטים לניתוח (יתרה: {balance}). נדרש מינימום 10 קרדיטים."
+                )
+            db.commit()
+
         if request is None:
             request = AnalyzeCaseRequest()
 
         # Run analysis (async — includes LLM verifier calls)
-        logger.info("Starting analysis for case %s", case_id)
+        logger.info("Starting analysis for case %s (user credits: %d)", case_id, balance)
         result = await task_analyze_case(
             case_id=case_id,
             firm_id=auth.firm_id,
@@ -3444,6 +3456,20 @@ async def analyze_case(
                 status_code=400,
                 detail=result.get("message", "Analysis failed")
             )
+
+        # Deduct credits based on actual usage
+        if isinstance(result, dict):
+            with get_db_session() as db:
+                deduct_analysis(
+                    user_id=auth.user_id,
+                    firm_id=auth.firm_id,
+                    db=db,
+                    claims_count=result.get("claims_extracted", 0),
+                    verifier_calls=result.get("verified_count", 0) + result.get("rejected_count", 0),
+                    case_id=case_id,
+                    run_id=result.get("analysis_run_id"),
+                )
+                db.commit()
 
         logger.info("Analysis complete for case %s: %s", case_id, result)
         return result or {"status": "completed", "message": "Analysis complete"}
@@ -3574,3 +3600,27 @@ async def learning_stats_endpoint(
     except Exception as e:
         logger.warning("Failed to get learning stats: %s", e)
         return LearningStatsResponse()
+
+
+# =============================================================================
+# CREDITS
+# =============================================================================
+
+
+@router.get("/me/credits")
+async def get_my_credits(
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Return current user's credit balance and recent transactions."""
+    try:
+        from .db.session import get_db_session
+        from .credits import get_user_credits_info
+
+        with get_db_session() as db:
+            info = get_user_credits_info(auth.user_id, auth.firm_id, db)
+            db.commit()
+
+        return info
+    except Exception as e:
+        logger.warning("Failed to get credits: %s", e)
+        return {"balance": 0, "total_granted": 0, "total_consumed": 0, "recent_transactions": []}
