@@ -86,6 +86,7 @@ from .schemas import (
     AttributionSummary,
 )
 from .extractor import extract_claims, ClaimExtractor
+from .expert_contradiction import build_expert_claims, analyze_expert_pairs
 from .detector import detect_contradictions, DetectedContradiction
 from .cross_exam import generate_cross_exam_questions, CrossExamSet
 from .llm_client import detect_with_llm, get_llm_client  # Legacy, kept for compatibility
@@ -1395,7 +1396,8 @@ def chunk_text_to_paragraphs(
 def build_claim_outputs(
     claims: List,
     claims_data: List[dict],
-    doc_lookup: Optional[Dict[str, Any]] = None
+    doc_lookup: Optional[Dict[str, Any]] = None,
+    expert_claims: Optional[Dict[str, Any]] = None,
 ) -> List[ClaimOutput]:
     """
     Build ClaimOutput list from extracted claims.
@@ -1461,6 +1463,8 @@ def build_claim_outputs(
             role = role or getattr(doc, 'role', None)
             author = author or getattr(doc, 'author', None)
 
+        expert = expert_claims.get(claim.id) if expert_claims else None
+
         claim_outputs.append(ClaimOutput(
             id=claim.id,
             text=claim.text,
@@ -1472,7 +1476,21 @@ def build_claim_outputs(
             witness_version_id=getattr(claim, "witness_version_id", None),
             locator=locator,
             anchor=anchor,
-            features=features
+            features=features,
+            text_span=(expert.text_span if expert else data.get("text_span") or claim.text),
+            context_before=(expert.context_before if expert else data.get("context_before")),
+            context_after=(expert.context_after if expert else data.get("context_after")),
+            section_path=(expert.section_path if expert else data.get("section_path")),
+            speaker_role=(expert.speaker_role if expert else data.get("speaker_role")),
+            speaker_mode=(expert.speaker_mode if expert else data.get("speaker_mode")),
+            plane=(expert.plane if expert else data.get("plane")),
+            time_reference=(expert.time_reference if expert else data.get("time_reference")),
+            scope_conditions=(expert.scope_conditions if expert else data.get("scope_conditions")),
+            quantifiers=(expert.quantifiers if expert else data.get("quantifiers")),
+            modality=(expert.modality if expert else data.get("modality")),
+            negation=(expert.negation if expert else data.get("negation")),
+            entities_relations=(expert.entities_relations if expert else data.get("entities_relations")),
+            extraction_confidence=(expert.extraction_confidence if expert else data.get("extraction_confidence")),
         ))
 
     return claim_outputs
@@ -1879,7 +1897,7 @@ async def analyze_claims_internal(
     Uses fallback to rule-based if LLM fails.
     """
     settings = get_settings()
-    validation_flags = []
+    validation_flags = ["EXPERT_STRICT_MODE"]
 
     # Validate config
     config_warnings = settings.validate_llm_config()
@@ -2047,7 +2065,7 @@ async def analyze_claims_internal(
             validation_flags.append("LLM_FAILED_FALLBACK")
             llm_time_ms = 0.0
 
-    # 4. Deduplicate contradictions
+    # 4. Deduplicate contradictions (candidates)
     deduped_contradictions = []
     for c in all_contradictions:
         deduped_contradictions.append({
@@ -2060,10 +2078,27 @@ async def analyze_claims_internal(
     deduped = deduplicate_contradictions(deduped_contradictions)
     all_contradictions = [d["_obj"] for d in deduped]
 
-    # 5. Generate cross-examination questions
+    # 5. Expert strict evaluation
+    expert_claims = build_expert_claims(
+        claims=claims,
+        claims_data=claims_data,
+        source_text=source_text,
+        source_text_lookup=source_text_lookup,
+    )
+    expert_lookup = {c.claim_id: c for c in expert_claims}
+    expert_result = analyze_expert_pairs(
+        expert_claims=expert_claims,
+        candidate_contradictions=all_contradictions,
+    )
+    validation_flags.extend(expert_result.validation_flags)
+    all_contradictions = expert_result.true_contradictions
+    pair_analysis = expert_result.pair_rows
+    summary_report = expert_result.summary_report
+
+    # 6. Generate cross-examination questions
     cross_exam_sets = generate_cross_exam_questions(all_contradictions)
 
-    # 6. Convert to output format
+    # 7. Convert to output format
     contradictions_output = [
         convert_contradiction_to_output(c) for c in all_contradictions
     ]
@@ -2072,27 +2107,41 @@ async def analyze_claims_internal(
         convert_cross_exam_to_output(ce) for ce in cross_exam_sets
     ]
 
-    # 7. Build claims table data
-    claim_outputs = build_claim_outputs(claims, claims_data)
+    # 8. Build claims table data
+    claim_outputs = build_claim_outputs(claims, claims_data, expert_claims=expert_lookup)
     claim_results = compute_claim_results(claims, contradictions_output)
 
-    # 8. Apply Attribution Layer bucketing
+    # 9. Apply Attribution Layer bucketing
     claims_lookup = {c.id: c for c in claim_outputs}
     contradictions_output = apply_attribution_bucketing(contradictions_output, claims_lookup)
 
-    # 9. Group disputes by issue
+    # 10. Group disputes by issue
     disputes = group_disputes_by_issue(contradictions_output, claims_lookup)
 
-    # 10. Compute attribution summary
+    # 11. Compute attribution summary
     attribution_summary = compute_attribution_summary(contradictions_output, claim_outputs)
 
     total_time_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+    rule_stats = RuleStats(
+        temporal_count=rule_result.metadata.get("temporal_count", 0),
+        quantitative_count=rule_result.metadata.get("quantitative_count", 0),
+        attribution_count=rule_result.metadata.get("attribution_count", 0),
+        presence_count=rule_result.metadata.get("presence_count", 0),
+        doc_existence_count=rule_result.metadata.get("doc_existence_count", 0),
+        identity_count=rule_result.metadata.get("identity_count", 0),
+        pairs_total=expert_result.stats.get("pairs_total", 0),
+        pairs_filtered_in=expert_result.stats.get("pairs_filtered_in", 0),
+        pairs_filtered_out=expert_result.stats.get("pairs_filtered_out", 0),
+    )
 
     return AnalysisResponse(
         claims=claim_outputs,
         claim_results=claim_results,
         contradictions=contradictions_output,
         cross_exam_questions=cross_exam_output,
+        pair_analysis=[row.model_dump() if hasattr(row, "model_dump") else row.__dict__ for row in pair_analysis],
+        summary_report=(summary_report.model_dump() if hasattr(summary_report, "model_dump") else summary_report.__dict__),
         disputes=disputes,
         attribution_summary=attribution_summary,
         metadata=build_metadata(
@@ -2104,7 +2153,8 @@ async def analyze_claims_internal(
             model_used=model_used,
             validation_flags=validation_flags,
             verifier_stats=verifier_stats_data,
-            claim_results=claim_results
+            claim_results=claim_results,
+            rule_stats=rule_stats,
         )
     )
 
