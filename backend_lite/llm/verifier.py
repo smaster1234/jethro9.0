@@ -22,7 +22,7 @@ from .openrouter_base import OpenRouterBaseClient
 logger = logging.getLogger(__name__)
 
 
-# Verifier system prompt (v2 – precision-first with 7-category outcome)
+# Verifier system prompt (v2 – precision-first with 9-category outcome)
 VERIFIER_SYSTEM_PROMPT = """You are a verification judge for Hebrew legal contradictions.
 
 Your job: determine the PRECISE relationship between two claims.
@@ -34,9 +34,11 @@ Your job: determine the PRECISE relationship between two claims.
 
 ## What is NOT a contradiction
 - Two party claims from different sides → DISAGREEMENT_BETWEEN_PARTIES
+- Quote/opinion/law-citation vs finding, or attribution mismatch → ROLE_OR_ATTRIBUTION_MISMATCH
 - Different time periods / stages → TIME_OR_STAGE_SHIFT
 - Fact vs law/opinion/assessment → PLANE_MISMATCH
 - Vague wording / approximate numbers → AMBIGUITY_OR_VAGUENESS
+- Missing speaker mode / plane / insufficient context → INSUFFICIENT_CONTEXT
 - Rephrasing of the same idea → DUPLICATE_OR_RESTATEMENT
 - Resolvable via scope/condition/quantifier → APPARENT_TENSION_RESOLVABLE
 
@@ -46,7 +48,7 @@ Return ONLY valid JSON."""
 VERIFIER_USER_TEMPLATE = """Schema (strict):
 {{
   "same_fact": "yes|no|unclear",
-  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|DUPLICATE_OR_RESTATEMENT",
+  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
   "reason": "Hebrew, max 30 words",
@@ -90,17 +92,27 @@ class VerifierResult:
 
 class VerifierLLM:
     """
-    Verifier LLM using Qwen via OpenRouter.
+    Verifier LLM for contradiction verification.
 
+    Supports OpenAI (GPT-4o), OpenRouter (Qwen), or any OpenAI-compatible API.
     Provides second opinion on contradiction candidates.
     Optimized for precision - filters false positives.
     """
 
     def __init__(self):
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+        llm_mode = os.getenv("LLM_MODE", "none").lower()
         enabled_str = os.getenv("VERIFIER_ENABLED", "true").lower()
         max_calls = int(os.getenv("VERIFIER_MAX_CALLS", "30"))
+
+        # Resolve API key, model, and base URL based on LLM_MODE
+        if llm_mode == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            model = os.getenv("OPENAI_MODEL", "gpt-4o")
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
+        else:
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+            base_url = None  # Use default OpenRouter URL
 
         self.enabled = enabled_str == "true" and bool(api_key)
         self.model = model
@@ -112,13 +124,14 @@ class VerifierLLM:
                 api_key=api_key,
                 model=model,
                 timeout=30,
-                app_name="JETHRO Verifier"
+                app_name="JETHRO Verifier",
+                base_url=base_url,
             )
-            logger.info(f"Verifier initialized with model: {model}")
+            logger.info(f"Verifier initialized with model: {model} (mode: {llm_mode})")
         else:
             self.client = None
             if not api_key:
-                logger.warning("Verifier disabled: OPENROUTER_API_KEY not set")
+                logger.warning(f"Verifier disabled: no API key set for mode '{llm_mode}'")
             else:
                 logger.info("Verifier disabled via VERIFIER_ENABLED=false")
 

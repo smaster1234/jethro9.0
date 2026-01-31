@@ -189,6 +189,7 @@ class LLMMode(str, Enum):
     """LLM usage mode"""
     NONE = "none"           # Rule-based only
     OPENROUTER = "openrouter"
+    OPENAI = "openai"       # OpenAI API (GPT-4o)
     GEMINI = "gemini"
     DEEPSEEK = "deepseek"   # DeepSeek API (primary analyzer)
 
