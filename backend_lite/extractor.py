@@ -50,6 +50,7 @@ SPEAKER_MODE_FINDING = "finding"
 SPEAKER_MODE_PARTY_CLAIM = "party_claim"
 SPEAKER_MODE_QUOTE = "quote"
 SPEAKER_MODE_LAW_CITATION = "law_citation"
+SPEAKER_MODE_OPINION = "opinion"
 
 MODALITY_CERTAIN = "certain"
 MODALITY_POSSIBLE = "possible"
@@ -105,7 +106,7 @@ class Claim:
     section_path: Optional[str] = None
     # Speaker role
     speaker_role: Optional[str] = None          # court / plaintiff / defendant / witness / counsel / external
-    speaker_mode: Optional[str] = None          # finding / party_claim / quote
+    speaker_mode: Optional[str] = None          # finding / party_claim / quote / law_citation / opinion
     # Plane
     plane: Optional[str] = None                 # FACT / LAW / OPINION / PROCEDURAL
     # Time

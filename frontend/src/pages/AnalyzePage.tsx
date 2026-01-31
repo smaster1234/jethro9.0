@@ -563,9 +563,11 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       'TRUE_CONTRADICTION': 'סתירה אמיתית',
       'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה — ניתן ליישוב',
       'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+      'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
       'PLANE_MISMATCH': 'חוסר התאמה במישור',
       'TIME_OR_STAGE_SHIFT': 'שינוי זמן או שלב',
       'AMBIGUITY_OR_VAGUENESS': 'עמימות או אי\u2011בהירות',
+      'INSUFFICIENT_CONTEXT': 'הקשר חסר',
       'DUPLICATE_OR_RESTATEMENT': 'כפילות או ניסוח מחדש',
     };
     return cat ? labels[cat] || cat : null;
@@ -578,10 +580,12 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
       case 'APPARENT_TENSION_RESOLVABLE': return 'warning';
       case 'LOGICAL_INCONSISTENCY':
       case 'DISAGREEMENT_BETWEEN_PARTIES': return 'accent';
+      case 'ROLE_OR_ATTRIBUTION_MISMATCH': return 'accent';
       case 'RHETORICAL_SHIFT':
       case 'PLANE_MISMATCH':
       case 'TIME_OR_STAGE_SHIFT': return 'neutral';
       case 'AMBIGUITY_OR_VAGUENESS': return 'warning';
+      case 'INSUFFICIENT_CONTEXT': return 'warning';
       case 'DUPLICATE_OR_RESTATEMENT': return 'neutral';
       default: return 'neutral';
     }

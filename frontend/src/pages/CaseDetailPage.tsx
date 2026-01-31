@@ -2061,9 +2061,11 @@ export const CaseDetailPage: React.FC = () => {
                                     'TRUE_CONTRADICTION': 'סתירה אמיתית',
                                     'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה',
                                     'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס',
                                     'PLANE_MISMATCH': 'חוסר התאמה במישור',
                                     'TIME_OR_STAGE_SHIFT': 'שינוי זמן/שלב',
                                     'AMBIGUITY_OR_VAGUENESS': 'עמימות',
+                                    'INSUFFICIENT_CONTEXT': 'הקשר חסר',
                                     'DUPLICATE_OR_RESTATEMENT': 'כפילות',
                                     'unclassified': 'לא מסווג',
                                   };
@@ -2075,9 +2077,11 @@ export const CaseDetailPage: React.FC = () => {
                                     'TRUE_CONTRADICTION': 'bg-red-600',
                                     'APPARENT_TENSION_RESOLVABLE': 'bg-amber-400',
                                     'DISAGREEMENT_BETWEEN_PARTIES': 'bg-indigo-400',
+                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'bg-violet-400',
                                     'PLANE_MISMATCH': 'bg-purple-400',
                                     'TIME_OR_STAGE_SHIFT': 'bg-cyan-400',
                                     'AMBIGUITY_OR_VAGUENESS': 'bg-yellow-400',
+                                    'INSUFFICIENT_CONTEXT': 'bg-orange-300',
                                     'DUPLICATE_OR_RESTATEMENT': 'bg-slate-300',
                                     'unclassified': 'bg-slate-300',
                                   };
@@ -4107,9 +4111,11 @@ const ContradictionCard: React.FC<{
       'TRUE_CONTRADICTION': 'סתירה אמיתית',
       'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה — ניתן ליישוב',
       'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+      'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
       'PLANE_MISMATCH': 'חוסר התאמה במישור',
       'TIME_OR_STAGE_SHIFT': 'שינוי זמן או שלב',
       'AMBIGUITY_OR_VAGUENESS': 'עמימות או אי\u2011בהירות',
+      'INSUFFICIENT_CONTEXT': 'הקשר חסר',
       'DUPLICATE_OR_RESTATEMENT': 'כפילות או ניסוח מחדש',
     };
     return cat ? labels[cat] || cat : null;
@@ -4122,10 +4128,12 @@ const ContradictionCard: React.FC<{
       case 'APPARENT_TENSION_RESOLVABLE': return 'warning';
       case 'LOGICAL_INCONSISTENCY':
       case 'DISAGREEMENT_BETWEEN_PARTIES': return 'accent';
+      case 'ROLE_OR_ATTRIBUTION_MISMATCH': return 'accent';
       case 'RHETORICAL_SHIFT':
       case 'PLANE_MISMATCH':
       case 'TIME_OR_STAGE_SHIFT': return 'neutral';
       case 'AMBIGUITY_OR_VAGUENESS': return 'warning';
+      case 'INSUFFICIENT_CONTEXT': return 'warning';
       case 'DUPLICATE_OR_RESTATEMENT': return 'neutral';
       default: return 'neutral';
     }
