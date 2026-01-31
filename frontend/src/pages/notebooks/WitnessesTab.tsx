@@ -7,7 +7,7 @@ import type { Case, Witness } from '../../types';
 
 export const WitnessesTab: React.FC = () => {
   const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
+  useOutletContext<{ notebook: Case }>();
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 

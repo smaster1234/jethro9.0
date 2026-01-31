@@ -1,9 +1,6 @@
 import React, { useState } from 'react';
-import { useParams, useOutletContext } from 'react-router-dom';
 import { StickyNote, Plus, Trash2, Clock, Edit3 } from 'lucide-react';
 import { Card, Button, EmptyState } from '../../components/ui';
-import { cn } from '../../utils/cn';
-import type { Case } from '../../types';
 
 interface Note {
   id: string;
@@ -13,8 +10,6 @@ interface Note {
 }
 
 export const NotesTab: React.FC = () => {
-  const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
   const [notes, setNotes] = useState<Note[]>([]);
   const [newNote, setNewNote] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);

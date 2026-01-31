@@ -15,7 +15,7 @@ import {
   Loader2,
   Filter,
 } from 'lucide-react';
-import { documentsApi, casesApi } from '../../api';
+import { documentsApi } from '../../api';
 import { Card, Badge, EmptyState } from '../../components/ui';
 import { cn } from '../../utils/cn';
 import type { Case, Document } from '../../types';
@@ -137,7 +137,7 @@ const PARTY_MAP: Record<string, string> = {
 
 export const TimelineTab: React.FC = () => {
   const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
+  useOutletContext<{ notebook: Case }>();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filterParty, setFilterParty] = useState<'all' | 'ours' | 'theirs'>('all');
@@ -257,7 +257,7 @@ export const TimelineTab: React.FC = () => {
         <div className="absolute right-[22px] top-0 bottom-0 w-0.5 bg-slate-200" />
 
         <div className="space-y-0">
-          {filteredTimeline.map((entry, idx) => (
+          {filteredTimeline.map((entry) => (
             <div key={entry.docId} className="relative flex gap-4 pb-8">
               {/* Timeline dot */}
               <div

@@ -2,11 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useOutletContext } from 'react-router-dom';
 import {
   AlertTriangle,
-  TrendingDown,
-  Ban,
-  RefreshCw,
   CheckCircle,
-  Filter,
   Loader2,
   MessageSquare,
   ChevronDown,
@@ -17,33 +13,7 @@ import {
 import { casesApi } from '../../api';
 import { Card, Badge, EmptyState } from '../../components/ui';
 import { cn } from '../../utils/cn';
-import type { Case } from '../../types';
-
-interface ContradictionFinding {
-  id: string;
-  claim1_text: string;
-  claim2_text: string;
-  claim1_doc?: string;
-  claim2_doc?: string;
-  claim1_date?: string;
-  claim2_date?: string;
-  type: string;
-  severity: string;
-  confidence: number;
-  explanation: string;
-  status: string;
-  outcome?: string;
-  reconciliation_tried?: string;
-  bucket?: string;
-}
-
-interface AnalysisRun {
-  id: string;
-  status: string;
-  created_at: string;
-  contradictions?: ContradictionFinding[];
-  metadata?: Record<string, unknown>;
-}
+import type { Case, AnalysisRun, Contradiction } from '../../types';
 
 const SEVERITY_CONFIG: Record<string, { color: string; bg: string; label: string }> = {
   critical: { color: 'text-danger-700', bg: 'bg-danger-50 border-danger-200', label: 'קריטי' },
@@ -80,7 +50,7 @@ const OUTCOME_LABELS: Record<string, { label: string; variant: string }> = {
 
 export const FindingsTab: React.FC = () => {
   const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
+  useOutletContext<{ notebook: Case }>();
   const [runs, setRuns] = useState<AnalysisRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filterSeverity, setFilterSeverity] = useState<'all' | 'critical' | 'high'>('all');
@@ -103,8 +73,8 @@ export const FindingsTab: React.FC = () => {
   }, [notebookId]);
 
   // Get contradictions from the latest completed run
-  const latestRun = runs.find((r) => r.status === 'done');
-  const contradictions: ContradictionFinding[] = latestRun?.contradictions || [];
+  const latestRun = runs.find((r) => r.status === 'completed');
+  const contradictions: Contradiction[] = latestRun?.contradictions || [];
 
   const filtered = contradictions.filter((c) => {
     if (filterSeverity === 'critical') return c.severity === 'critical';
@@ -116,7 +86,7 @@ export const FindingsTab: React.FC = () => {
     total: contradictions.length,
     critical: contradictions.filter((c) => c.severity === 'critical').length,
     high: contradictions.filter((c) => c.severity === 'high').length,
-    verified: contradictions.filter((c) => c.status === 'verified').length,
+    verified: contradictions.filter((c) => c.status === 'confirmed').length,
   };
 
   if (isLoading) {
@@ -191,9 +161,11 @@ export const FindingsTab: React.FC = () => {
       ) : (
         <div className="space-y-3">
           {filtered.map((c, idx) => {
-            const severity = SEVERITY_CONFIG[c.severity] || SEVERITY_CONFIG.medium;
+            const sev = c.severity || 'medium';
+            const severity = SEVERITY_CONFIG[sev] || SEVERITY_CONFIG.medium;
             const isExpanded = expandedId === c.id;
-            const outcome = c.outcome ? OUTCOME_LABELS[c.outcome] : null;
+            const outcomeKey = c.reconciler_outcome || '';
+            const outcome = outcomeKey ? OUTCOME_LABELS[outcomeKey] : null;
 
             return (
               <Card
@@ -210,10 +182,10 @@ export const FindingsTab: React.FC = () => {
                         <span className="text-sm font-bold text-slate-900">
                           סתירה #{idx + 1}
                         </span>
-                        <Badge variant={c.severity === 'critical' ? 'danger' : c.severity === 'high' ? 'warning' : 'neutral'}>
+                        <Badge variant={sev === 'critical' ? 'danger' : sev === 'high' ? 'warning' : 'neutral'}>
                           {severity.label}
                         </Badge>
-                        {TYPE_LABELS[c.type] && (
+                        {c.type && TYPE_LABELS[c.type] && (
                           <Badge variant="neutral" className="text-[10px]">
                             {TYPE_LABELS[c.type]}
                           </Badge>
@@ -227,7 +199,7 @@ export const FindingsTab: React.FC = () => {
                           </Badge>
                         )}
                       </div>
-                      <p className="text-sm text-slate-700 mt-1">{c.explanation}</p>
+                      <p className="text-sm text-slate-700 mt-1">{c.explanation || c.explanation_he || ''}</p>
                     </div>
                   </div>
                   {isExpanded ? (
@@ -245,44 +217,36 @@ export const FindingsTab: React.FC = () => {
                       <div className="bg-white rounded-lg p-3 border border-slate-100">
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <div className="w-2 h-2 rounded-full bg-primary-400" />
-                          <span className="text-[11px] font-medium text-slate-500">
-                            {c.claim1_doc || 'מסמך א'}
-                          </span>
-                          {c.claim1_date && (
-                            <span className="text-[10px] text-slate-400">
-                              {new Date(c.claim1_date).toLocaleDateString('he-IL')}
-                            </span>
-                          )}
+                          <span className="text-[11px] font-medium text-slate-500">מסמך א</span>
                         </div>
-                        <p className="text-sm text-slate-800 leading-relaxed">"{c.claim1_text}"</p>
+                        <p className="text-sm text-slate-800 leading-relaxed">
+                          "{c.claim1_text || c.quote1 || ''}"
+                        </p>
                       </div>
                       <div className="bg-white rounded-lg p-3 border border-slate-100">
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <div className="w-2 h-2 rounded-full bg-danger-400" />
-                          <span className="text-[11px] font-medium text-slate-500">
-                            {c.claim2_doc || 'מסמך ב'}
-                          </span>
-                          {c.claim2_date && (
-                            <span className="text-[10px] text-slate-400">
-                              {new Date(c.claim2_date).toLocaleDateString('he-IL')}
-                            </span>
-                          )}
+                          <span className="text-[11px] font-medium text-slate-500">מסמך ב</span>
                         </div>
-                        <p className="text-sm text-slate-800 leading-relaxed">"{c.claim2_text}"</p>
+                        <p className="text-sm text-slate-800 leading-relaxed">
+                          "{c.claim2_text || c.quote2 || ''}"
+                        </p>
                       </div>
                     </div>
 
                     {/* Reconciliation */}
-                    {c.reconciliation_tried && (
+                    {(c.reconciliation_attempt || c.reconciler_rationale) && (
                       <div className="bg-slate-50 rounded-lg p-3">
                         <p className="text-[11px] font-medium text-slate-500 mb-1">ניסיון יישוב:</p>
-                        <p className="text-xs text-slate-700">{c.reconciliation_tried}</p>
+                        <p className="text-xs text-slate-700">
+                          {c.reconciliation_attempt || c.reconciler_rationale}
+                        </p>
                       </div>
                     )}
 
                     {/* Confidence */}
                     <div className="flex items-center gap-4 text-xs text-slate-500">
-                      <span>ביטחון: {Math.round(c.confidence * 100)}%</span>
+                      <span>ביטחון: {Math.round((c.confidence ?? 0.5) * 100)}%</span>
                       {c.bucket && (
                         <span>
                           סיווג:{' '}

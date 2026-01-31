@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Outlet, useParams, useNavigate, NavLink, useLocation } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import {
   FileText,
   AlertTriangle,
