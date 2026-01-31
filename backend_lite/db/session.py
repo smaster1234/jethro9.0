@@ -84,6 +84,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _ensure_phase2_schema(engine)
     _ensure_b1_schema(engine)
+    _ensure_notebook_schema(engine)
 
 
 def _ensure_phase2_schema(engine) -> None:
@@ -111,6 +112,23 @@ def _ensure_b1_schema(engine) -> None:
         if "organization_id" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE cases ADD COLUMN organization_id VARCHAR(36)"))
+    except Exception:
+        pass
+
+
+def _ensure_notebook_schema(engine) -> None:
+    """
+    Ensure Notebook-era columns exist (lightweight migration).
+    Adds doc_class to documents table.
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("documents")}
+        if "doc_class" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE documents ADD COLUMN doc_class VARCHAR(20) DEFAULT 'supporting'"
+                ))
     except Exception:
         pass
 
