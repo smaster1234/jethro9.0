@@ -1109,77 +1109,65 @@ async def upload_documents(
                 )
                 db.add(event)
 
-                # IMPORTANT (Railway): when using local storage, web and worker run in
-                # separate containers and do NOT share a filesystem. If we enqueue a
-                # parse job, the worker may not be able to read the stored file and
-                # will mark the document FAILED.
-                #
-                # Therefore, for local storage we parse inline and persist extracted
-                # text/blocks immediately, making the document READY for analysis.
-                if provider == "local":
-                    try:
-                        from .ingest.base import ParserError
-                        doc.status = DocumentStatus.PROCESSING
-                        db.flush()
+                # Always parse inline: we already have file bytes in memory, so
+                # parse immediately regardless of storage backend.  This avoids
+                # depending on a background RQ worker which may not be running.
+                try:
+                    from .ingest.base import ParserError
+                    doc.status = DocumentStatus.PROCESSING
+                    db.flush()
 
-                        parsed = parse_document(
-                            data=data,
-                            filename=safe_filename,
-                            mime_type=mime_type,
-                            force_ocr=False,
-                        )
-
-                        doc.full_text = parsed.full_text
-                        doc.page_count = parsed.page_count
-                        doc.language = parsed.language
-                        doc.status = DocumentStatus.READY
-                        doc.extra_data = {**(doc.extra_data or {}), **(parsed.metadata or {})}
-
-                        # Persist pages + blocks for snippet/source functionality
-                        for page in parsed.pages:
-                            db_page = DocumentPage(
-                                document_id=doc.id,
-                                page_no=page.page_no,
-                                text=page.text,
-                                width=page.width,
-                                height=page.height,
-                            )
-                            db.add(db_page)
-                            for block in page.blocks:
-                                db_block = DocumentBlock(
-                                    document_id=doc.id,
-                                    page_no=block.page_no,
-                                    block_index=block.block_index,
-                                    text=block.text,
-                                    bbox_json=block.bbox,
-                                    char_start=block.char_start,
-                                    char_end=block.char_end,
-                                    paragraph_index=block.paragraph_index,
-                                    locator_json=block.to_locator_json(doc_id=doc.id),
-                                )
-                                db.add(db_block)
-                    except ParserError as e:
-                        doc.status = DocumentStatus.FAILED
-                        doc.extra_data = doc.extra_data or {}
-                        doc.extra_data["error"] = e.to_dict()
-                        logger.warning("Inline parse failed: %s", e.code)
-                        raise HTTPException(status_code=400, detail=e.to_dict())
-                    except Exception:
-                        doc.status = DocumentStatus.FAILED
-                        doc.extra_data = doc.extra_data or {}
-                        doc.extra_data["error"] = "שגיאה בעיבוד המסמך"
-                        logger.exception("Inline parse failed")
-                else:
-                    # Enqueue parsing job for shared storage backends (S3, etc.)
-                    job_result = enqueue_job(
-                        task_parse_document,
-                        document_id=doc.id,
-                        storage_key=storage_key,
+                    parsed = parse_document(
+                        data=data,
+                        filename=safe_filename,
                         mime_type=mime_type,
-                        firm_id=auth.firm_id,
-                        job_id=f"parse_{doc.id}"
+                        force_ocr=False,
                     )
-                    job_ids.append(job_result.get('job_id'))
+
+                    doc.full_text = parsed.full_text
+                    doc.page_count = parsed.page_count
+                    doc.language = parsed.language
+                    doc.status = DocumentStatus.READY
+                    doc.extra_data = {**(doc.extra_data or {}), **(parsed.metadata or {})}
+
+                    # Persist pages + blocks for snippet/source functionality
+                    for page in parsed.pages:
+                        db_page = DocumentPage(
+                            document_id=doc.id,
+                            page_no=page.page_no,
+                            text=page.text,
+                            width=page.width,
+                            height=page.height,
+                        )
+                        db.add(db_page)
+                        for block in page.blocks:
+                            db_block = DocumentBlock(
+                                document_id=doc.id,
+                                page_no=block.page_no,
+                                block_index=block.block_index,
+                                text=block.text,
+                                bbox_json=block.bbox,
+                                char_start=block.char_start,
+                                char_end=block.char_end,
+                                paragraph_index=block.paragraph_index,
+                                locator_json=block.to_locator_json(doc_id=doc.id),
+                            )
+                            db.add(db_block)
+
+                    logger.info("Inline parse OK: %s → %d pages, %d chars",
+                                safe_filename, parsed.page_count or 0,
+                                len(parsed.full_text or ""))
+                except ParserError as e:
+                    doc.status = DocumentStatus.FAILED
+                    doc.extra_data = doc.extra_data or {}
+                    doc.extra_data["error"] = e.to_dict()
+                    logger.warning("Inline parse failed: %s", e.code)
+                    raise HTTPException(status_code=400, detail=e.to_dict())
+                except Exception:
+                    doc.status = DocumentStatus.FAILED
+                    doc.extra_data = doc.extra_data or {}
+                    doc.extra_data["error"] = "שגיאה בעיבוד המסמך"
+                    logger.exception("Inline parse failed for %s", safe_filename)
 
             db.commit()
 
@@ -2925,7 +2913,7 @@ async def create_feedback(
         from .db.session import get_db_session
         from .db.models import Feedback, FeedbackLabel, Case
 
-        allowed_entity_types = {"insight", "plan_step"}
+        allowed_entity_types = {"insight", "plan_step", "contradiction"}
         allowed_labels = {"worked", "not_worked", "too_risky", "excellent"}
 
         if payload.entity_type not in allowed_entity_types:
@@ -2984,7 +2972,7 @@ async def list_feedback(
         from .db.models import Feedback
         from .feedback_utils import sort_feedback_aggregates
 
-        allowed_entity_types = {"insight", "plan_step"}
+        allowed_entity_types = {"insight", "plan_step", "contradiction"}
         if entity_type and entity_type not in allowed_entity_types:
             raise HTTPException(status_code=400, detail="Invalid entity_type")
 
@@ -3419,12 +3407,11 @@ async def analyze_case(
     auth: AuthContext = Depends(get_auth_context)
 ):
     """
-    Trigger analysis for a case.
+    Run analysis for a case synchronously and return results.
     """
     try:
         from .db.session import get_db_session
         from .db.models import Case
-        from .jobs.queue import enqueue_job
         from .jobs.tasks import task_analyze_case
 
         with get_db_session() as db:
@@ -3434,27 +3421,31 @@ async def analyze_case(
         if request is None:
             request = AnalyzeCaseRequest()
 
-        # Enqueue analysis job
-        job_result = enqueue_job(
-            task_analyze_case,
+        # Run analysis synchronously — no background worker needed
+        logger.info("Starting synchronous analysis for case %s", case_id)
+        result = task_analyze_case(
             case_id=case_id,
             firm_id=auth.firm_id,
             document_ids=request.document_ids,
             triggered_by_user_id=auth.user_id,
             mode=request.mode,
-            queue_name="default",
-            job_id=f"analyze_{case_id}_{datetime.utcnow().timestamp()}"
         )
 
-        return {
-            "job_id": job_result.get('job_id'),
-            "message": "Analysis started"
-        }
+        # Check if analysis returned an error (e.g. no ready documents)
+        if isinstance(result, dict) and result.get("status") == "error":
+            logger.warning("Analysis returned error: %s", result.get("message"))
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("message", "Analysis failed")
+            )
+
+        logger.info("Analysis complete for case %s: %s", case_id, result)
+        return result or {"status": "completed", "message": "Analysis complete"}
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Failed to start analysis")
+        logger.exception("Failed to run analysis for case %s", case_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3545,3 +3536,35 @@ async def get_stats_overview(
             )
     except Exception:
         return StatsOverviewResponse()
+
+
+# =============================================================================
+# LEARNING STATS
+# =============================================================================
+
+
+class LearningStatsResponse(BaseModel):
+    """Learning system statistics for the authenticated firm."""
+    total_feedback: int = 0
+    confirmed: int = 0
+    rejected: int = 0
+    precision: Optional[float] = None
+    learning_active: bool = False
+
+
+@router.get("/learning/stats", response_model=LearningStatsResponse)
+async def learning_stats_endpoint(
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Return learning system statistics for the authenticated firm."""
+    try:
+        from .db.session import get_db_session
+        from .learning import get_learning_stats as _get_learning_stats
+
+        with get_db_session() as db:
+            stats = _get_learning_stats(auth.firm_id, db)
+
+        return LearningStatsResponse(**stats)
+    except Exception as e:
+        logger.warning("Failed to get learning stats: %s", e)
+        return LearningStatsResponse()

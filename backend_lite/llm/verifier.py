@@ -23,46 +23,51 @@ from ..llm_client import parse_json_robust
 logger = logging.getLogger(__name__)
 
 
-# Verifier system prompt (v2 – precision-first with 9-category outcome)
-VERIFIER_SYSTEM_PROMPT = """You are a verification judge for Hebrew legal contradictions.
+# Verifier system prompt (v3 – Hebrew, precision-first with 9-category outcome)
+VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות בטקסטים משפטיים בעברית.
 
-Your job: determine the PRECISE relationship between two claims.
+תפקידך: לקבוע את היחס **המדויק** בין שתי טענות.
 
-## Key rules
-1. Case numbers (17682-06-25) are NOT dates.
-2. Never invent facts; only use what is stated.
-3. A TRUE contradiction means: same subject, same plane, irreconcilable.
+## כללים קריטיים
+1. מספרי תיקים (17682-06-25, ת.א. 12345/20) הם **לא** תאריכים!
+2. אל תמציא עובדות — השתמש רק במה שנאמר בטענות.
+3. סתירה אמיתית (TRUE_CONTRADICTION) = אותו מושא + אותו מישור + אי-אפשר ששתיהן נכונות.
 
-## What is NOT a contradiction
-- Two party claims from different sides → DISAGREEMENT_BETWEEN_PARTIES
-- Quote/opinion/law-citation vs finding, or attribution mismatch → ROLE_OR_ATTRIBUTION_MISMATCH
-- Different time periods / stages → TIME_OR_STAGE_SHIFT
-- Fact vs law/opinion/assessment → PLANE_MISMATCH
-- Vague wording / approximate numbers → AMBIGUITY_OR_VAGUENESS
-- Missing speaker mode / plane / insufficient context → INSUFFICIENT_CONTEXT
-- Rephrasing of the same idea → DUPLICATE_OR_RESTATEMENT
-- Resolvable via scope/condition/quantifier → APPARENT_TENSION_RESOLVABLE
+## מה **אינו** סתירה:
+- טענות צדדים שונים ("התובע טען X" מול "הנתבע טען Y") → DISAGREEMENT_BETWEEN_PARTIES
+- ציטוט/חוות דעת/הפניה לפסיקה מול ממצא → ROLE_OR_ATTRIBUTION_MISMATCH
+- תקופות/שלבים שונים → TIME_OR_STAGE_SHIFT
+- עובדה מול הערכה/טיעון משפטי → PLANE_MISMATCH
+- ניסוח עמום / מספרים משוערים → AMBIGUITY_OR_VAGUENESS
+- חוסר הקשר / שדות חסרים → INSUFFICIENT_CONTEXT
+- ניסוח מחדש של אותו רעיון → DUPLICATE_OR_RESTATEMENT
+- ניתן ליישוב דרך היקף/תנאי/כימות → APPARENT_TENSION_RESOLVABLE
 
-Return ONLY valid JSON."""
+## דגשים לדיוק:
+- בדוק: זמן, כימות, תחולה, מודאליות (חובה/רשות/ייתכן), שלילה.
+- "לטענת X" = ציטוט/ייחוס, לא קביעה עובדתית.
+- עדיף לפספס מאשר לדווח שגוי. דיוק חשוב מזכרון.
+
+החזר JSON בלבד."""
 
 
-VERIFIER_USER_TEMPLATE = """Schema (strict):
+VERIFIER_USER_TEMPLATE = """סכמה (בדיוק):
 {{
   "same_fact": "yes|no|unclear",
   "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
-  "reason": "Hebrew, max 30 words",
-  "reconciliation_tried": "short description of reconciliation attempt"
+  "reason": "הסבר קצר בעברית, עד 30 מילים",
+  "reconciliation_tried": "תיאור קצר של ניסיון יישוב"
 }}
 
-Claim A: {claim_a}
+טענה א: {claim_a}
 
-Claim B: {claim_b}
+טענה ב: {claim_b}
 
-Suggested type: {suggested_type}
+סוג מוצע: {suggested_type}
 
-Determine the precise relationship."""
+קבע את היחס המדויק בין הטענות."""
 
 
 @dataclass

@@ -838,6 +838,16 @@ def task_analyze_case(
                 except Exception:
                     pass
 
+            update_job_progress(55, "Loading learning context")
+
+            # Load learning context from past feedback
+            learning_ctx = None
+            try:
+                from ..learning import get_learning_context, apply_confidence_adjustment
+                learning_ctx = get_learning_context(firm_id, db)
+            except Exception as e:
+                logger.warning("Failed to load learning context: %s", e)
+
             update_job_progress(60, "Detecting contradictions")
 
             # Detect contradictions
@@ -845,6 +855,14 @@ def task_analyze_case(
                 detection_result = detect_contradictions(all_claims)
 
                 for contr in detection_result.contradictions:
+                    # Apply learned confidence adjustments
+                    confidence = contr.confidence
+                    if learning_ctx:
+                        contr_type = contr.type.value if hasattr(contr.type, 'value') else str(contr.type)
+                        confidence = apply_confidence_adjustment(
+                            confidence, contr_type, learning_ctx
+                        )
+
                     claim1_db_id = getattr(contr.claim1, "_db_id", None)
                     claim2_db_id = getattr(contr.claim2, "_db_id", None)
 
@@ -856,7 +874,7 @@ def task_analyze_case(
                         claim2_id=claim2_db_id,
                         contradiction_type=contr.type.value,
                         status=contr.status.value if hasattr(contr, 'status') else 'suspicious',
-                        confidence=contr.confidence,
+                        confidence=confidence,
                         severity=contr.severity.value,
                         category=contr.category.value if contr.category else None,
                         explanation=contr.explanation,
@@ -875,7 +893,7 @@ def task_analyze_case(
             update_job_progress(90, "Saving results")
 
             # Update run status
-            run.status = "done"
+            run.status = "completed"
             run.completed_at = datetime.utcnow()
 
             # Create completion event
@@ -899,7 +917,7 @@ def task_analyze_case(
             elapsed_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
             return {
-                "status": "done",
+                "status": "completed",
                 "analysis_run_id": run.id,
                 "documents_analyzed": len(documents),
                 "claims_extracted": len(all_claims),
