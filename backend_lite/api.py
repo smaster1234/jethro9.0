@@ -2194,8 +2194,7 @@ async def analyze_claims_internal(
     expert_claims = build_expert_claims(
         claims=claims,
         claims_data=claims_data,
-        source_text=source_text,
-        source_text_lookup=source_text_lookup,
+        source_text=full_text,
     )
     expert_lookup = {c.claim_id: c for c in expert_claims}
     expert_result = analyze_expert_pairs(
