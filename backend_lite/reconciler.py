@@ -26,9 +26,11 @@ Outcome categories (§7 of Cursor 5.2 spec):
     DUPLICATE_OR_RESTATEMENT
 """
 
+import re
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
+from difflib import SequenceMatcher
 
 from .extractor import (
     Claim,
@@ -87,6 +89,84 @@ class ReconciliationResult:
     conflict_predicate: str = ""             # what exactly clashes
     deciding_fields: List[str] = field(default_factory=list)  # which fields decided
     debug: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy entity matching for Hebrew legal names
+# ---------------------------------------------------------------------------
+
+# Common Hebrew title/prefix patterns to strip for comparison
+_TITLE_PATTERNS = re.compile(
+    r'^(?:מר|גב|גברת|עו"ד|ד"ר|פרופ|רו"ח|שופט|שופטת|כב|כבוד|הנתבע|התובע|המשיב|המערער|המבקש|המשיבה|התובעת|הנתבעת)\s*',
+    re.UNICODE,
+)
+
+
+def _normalize_entity(name: str) -> str:
+    """Normalize an entity name for fuzzy comparison."""
+    name = name.strip()
+    # Remove titles/prefixes
+    name = _TITLE_PATTERNS.sub('', name).strip()
+    # Remove quotes
+    name = name.replace('"', '').replace("'", '').replace('״', '').replace('׳', '')
+    return name.lower()
+
+
+def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
+    """
+    Check if two entity names refer to the same entity.
+    Uses normalized exact match first, then fuzzy match.
+    Handles Hebrew name patterns:
+    - "יוסי כהן" matches "מר כהן" (last name match)
+    - "חברת אלפא בע״מ" matches "אלפא" (contains)
+    """
+    na = _normalize_entity(a)
+    nb = _normalize_entity(b)
+
+    if not na or not nb:
+        return False
+
+    # Exact match after normalization
+    if na == nb:
+        return True
+
+    # One contains the other (handles "אלפא" vs "חברת אלפא בע״מ")
+    if na in nb or nb in na:
+        return True
+
+    # Last-word match (handles "יוסי כהן" vs "מר כהן")
+    words_a = na.split()
+    words_b = nb.split()
+    if words_a and words_b:
+        if words_a[-1] == words_b[-1] and len(words_a[-1]) > 2:
+            return True
+
+    # Fuzzy similarity
+    ratio = SequenceMatcher(None, na, nb).ratio()
+    return ratio >= threshold
+
+
+def _fuzzy_entity_overlap(entities_a: List[str], entities_b: List[str]) -> Set[str]:
+    """
+    Find overlapping entities between two lists using fuzzy matching.
+    Returns a set of matched entity names (from list A).
+    """
+    if not entities_a or not entities_b:
+        return set()
+
+    # First try exact intersection (fast path)
+    exact = set(entities_a) & set(entities_b)
+    if exact:
+        return exact
+
+    # Fuzzy matching
+    matched: Set[str] = set()
+    for ea in entities_a:
+        for eb in entities_b:
+            if _entities_match(ea, eb):
+                matched.add(ea)
+                break
+    return matched
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +331,10 @@ def reconcile_pair(
     #   3. negation/quantifier conflict that cannot be reconciled
     #   4. reconciliation_attempt failed with rationale
 
-    # §1.a: Entity overlap required
-    entity_overlap = set(claim_a.entities or []) & set(claim_b.entities or [])
+    # §1.a: Entity overlap required (with fuzzy matching for Hebrew names)
+    entity_overlap = _fuzzy_entity_overlap(
+        claim_a.entities or [], claim_b.entities or []
+    )
     has_entity_overlap = bool(entity_overlap)
 
     # §1.b: Negation opposition
@@ -541,8 +623,8 @@ def _compute_severity(
         score += 0.2
     elif confidence >= 0.75:
         score += 0.1
-    # Entity overlap → more specific → more severe
-    overlap = set(a.entities) & set(b.entities)
+    # Entity overlap → more specific → more severe (fuzzy match)
+    overlap = _fuzzy_entity_overlap(a.entities or [], b.entities or [])
     if len(overlap) >= 2:
         score += 0.2
     elif len(overlap) >= 1:
@@ -565,7 +647,7 @@ def _build_true_contradiction_rationale(a: Claim, b: Claim, metadata: Dict[str, 
     parts = []
     if a.negation != b.negation:
         parts.append("ניגוד ישיר בשלילה/חיוב")
-    overlap = set(a.entities) & set(b.entities)
+    overlap = _fuzzy_entity_overlap(a.entities or [], b.entities or [])
     if overlap:
         parts.append(f"אותן ישויות: {', '.join(list(overlap)[:3])}")
     if a.plane and a.plane == b.plane:
