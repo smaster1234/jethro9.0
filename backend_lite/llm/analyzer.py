@@ -105,6 +105,9 @@ class AnalyzerLLM:
     Optimized for recall - may over-detect, verifier filters.
     """
 
+    # Gemini OpenAI-compatible endpoint (direct, no proxy)
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
     def __init__(self):
         llm_mode = os.getenv("LLM_MODE", "none").lower()
 
@@ -113,9 +116,14 @@ class AnalyzerLLM:
             api_key = os.getenv("OPENAI_API_KEY")
             model = os.getenv("OPENAI_MODEL", "gpt-4o")
             base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
+        elif llm_mode == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_ANALYZER_MODEL", "gemini-2.5-pro-preview-03-25")
+            base_url = self.GEMINI_BASE_URL
         else:
+            # OpenRouter fallback
             api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "openai/gpt-4o")
+            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "google/gemini-2.5-pro-preview-03-25")
             base_url = None  # Use default OpenRouter URL
 
         self.enabled = bool(api_key)
@@ -126,7 +134,7 @@ class AnalyzerLLM:
             self.client = OpenRouterBaseClient(
                 api_key=api_key,
                 model=model,
-                timeout=60,
+                timeout=120,
                 app_name="JETHRO Analyzer",
                 base_url=base_url,
             )
