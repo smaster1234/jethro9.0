@@ -6,12 +6,10 @@ import {
   ChevronDown,
   ChevronUp,
   Loader2,
-  AlertTriangle,
   ArrowLeft,
 } from 'lucide-react';
 import { casesApi } from '../../api';
 import { Card, Badge, EmptyState } from '../../components/ui';
-import { cn } from '../../utils/cn';
 import type { Case } from '../../types';
 
 interface CrossExamQuestion {
@@ -30,7 +28,7 @@ interface CrossExamSet {
 
 export const CrossExamTab: React.FC = () => {
   const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
+  useOutletContext<{ notebook: Case }>();
   const [isLoading, setIsLoading] = useState(true);
   const [sets, setSets] = useState<CrossExamSet[]>([]);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -41,7 +39,7 @@ export const CrossExamTab: React.FC = () => {
       setIsLoading(true);
       try {
         const runs = await casesApi.listRuns(notebookId, 5);
-        const latest = runs.find((r: { status: string }) => r.status === 'done');
+        const latest = runs.find((r) => r.status === 'completed');
         if (latest?.metadata) {
           const crossExam = (latest.metadata as Record<string, unknown>).cross_exam_questions;
           if (Array.isArray(crossExam)) {

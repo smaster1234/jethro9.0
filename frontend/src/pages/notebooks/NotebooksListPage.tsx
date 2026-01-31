@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   Clock,
   Search,
-  Filter,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { casesApi, statsApi } from '../../api';

@@ -10,7 +10,6 @@ import {
   RegisterPage,
   ForgotPasswordPage,
   ResetPasswordPage,
-  DashboardPage,
   CasesPage,
   CaseDetailPage,
   DocumentDetailPage,

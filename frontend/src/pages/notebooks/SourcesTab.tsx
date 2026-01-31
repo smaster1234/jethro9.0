@@ -4,19 +4,15 @@ import { motion } from 'framer-motion';
 import {
   FileText,
   Upload,
-  ClipboardPaste,
-  Folder,
   AlertCircle,
   CheckCircle,
   Clock,
   Star,
   Paperclip,
   Loader2,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
-import { documentsApi, casesApi } from '../../api';
-import { Card, Button, Badge, EmptyState } from '../../components/ui';
+import { documentsApi } from '../../api';
+import { Card, Badge, EmptyState } from '../../components/ui';
 import { cn } from '../../utils/cn';
 import type { Case, Document } from '../../types';
 
@@ -106,7 +102,7 @@ interface UploadFormState {
 
 export const SourcesTab: React.FC = () => {
   const { notebookId } = useParams();
-  const { notebook } = useOutletContext<{ notebook: Case }>();
+  useOutletContext<{ notebook: Case }>();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [upload, setUpload] = useState<UploadFormState>({
