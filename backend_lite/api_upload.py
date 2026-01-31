@@ -3407,7 +3407,13 @@ async def analyze_case(
     auth: AuthContext = Depends(get_auth_context)
 ):
     """
-    Run analysis for a case synchronously and return results.
+    Run analysis for a case and return results.
+
+    The analysis pipeline:
+      1. Extract claims from documents (instant)
+      2. Rule-based contradiction detection (instant)
+      3. LLM verification with Gemini Flash (async, ~10-30s)
+      4. Save verified results
     """
     try:
         from .db.session import get_db_session
@@ -3421,9 +3427,9 @@ async def analyze_case(
         if request is None:
             request = AnalyzeCaseRequest()
 
-        # Run analysis synchronously — no background worker needed
-        logger.info("Starting synchronous analysis for case %s", case_id)
-        result = task_analyze_case(
+        # Run analysis (async — includes LLM verifier calls)
+        logger.info("Starting analysis for case %s", case_id)
+        result = await task_analyze_case(
             case_id=case_id,
             firm_id=auth.firm_id,
             document_ids=request.document_ids,

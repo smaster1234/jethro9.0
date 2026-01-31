@@ -651,7 +651,7 @@ def task_index_document(document_id: str, firm_id: str) -> Dict[str, Any]:
     }
 
 
-def task_analyze_case(
+async def task_analyze_case(
     case_id: str,
     firm_id: str,
     document_ids: Optional[List[str]] = None,
@@ -660,6 +660,12 @@ def task_analyze_case(
 ) -> Dict[str, Any]:
     """
     Analyze a case for contradictions.
+
+    Pipeline:
+      1. Extract claims from documents (rule-based, instant)
+      2. Detect contradiction candidates (rule-based, instant)
+      3. Verify candidates with LLM verifier (Gemini Flash, async)
+      4. Save verified results to DB
 
     Args:
         case_id: Case ID
@@ -671,6 +677,7 @@ def task_analyze_case(
     Returns:
         Dict with analysis results
     """
+    import asyncio
     from ..db.session import get_db_session
     from ..db.models import (
         Document, DocumentStatus, AnalysisRun, Claim, Contradiction,
@@ -680,6 +687,7 @@ def task_analyze_case(
     from ..detector import detect_contradictions
     from ..anchors import build_anchor_from_claim
     from ..insights import compute_insights_for_run
+    from ..llm.verifier import get_verifier
 
     start_time = datetime.utcnow()
     update_job_progress(10, "Loading documents")
@@ -842,26 +850,127 @@ def task_analyze_case(
 
             # Load learning context from past feedback
             learning_ctx = None
+            few_shot_section = ""
             try:
-                from ..learning import get_learning_context, apply_confidence_adjustment
+                from ..learning import get_learning_context, apply_confidence_adjustment, build_few_shot_prompt
                 learning_ctx = get_learning_context(firm_id, db)
+                few_shot_section = build_few_shot_prompt(learning_ctx)
             except Exception as e:
                 logger.warning("Failed to load learning context: %s", e)
 
-            update_job_progress(60, "Detecting contradictions")
+            update_job_progress(60, "Detecting contradiction candidates")
 
-            # Detect contradictions
+            # ── Step 1: Rule-based detection (fast pre-filter) ──
+            saved_count = 0
             if all_claims:
                 detection_result = detect_contradictions(all_claims)
+                raw_candidates = detection_result.contradictions
+                logger.info(
+                    "Rule-based detection: %d candidates from %d claims",
+                    len(raw_candidates), len(all_claims),
+                )
 
-                for contr in detection_result.contradictions:
-                    # Apply learned confidence adjustments
-                    confidence = contr.confidence
+                # ── Step 2: LLM verification (filter false positives) ──
+                verifier = get_verifier()
+                verified_ids = set()   # id(contr) of verified TRUE_CONTRADICTIONs
+                rejected_ids = set()   # id(contr) of confirmed false positives
+                verifier_confidences = {}  # id(contr) -> verifier confidence
+                verifier_explanations = {}  # id(contr) -> verifier reason
+
+                if verifier.enabled and raw_candidates:
+                    update_job_progress(65, "Verifying with LLM")
+                    verifier.reset_stats()
+
+                    # Sort by confidence (highest first) and take top N
+                    sorted_candidates = sorted(
+                        raw_candidates, key=lambda c: c.confidence, reverse=True
+                    )
+                    to_verify = sorted_candidates[:verifier.max_calls]
+
+                    logger.info(
+                        "Verifying %d/%d candidates with %s",
+                        len(to_verify), len(raw_candidates), verifier.model,
+                    )
+
+                    # Run verification concurrently with semaphore
+                    sem = asyncio.Semaphore(10)
+
+                    async def _verify_one(contr):
+                        async with sem:
+                            return contr, await verifier.verify(
+                                claim_a=contr.claim1.text,
+                                claim_b=contr.claim2.text,
+                                suggested_type=contr.type.value,
+                                extra_system_context=few_shot_section,
+                            )
+
+                    results = await asyncio.gather(
+                        *[_verify_one(c) for c in to_verify],
+                        return_exceptions=True,
+                    )
+
+                    for item in results:
+                        if isinstance(item, Exception):
+                            logger.warning("Verifier call exception: %s", item)
+                            continue
+                        contr, vresult = item
+                        cid = id(contr)
+                        if vresult.success:
+                            if vresult.outcome == "TRUE_CONTRADICTION":
+                                verified_ids.add(cid)
+                                verifier_confidences[cid] = vresult.confidence
+                                verifier_explanations[cid] = vresult.reason
+                            else:
+                                rejected_ids.add(cid)
+
+                    stats = verifier.get_stats()
+                    logger.info(
+                        "Verifier done: %d verified, %d rejected, %d unclear "
+                        "(calls=%d, in_tokens=%d, out_tokens=%d)",
+                        stats["promoted"], stats["rejected"], stats["unclear"],
+                        stats["calls"], stats["total_input_tokens"],
+                        stats["total_output_tokens"],
+                    )
+                elif not verifier.enabled:
+                    logger.warning(
+                        "Verifier disabled — saving all %d rule-based candidates as suspicious",
+                        len(raw_candidates),
+                    )
+
+                update_job_progress(80, "Saving contradictions")
+
+                # ── Step 3: Save contradictions to DB ──
+                for contr in raw_candidates:
+                    cid = id(contr)
+
+                    # Skip rejected false positives
+                    if cid in rejected_ids:
+                        continue
+
+                    # Determine status and confidence
+                    # Use frontend-compatible values: confirmed|new|reviewed|dismissed
+                    if cid in verified_ids:
+                        status_val = "confirmed"
+                        confidence = verifier_confidences.get(cid, contr.confidence)
+                    else:
+                        status_val = "new"
+                        confidence = contr.confidence
+
+                    # Apply learning adjustments
                     if learning_ctx:
                         contr_type = contr.type.value if hasattr(contr.type, 'value') else str(contr.type)
-                        confidence = apply_confidence_adjustment(
-                            confidence, contr_type, learning_ctx
-                        )
+                        try:
+                            confidence = apply_confidence_adjustment(
+                                confidence, contr_type, learning_ctx
+                            )
+                        except Exception:
+                            pass
+
+                    # Use verifier explanation if available
+                    explanation = contr.explanation
+                    verifier_reason = verifier_explanations.get(cid)
+                    if verifier_reason:
+                        explanation = verifier_reason
 
                     claim1_db_id = getattr(contr.claim1, "_db_id", None)
                     claim2_db_id = getattr(contr.claim2, "_db_id", None)
@@ -873,17 +982,18 @@ def task_analyze_case(
                         claim1_id=claim1_db_id,
                         claim2_id=claim2_db_id,
                         contradiction_type=contr.type.value,
-                        status=contr.status.value if hasattr(contr, 'status') else 'suspicious',
+                        status=status_val,
                         confidence=confidence,
                         severity=contr.severity.value,
                         category=contr.category.value if contr.category else None,
-                        explanation=contr.explanation,
+                        explanation=explanation,
                         quote1=contr.quote1,
                         quote2=contr.quote2,
                         locator1_json=locator1,
                         locator2_json=locator2,
                     )
                     db.add(db_contr)
+                    saved_count += 1
 
             update_job_progress(85, "Generating insights")
 
@@ -905,7 +1015,9 @@ def task_analyze_case(
                 related_ids_json={
                     "analysis_run_id": run.id,
                     "claims_count": len(all_claims),
-                    "contradictions_count": len(detection_result.contradictions) if all_claims else 0
+                    "contradictions_found": saved_count,
+                    "verified_count": len(verified_ids),
+                    "rejected_count": len(rejected_ids),
                 }
             )
             db.add(event2)
@@ -921,8 +1033,10 @@ def task_analyze_case(
                 "analysis_run_id": run.id,
                 "documents_analyzed": len(documents),
                 "claims_extracted": len(all_claims),
-                "contradictions_found": len(detection_result.contradictions) if all_claims else 0,
-                "elapsed_ms": elapsed_ms
+                "contradictions_found": saved_count,
+                "verified_count": len(verified_ids),
+                "rejected_count": len(rejected_ids),
+                "elapsed_ms": elapsed_ms,
             }
 
     except Exception as e:

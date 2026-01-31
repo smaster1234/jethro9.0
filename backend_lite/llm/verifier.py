@@ -105,6 +105,9 @@ class VerifierLLM:
     Optimized for precision - filters false positives.
     """
 
+    # Gemini OpenAI-compatible endpoint (direct, no proxy)
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
     def __init__(self):
         llm_mode = os.getenv("LLM_MODE", "none").lower()
         enabled_str = os.getenv("VERIFIER_ENABLED", "true").lower()
@@ -115,9 +118,14 @@ class VerifierLLM:
             api_key = os.getenv("OPENAI_API_KEY")
             model = os.getenv("OPENAI_MODEL", "gpt-4o")
             base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
+        elif llm_mode == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_VERIFIER_MODEL", "gemini-2.0-flash-001")
+            base_url = self.GEMINI_BASE_URL
         else:
+            # OpenRouter fallback
             api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "openai/gpt-4o")
+            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "google/gemini-2.0-flash-001")
             base_url = None  # Use default OpenRouter URL
 
         self.enabled = enabled_str == "true" and bool(api_key)
@@ -172,7 +180,8 @@ class VerifierLLM:
         self,
         claim_a: str,
         claim_b: str,
-        suggested_type: str = "unknown"
+        suggested_type: str = "unknown",
+        extra_system_context: str = "",
     ) -> VerifierResult:
         """
         Verify if two claims contradict each other.
@@ -181,6 +190,8 @@ class VerifierLLM:
             claim_a: First claim text
             claim_b: Second claim text
             suggested_type: Suggested contradiction type from analyzer
+            extra_system_context: Optional extra context (e.g. few-shot examples)
+                                  appended to the system prompt
 
         Returns:
             VerifierResult with decision
@@ -207,8 +218,13 @@ class VerifierLLM:
             suggested_type=suggested_type
         )
 
+        # Build system prompt with optional few-shot examples
+        system_prompt = VERIFIER_SYSTEM_PROMPT
+        if extra_system_context:
+            system_prompt = system_prompt + "\n\n" + extra_system_context
+
         messages = [
-            {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
 
