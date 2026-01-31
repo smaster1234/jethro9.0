@@ -510,12 +510,70 @@ export interface CrossExamTrack {
   priority?: number;
 }
 
+// Expert Notebook types (Cursor 5.2 §10)
+export interface ExpertEvidence {
+  quote: string;
+  context_before?: string;
+  context_after?: string;
+  doc_id?: string;
+  section_path?: string;
+  locator?: Record<string, unknown>;
+  speaker_mode?: string;
+  speaker_role?: string;
+  plane?: string;
+  modality?: string;
+  negation?: boolean;
+  entities?: string[];
+  time_reference?: string;
+}
+
+export interface PairGateResults {
+  context_present?: boolean;
+  speaker_mode_ok?: boolean;
+  plane_match?: boolean;
+  time_match?: boolean;
+  scope_match?: boolean;
+  reconciliation_failed?: boolean;
+  [key: string]: unknown;
+}
+
+export interface PairAnalysisRow {
+  pair_id: string;
+  claim_a: ExpertEvidence;
+  claim_b: ExpertEvidence;
+  outcome_category: string;
+  contradiction_score: number;
+  severity: string;
+  gates: PairGateResults;
+  reconciliation_attempt?: string;
+  rationale?: string;
+  deciding_fields: string[];
+  is_true_contradiction: boolean;
+  blocked_reasons: string[];
+}
+
+export interface ExpertSummaryReport {
+  total_pairs_analyzed: number;
+  distribution: Record<string, number>;
+  true_contradiction_count: number;
+  noise_to_signal_ratio: number;
+  top_findings: string[];
+  validation_flags: string[];
+}
+
+export interface ExpertNotebookPayload {
+  pair_analysis: PairAnalysisRow[];
+  summary_report: ExpertSummaryReport;
+}
+
 export interface AnalysisResponse {
   claims: Claim[];
   claim_results?: Record<string, unknown>;
   contradictions: Contradiction[];
   // Backend returns array of CrossExamQuestionsOutput (grouped by contradiction)
   cross_exam_questions: CrossExamQuestionsOutput[] | CrossExamQuestion[];
+  // Expert Notebook payload (Cursor 5.2 §10)
+  expert_notebook?: ExpertNotebookPayload;
   metadata?: {
     total_claims?: number;
     total_contradictions?: number;

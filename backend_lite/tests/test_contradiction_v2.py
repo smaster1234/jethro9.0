@@ -1253,3 +1253,132 @@ class TestCursor52NineCategoryOutcomes:
         )
         r = reconcile_pair(a, b, detector_confidence=0.95)
         assert r.outcome == OUTCOME_TRUE_CONTRADICTION
+
+
+# ====================================================================
+# B1.6 — Regression tests: attribution contradictions (spec compliance)
+# ====================================================================
+
+class TestAttributionRegression:
+    """Cursor 5.2 spec B1.6: ensure attribution patterns never produce TRUE_CONTRADICTION."""
+
+    def test_party_claim_vs_party_claim_never_true_contradiction(self):
+        """Two party claims → DISAGREEMENT_BETWEEN_PARTIES (never TRUE_CONTRADICTION)."""
+        a = _claim(
+            "לטענת המערער, הסכום שולם במלואו",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="appellant",
+            plane=PLANE_FACT, entities=["המערער", "הסכום"],
+        )
+        b = _claim(
+            "לטענת המשיב, לא שולם מאומה",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="respondent",
+            plane=PLANE_FACT, entities=["המשיב", "הסכום"],
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome != OUTCOME_TRUE_CONTRADICTION
+        assert r.outcome in (OUTCOME_DISAGREEMENT, OUTCOME_ROLE_MISMATCH)
+
+    def test_party_claim_vs_party_claim_blocked_by_hard_filter(self):
+        """Hard filter blocks PARTY_CLAIM vs PARTY_CLAIM entirely."""
+        a = _claim(
+            "לטענת המערער, הסכום שולם",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="appellant",
+            plane=PLANE_FACT, entities=["המערער"],
+        )
+        b = _claim(
+            "לטענת המשיב, לא שולם",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="respondent",
+            plane=PLANE_FACT, entities=["המשיב"],
+        )
+        assert not passes_hard_filters(a, b)
+
+    def test_party_claim_vs_finding_is_role_mismatch(self):
+        """PARTY_CLAIM vs COURT_FINDING → ROLE_OR_ATTRIBUTION_MISMATCH."""
+        a = _claim(
+            "לטענת המערער, החוזה נחתם ב-2020",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="appellant",
+            plane=PLANE_FACT, entities=["המערער", "החוזה"],
+        )
+        b = _claim(
+            "בית המשפט קבע כי החוזה נחתם ב-2019",
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            plane=PLANE_FACT, entities=["בית המשפט", "החוזה"],
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.9)
+        assert r.outcome != OUTCOME_TRUE_CONTRADICTION
+        assert r.outcome == OUTCOME_ROLE_MISMATCH
+
+    def test_plane_mismatch_never_true_contradiction(self):
+        """FACT vs LAW → PLANE_MISMATCH (never TRUE_CONTRADICTION)."""
+        a = _claim(
+            "הנתבע לא שילם",
+            speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_FACT,
+            entities=["הנתבע"],
+        )
+        b = _claim(
+            "סעיף 10 קובע חובת תשלום",
+            speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_LAW,
+            entities=["הנתבע"],
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.9)
+        assert r.outcome != OUTCOME_TRUE_CONTRADICTION
+        assert r.outcome == OUTCOME_PLANE_MISMATCH
+
+    def test_scope_reconciliation_yields_apparent_tension(self):
+        """Different scopes → APPARENT_TENSION_RESOLVABLE."""
+        a = _claim(
+            "כל העובדים קיבלו פיצוי",
+            speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_FACT,
+            entities=["העובדים"], scope_quantifiers=["כל"],
+        )
+        b = _claim(
+            "חלק מהעובדים לא קיבלו פיצוי",
+            speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_FACT,
+            entities=["העובדים"], scope_quantifiers=["חלק"],
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.8)
+        assert r.outcome != OUTCOME_TRUE_CONTRADICTION
+        assert r.outcome == OUTCOME_APPARENT_TENSION
+
+    def test_direct_negation_same_subject_is_true_contradiction(self):
+        """Direct negation, same subject/plane/scope → TRUE_CONTRADICTION."""
+        a = _claim(
+            "הנתבע נכח בפגישה",
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            plane=PLANE_FACT, negation=False, entities=["הנתבע"],
+            context_before="רקע.",
+        )
+        b = _claim(
+            "הנתבע לא נכח בפגישה",
+            speaker_mode=SPEAKER_MODE_FINDING, speaker_role="court",
+            plane=PLANE_FACT, negation=True, entities=["הנתבע"],
+            context_before="רקע.",
+        )
+        r = reconcile_pair(a, b, detector_confidence=0.95)
+        assert r.outcome == OUTCOME_TRUE_CONTRADICTION
+
+    def test_missing_plane_blocked_by_hard_filter(self):
+        """Missing plane → hard filter rejects pair (Cursor 5.2 §4)."""
+        a = _claim("הנתבע שילם", speaker_mode=SPEAKER_MODE_FINDING, entities=["הנתבע"])
+        b = _claim("הנתבע לא שילם", speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_FACT, entities=["הנתבע"])
+        assert not passes_hard_filters(a, b)
+
+    def test_missing_speaker_mode_blocked_by_hard_filter(self):
+        """Missing speaker_mode → hard filter rejects pair (Cursor 5.2 §4)."""
+        a = _claim("הנתבע שילם", plane=PLANE_FACT, entities=["הנתבע"])
+        b = _claim("הנתבע לא שילם", speaker_mode=SPEAKER_MODE_FINDING, plane=PLANE_FACT, entities=["הנתבע"])
+        assert not passes_hard_filters(a, b)
+
+    def test_same_party_claims_blocked_by_hard_filter(self):
+        """Even same-party PARTY_CLAIM pairs are blocked."""
+        a = _claim(
+            "לטענת המערער, שילם",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="appellant",
+            plane=PLANE_FACT, entities=["המערער"],
+        )
+        b = _claim(
+            "לטענת המערער, לא שילם",
+            speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="appellant",
+            plane=PLANE_FACT, entities=["המערער"],
+        )
+        assert not passes_hard_filters(a, b)

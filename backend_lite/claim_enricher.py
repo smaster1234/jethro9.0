@@ -253,6 +253,9 @@ def _enrich_single(
             full_text, claim.char_start, claim.char_end or (claim.char_start + len(text)),
             sentence_spans,
         )
+    elif full_text and claim.char_start is None:
+        # Best-effort fallback: find claim text in full_text by string match (B1.5)
+        _fallback_context(claim, text, full_text, sentence_spans)
 
     # 3. Section path
     if headings and claim.char_start is not None:
@@ -328,6 +331,42 @@ def _context_window(
     ctx_before = " ".join(before_sents[-max_sentences:]) if before_sents else None
     ctx_after = " ".join(after_sents[:max_sentences]) if after_sents else None
     return ctx_before, ctx_after
+
+
+def _fallback_context(
+    claim,
+    text: str,
+    full_text: str,
+    sentence_spans: List[Tuple[int, int]],
+) -> None:
+    """Best-effort context extraction when char offsets are unavailable (B1.5).
+
+    Finds the claim text by string matching in full_text, then extracts
+    context using sentence boundaries around the match position.
+    """
+    # 1. Try exact match
+    idx = full_text.find(text)
+    if idx < 0:
+        # 2. Try normalized match (strip whitespace differences)
+        normalized_text = re.sub(r'\s+', ' ', text.strip())
+        normalized_full = re.sub(r'\s+', ' ', full_text)
+        idx_norm = normalized_full.find(normalized_text)
+        if idx_norm >= 0:
+            # Map back to approximate position in original
+            idx = idx_norm
+        else:
+            # 3. Try partial match (first 40 chars)
+            partial = text[:40].strip()
+            idx = full_text.find(partial)
+            if idx < 0:
+                return  # Cannot locate claim — context remains None
+
+    # Found a position — extract context using sentence boundaries
+    char_start = idx
+    char_end = idx + len(text)
+    claim.context_before, claim.context_after = _context_window(
+        full_text, char_start, char_end, sentence_spans,
+    )
 
 
 def _extract_headings(text: str) -> List[Tuple[int, str]]:

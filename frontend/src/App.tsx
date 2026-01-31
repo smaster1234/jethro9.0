@@ -17,6 +17,7 @@ import {
   SettingsPage,
   TeamsPage,
   UsersPage,
+  ExpertNotebookPage,
 } from './pages';
 import './index.css';
 
@@ -51,6 +52,7 @@ function App() {
               <Route path="/cases/:caseId" element={<CaseDetailPage />} />
               <Route path="/documents/:documentId" element={<DocumentDetailPage />} />
               <Route path="/analyze" element={<AnalyzePage />} />
+              <Route path="/expert-notebook" element={<ExpertNotebookPage />} />
               <Route path="/teams" element={<TeamsPage />} />
               <Route path="/users" element={<UsersPage />} />
               <Route path="/settings" element={<SettingsPage />} />

@@ -12,6 +12,7 @@ import {
   Scale,
   ChevronLeft,
   ChevronRight,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { cn } from '../../utils/cn';
@@ -25,6 +26,7 @@ const navItems = [
   { icon: LayoutDashboard, label: 'לוח בקרה', path: '/dashboard' },
   { icon: Briefcase, label: 'תיקים', path: '/cases' },
   { icon: Search, label: 'ניתוח טקסט', path: '/analyze' },
+  { icon: BookOpen, label: 'מחברת מומחים', path: '/expert-notebook' },
   { icon: Users, label: 'צוותים', path: '/teams' },
   { icon: UserCog, label: 'משתמשים', path: '/users' },
   { icon: Settings, label: 'הגדרות', path: '/settings' },

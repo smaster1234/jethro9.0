@@ -1100,6 +1100,69 @@ class AttributionSummary(BaseModel):
     has_party_attribution: bool = Field(False, description="Whether any documents have party set")
 
 
+# =============================================================================
+# OUTPUT SCHEMAS — Expert Notebook Payload (Cursor 5.2 §10)
+# =============================================================================
+
+class EvidenceModel(BaseModel):
+    """Evidence with full context for expert notebook."""
+    quote: str = Field(..., description="Exact text span")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after")
+    doc_id: Optional[str] = Field(None, description="Source document ID")
+    section_path: Optional[str] = Field(None, description="Section heading path")
+    locator: Optional[Locator] = Field(None, description="Location in document")
+    speaker_mode: Optional[str] = Field(None)
+    speaker_role: Optional[str] = Field(None)
+    plane: Optional[str] = Field(None)
+    modality: Optional[str] = Field(None)
+    negation: Optional[bool] = Field(None)
+    entities: Optional[List[str]] = Field(None)
+    time_reference: Optional[str] = Field(None)
+
+
+class PairGateResults(BaseModel):
+    """Pass/fail results for each gate check."""
+    context_present: Optional[bool] = Field(None, description="Both claims have context")
+    speaker_mode_ok: Optional[bool] = Field(None, description="No PARTY_CLAIM → TRUE_CONTRADICTION")
+    plane_match: Optional[bool] = Field(None, description="Same plane (FACT↔FACT or LAW↔LAW)")
+    time_match: Optional[bool] = Field(None, description="Same time/period")
+    scope_match: Optional[bool] = Field(None, description="Same scope/conditions")
+    reconciliation_failed: Optional[bool] = Field(None, description="Reconciliation attempt failed")
+
+
+class PairAnalysisRowModel(BaseModel):
+    """Per-pair analysis row for expert notebook."""
+    pair_id: str = Field(..., description="Unique pair ID")
+    claim_a: EvidenceModel = Field(..., description="Claim A with evidence")
+    claim_b: EvidenceModel = Field(..., description="Claim B with evidence")
+    outcome_category: str = Field(..., description="9-category outcome")
+    contradiction_score: float = Field(0.0, description="0-1, 1 = maximally irreconcilable")
+    severity: str = Field("low", description="low/medium/high/critical")
+    gates: PairGateResults = Field(default_factory=PairGateResults, description="Gate check results")
+    reconciliation_attempt: Optional[str] = Field(None, description="What was tried")
+    rationale: Optional[str] = Field(None, description="Detailed explanation (Hebrew)")
+    deciding_fields: List[str] = Field(default_factory=list, description="Fields that decided outcome")
+    is_true_contradiction: bool = Field(False, description="Whether outcome = TRUE_CONTRADICTION")
+    blocked_reasons: List[str] = Field(default_factory=list, description="Why it cannot be marked as contradiction")
+
+
+class ExpertSummaryReportModel(BaseModel):
+    """Expert analysis summary for notebook header."""
+    total_pairs_analyzed: int = Field(0)
+    distribution: Dict[str, int] = Field(default_factory=dict, description="Count per outcome_category")
+    true_contradiction_count: int = Field(0)
+    noise_to_signal_ratio: float = Field(0.0, description="non-true / total pairs")
+    top_findings: List[str] = Field(default_factory=list, description="Top true contradictions (summaries)")
+    validation_flags: List[str] = Field(default_factory=list)
+
+
+class ExpertNotebookPayload(BaseModel):
+    """Complete expert notebook data returned by API."""
+    pair_analysis: List[PairAnalysisRowModel] = Field(default_factory=list)
+    summary_report: ExpertSummaryReportModel = Field(default_factory=ExpertSummaryReportModel)
+
+
 class AnalysisResponse(BaseModel):
     """
     Full analysis response with claims table support and attribution layer.
@@ -1143,6 +1206,12 @@ class AnalysisResponse(BaseModel):
     attribution_summary: Optional[AttributionSummary] = Field(
         None,
         description="Summary of attribution layer buckets"
+    )
+
+    # Expert Notebook payload (Cursor 5.2 §10)
+    expert_notebook: Optional[ExpertNotebookPayload] = Field(
+        None,
+        description="Expert notebook: per-pair analysis, gates, summary report"
     )
 
     class Config:

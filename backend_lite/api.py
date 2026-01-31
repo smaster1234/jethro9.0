@@ -1329,6 +1329,118 @@ def convert_cross_exam_to_output(
     )
 
 
+def _build_expert_notebook(
+    all_contradictions: List[DetectedContradiction],
+    validation_flags: List[str],
+) -> "ExpertNotebookPayload":
+    """Build the expert notebook payload from all analyzed pairs (B1.1).
+
+    Includes ALL pairs (not just TRUE_CONTRADICTION) so the notebook shows
+    the full picture: what was analyzed, what was reconciled, and why.
+    """
+    from .schemas import (
+        ExpertNotebookPayload, PairAnalysisRowModel, ExpertSummaryReportModel,
+        EvidenceModel, PairGateResults, Locator,
+    )
+    from .reconciler import OUTCOME_TRUE_CONTRADICTION
+
+    rows: List[PairAnalysisRowModel] = []
+    distribution: dict = {}
+
+    for contr in all_contradictions:
+        meta = getattr(contr, 'metadata', {}) or {}
+        outcome = meta.get("reconciler_outcome", "UNKNOWN")
+        distribution[outcome] = distribution.get(outcome, 0) + 1
+
+        debug = meta.get("reconciler_debug", {}) or {}
+
+        # Build evidence models
+        def _evidence(claim) -> EvidenceModel:
+            loc = None
+            if getattr(claim, 'doc_id', None):
+                loc = Locator(
+                    doc_id=claim.doc_id,
+                    page=getattr(claim, 'page', None),
+                    paragraph=getattr(claim, 'paragraph_index', None),
+                    char_start=getattr(claim, 'char_start', None),
+                    char_end=getattr(claim, 'char_end', None),
+                )
+            return EvidenceModel(
+                quote=claim.text,
+                context_before=getattr(claim, 'context_before', None),
+                context_after=getattr(claim, 'context_after', None),
+                doc_id=getattr(claim, 'doc_id', None),
+                section_path=getattr(claim, 'section_path', None),
+                locator=loc,
+                speaker_mode=getattr(claim, 'speaker_mode', None),
+                speaker_role=getattr(claim, 'speaker_role', None),
+                plane=getattr(claim, 'plane', None),
+                modality=getattr(claim, 'modality', None),
+                negation=getattr(claim, 'negation', None),
+                entities=getattr(claim, 'entities', None) or None,
+                time_reference=getattr(claim, 'time_reference', None),
+            )
+
+        # Build gate results
+        gates = PairGateResults(
+            context_present=debug.get("claim_a_complete") and debug.get("claim_b_complete"),
+            speaker_mode_ok=debug.get("speaker_mode_ok"),
+            plane_match=debug.get("plane_match"),
+            time_match=debug.get("time_match"),
+            scope_match=debug.get("scope_match"),
+            reconciliation_failed=outcome == OUTCOME_TRUE_CONTRADICTION,
+        )
+
+        # Build blocked reasons
+        blocked: List[str] = []
+        if outcome != OUTCOME_TRUE_CONTRADICTION:
+            blocked.append(f"outcome={outcome}")
+        if getattr(contr.claim1, 'speaker_mode', None) == "party_claim":
+            blocked.append("claim_a=PARTY_CLAIM")
+        if getattr(contr.claim2, 'speaker_mode', None) == "party_claim":
+            blocked.append("claim_b=PARTY_CLAIM")
+        if not getattr(contr.claim1, 'context_before', None) and not getattr(contr.claim1, 'context_after', None):
+            blocked.append("claim_a_missing_context")
+        if not getattr(contr.claim2, 'context_before', None) and not getattr(contr.claim2, 'context_after', None):
+            blocked.append("claim_b_missing_context")
+
+        row = PairAnalysisRowModel(
+            pair_id=contr.id,
+            claim_a=_evidence(contr.claim1),
+            claim_b=_evidence(contr.claim2),
+            outcome_category=outcome,
+            contradiction_score=meta.get("reconciler_score", contr.confidence),
+            severity=contr.severity.value if hasattr(contr.severity, 'value') else str(contr.severity),
+            gates=gates,
+            reconciliation_attempt=meta.get("reconciliation_attempt"),
+            rationale=meta.get("reconciler_rationale"),
+            deciding_fields=meta.get("reconciler_deciding") or [],
+            is_true_contradiction=(outcome == OUTCOME_TRUE_CONTRADICTION),
+            blocked_reasons=blocked,
+        )
+        rows.append(row)
+
+    # Build summary report
+    total = len(rows)
+    true_count = distribution.get(OUTCOME_TRUE_CONTRADICTION, 0)
+    top_findings = [
+        row.rationale or row.claim_a.quote[:80]
+        for row in rows
+        if row.is_true_contradiction
+    ][:5]
+
+    summary = ExpertSummaryReportModel(
+        total_pairs_analyzed=total,
+        distribution=distribution,
+        true_contradiction_count=true_count,
+        noise_to_signal_ratio=(total - true_count) / total if total > 0 else 0.0,
+        top_findings=top_findings,
+        validation_flags=validation_flags,
+    )
+
+    return ExpertNotebookPayload(pair_analysis=rows, summary_report=summary)
+
+
 def chunk_text_to_paragraphs(
     text: str,
     doc_id: str,
@@ -2091,16 +2203,19 @@ async def analyze_claims_internal(
         candidate_contradictions=all_contradictions,
     )
     validation_flags.extend(expert_result.validation_flags)
-    all_contradictions = expert_result.true_contradictions
+    true_contradictions = expert_result.true_contradictions
     pair_analysis = expert_result.pair_rows
     summary_report = expert_result.summary_report
 
-    # 6. Generate cross-examination questions
-    cross_exam_sets = generate_cross_exam_questions(all_contradictions)
+    # 5b. Build expert notebook payload (B1.1)
+    expert_notebook = _build_expert_notebook(all_contradictions, validation_flags)
+
+    # 6. Generate cross-examination questions (only for true contradictions)
+    cross_exam_sets = generate_cross_exam_questions(true_contradictions)
 
     # 7. Convert to output format
     contradictions_output = [
-        convert_contradiction_to_output(c) for c in all_contradictions
+        convert_contradiction_to_output(c) for c in true_contradictions
     ]
 
     cross_exam_output = [
@@ -2144,6 +2259,7 @@ async def analyze_claims_internal(
         summary_report=(summary_report.model_dump() if hasattr(summary_report, "model_dump") else summary_report.__dict__),
         disputes=disputes,
         attribution_summary=attribution_summary,
+        expert_notebook=expert_notebook,
         metadata=build_metadata(
             duration_ms=total_time_ms,
             claims_total=len(claims),

@@ -10,3 +10,4 @@ export { AnalyzePage } from './AnalyzePage';
 export { SettingsPage } from './SettingsPage';
 export { TeamsPage } from './TeamsPage';
 export { UsersPage } from './UsersPage';
+export { ExpertNotebookPage } from './ExpertNotebookPage';

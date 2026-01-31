@@ -246,7 +246,7 @@ export const AnalyzePage: React.FC = () => {
                           result.contradictions.forEach((c) => {
                             const s = c.severity || 'medium';
                             sevCounts[s] = (sevCounts[s] || 0) + 1;
-                            const cat = c.category || 'unclassified';
+                            const cat = c.reconciler_outcome || c.category || 'unclassified';
                             catCounts[cat] = (catCounts[cat] || 0) + 1;
                           });
                           const total = result.contradictions.length;
@@ -814,9 +814,9 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
                 {getSeverityLabel(severity)}
               </Badge>
               <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
-              {getCategoryLabel(contradiction.category) && (
-                <Badge variant={getCategoryColor(contradiction.category) as any}>
-                  {getCategoryLabel(contradiction.category)}
+              {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category) && (
+                <Badge variant={getCategoryColor(contradiction.reconciler_outcome || contradiction.category) as any}>
+                  {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category)}
                 </Badge>
               )}
               {contradiction.verified && (
