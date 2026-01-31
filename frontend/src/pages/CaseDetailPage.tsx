@@ -32,6 +32,10 @@ import {
   ThumbsUp,
   ThumbsDown,
   Shield,
+  ShieldCheck,
+  ShieldX,
+  Lock,
+  ChevronUp,
   Crosshair,
 } from 'lucide-react';
 import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi, feedbackApi } from '../api';
@@ -4156,6 +4160,103 @@ const ContradictionCard: React.FC<{
   const usageBadge = buildUsageBadge(usageSummary);
   const feedbackTag = buildFeedbackTag(feedbackSummary);
   const [selectedLabel, setSelectedLabel] = useState<'worked' | 'not_worked' | 'too_risky' | 'excellent'>('worked');
+  const [gatesOpen, setGatesOpen] = useState(false);
+
+  // Expert Notebook data
+  const ev1 = contradiction.claim1;
+  const ev2 = contradiction.claim2;
+  const gates = contradiction.gate_results;
+
+  // Speaker mode / plane badge helpers
+  const smLabel: Record<string, string> = { finding: 'קביעה שיפוטית', party_claim: 'טענת צד', quote: 'ציטוט', law_citation: 'אזכור חוק', opinion: 'דעה / הערכה' };
+  const plLabel: Record<string, string> = { FACT: 'עובדה', LAW: 'חוק', OPINION: 'דעה', PROCEDURAL: 'פרוצדורלי' };
+  const smColor: Record<string, string> = { finding: 'bg-blue-100 text-blue-800 border-blue-200', party_claim: 'bg-orange-100 text-orange-800 border-orange-200', quote: 'bg-purple-100 text-purple-800 border-purple-200', law_citation: 'bg-emerald-100 text-emerald-800 border-emerald-200', opinion: 'bg-pink-100 text-pink-800 border-pink-200' };
+  const plColor: Record<string, string> = { FACT: 'bg-sky-100 text-sky-800 border-sky-200', LAW: 'bg-teal-100 text-teal-800 border-teal-200', OPINION: 'bg-pink-100 text-pink-800 border-pink-200', PROCEDURAL: 'bg-slate-100 text-slate-700 border-slate-200' };
+  const gateLabel: Record<string, string> = { claim_a_complete: 'שלמות טענה א׳', claim_b_complete: 'שלמות טענה ב׳', time_match: 'תאימות זמן', scope_match: 'תאימות היקף', quantifier_match: 'כמת', modality_match: 'מודאליות', speaker_mode_ok: 'מצב דובר', plane_match: 'מישור' };
+
+  // Attribution highlighting
+  const attrPatterns = [/לטענת[ו]?/g, /נטען/g, /לכאורה/g, /ייתכן/g, /סביר להניח/g, /נראה כי/g, /ככל הנראה/g, /כנטען/g, /לדבריו/g, /לדבריה/g, /טוען/g, /טוענת/g];
+  const highlightAttr = (text: string) => {
+    if (!text) return [text];
+    const parts: React.ReactNode[] = [];
+    let lastIdx = 0;
+    const matches: { s: number; e: number }[] = [];
+    for (const p of attrPatterns) { p.lastIndex = 0; let m; while ((m = p.exec(text)) !== null) matches.push({ s: m.index, e: m.index + m[0].length }); }
+    matches.sort((a, b) => a.s - b.s);
+    const merged: { s: number; e: number }[] = [];
+    for (const m of matches) { if (merged.length && m.s <= merged[merged.length - 1].e) merged[merged.length - 1].e = Math.max(merged[merged.length - 1].e, m.e); else merged.push({ ...m }); }
+    for (const m of merged) { if (m.s > lastIdx) parts.push(text.slice(lastIdx, m.s)); parts.push(<mark key={m.s} className="bg-amber-200 text-amber-900 px-0.5 rounded">{text.slice(m.s, m.e)}</mark>); lastIdx = m.e; }
+    if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+    return parts;
+  };
+
+  // Hard UI stops (§10f)
+  const hasContext = !!(ev1?.context_before || ev1?.context_after || ev2?.context_before || ev2?.context_after);
+  const hasPartyClaimBlock = ev1?.speaker_mode === 'party_claim' || ev2?.speaker_mode === 'party_claim';
+  const hasPlaneMismatch = ev1?.plane && ev2?.plane && ev1.plane !== ev2.plane;
+  const reconciliationSucceeded = contradiction.reconciler_outcome && contradiction.reconciler_outcome !== 'TRUE_CONTRADICTION' && contradiction.reconciler_outcome !== 'APPARENT_TENSION_RESOLVABLE';
+  const markDisabled = !hasContext || hasPartyClaimBlock || hasPlaneMismatch || !!reconciliationSucceeded;
+  const disableReasons: string[] = [];
+  if (!hasContext) disableReasons.push('הקשר חסר');
+  if (hasPartyClaimBlock) disableReasons.push('טענת צד');
+  if (hasPlaneMismatch) disableReasons.push('חוסר התאמה במישור');
+  if (reconciliationSucceeded) disableReasons.push('יישוב הצליח');
+
+  // Claim panel renderer with badges, context, source link, highlighting
+  const renderClaimPanel = (
+    label: string, color: 'red' | 'orange', claimText: string,
+    claim: typeof contradiction.claim_a, evidence: typeof ev1,
+  ) => {
+    const sm = evidence?.speaker_mode;
+    const pl = evidence?.plane;
+    const bg = color === 'red' ? 'bg-red-50' : 'bg-orange-50';
+    const border = color === 'red' ? 'border-red-200' : 'border-orange-200';
+    const lc = color === 'red' ? 'text-red-600' : 'text-orange-600';
+    return (
+      <div className={`p-4 ${bg} rounded-xl border ${border}`}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-bold ${lc}`}>{label}</span>
+            {sm && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${smColor[sm] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{smLabel[sm] || sm}</span>}
+            {pl && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${plColor[pl] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{plLabel[pl] || pl}</span>}
+            {evidence?.negation && <span className="text-[10px] px-1.5 py-0.5 rounded border bg-red-100 text-red-700 border-red-200">שלילה</span>}
+          </div>
+        </div>
+        {evidence?.context_before && <p className="text-xs text-slate-400 italic mb-1">...{evidence.context_before}</p>}
+        <p className="text-slate-800 leading-relaxed">{highlightAttr(claimText)}</p>
+        {evidence?.context_after && <p className="text-xs text-slate-400 italic mt-1">{evidence.context_after}...</p>}
+        <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            {evidence?.entities && evidence.entities.length > 0 && <span className="text-slate-400">ישויות: {evidence.entities.join(', ')}</span>}
+          </div>
+          {/* Source link (§10g) */}
+          {claim?.source_name && (
+            <div className="flex items-center gap-1">
+              {claim.source_doc_id ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const params = new URLSearchParams();
+                    if (claim?.page_no) params.set('page', String(claim.page_no));
+                    if (claim?.block_index !== undefined) params.set('block', String(claim.block_index));
+                    const query = params.toString() ? `?${params.toString()}` : '';
+                    if (claim?.source_doc_id) navigate(`/documents/${claim.source_doc_id}${query}`);
+                  }}
+                  className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
+                >
+                  {claim.source_name}
+                  {claim.page_no && <span className="text-slate-400">(עמ' {claim.page_no})</span>}
+                  <ExternalLink className="w-3 h-3" />
+                </button>
+              ) : (
+                <span className="text-xs text-slate-500">{claim.source_name}</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <motion.div
@@ -4165,6 +4266,7 @@ const ContradictionCard: React.FC<{
     >
       <Card className="border-r-4 border-warning-500">
         <div className="space-y-4">
+          {/* 1) Header */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-warning-500" />
@@ -4188,85 +4290,86 @@ const ContradictionCard: React.FC<{
             </div>
           </div>
 
-          {/* Claims */}
+          {/* 2) Claims with context + speaker/plane badges (§10a, §10b) */}
           <div className="space-y-3">
-            <div className="p-4 bg-red-50 rounded-xl border border-red-100">
-              <div className="text-xs text-red-500 font-medium mb-1">טענה א'</div>
-              <p className="text-slate-800">{claimAText}</p>
-              {contradiction.claim_a?.source_name && (
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-slate-500">מקור:</span>
-                  {contradiction.claim_a.source_doc_id ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const params = new URLSearchParams();
-                        if (contradiction.claim_a?.page_no) {
-                          params.set('page', String(contradiction.claim_a.page_no));
-                        }
-                        if (contradiction.claim_a?.block_index !== undefined) {
-                          params.set('block', String(contradiction.claim_a.block_index));
-                        }
-                        const query = params.toString() ? `?${params.toString()}` : '';
-                        const docId = contradiction.claim_a?.source_doc_id;
-                        if (docId) navigate(`/documents/${docId}${query}`);
-                      }}
-                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
-                    >
-                      {contradiction.claim_a.source_name}
-                      {contradiction.claim_a.page_no && (
-                        <span className="text-slate-400">(עמ' {contradiction.claim_a.page_no})</span>
-                      )}
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-500">{contradiction.claim_a.source_name}</span>
-                  )}
-                </div>
-              )}
-            </div>
-
+            {renderClaimPanel('טענה א\'', 'red', claimAText, contradiction.claim_a, ev1)}
             <div className="flex justify-center">
               <div className="w-8 h-8 rounded-full bg-warning-100 flex items-center justify-center">
                 <ArrowDown className="w-4 h-4 text-warning-600" />
               </div>
             </div>
+            {renderClaimPanel('טענה ב\'', 'orange', claimBText, contradiction.claim_b, ev2)}
+          </div>
 
-            <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
-              <div className="text-xs text-orange-500 font-medium mb-1">טענה ב'</div>
-              <p className="text-slate-800">{claimBText}</p>
-              {contradiction.claim_b?.source_name && (
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-slate-500">מקור:</span>
-                  {contradiction.claim_b.source_doc_id ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const params = new URLSearchParams();
-                        if (contradiction.claim_b?.page_no) {
-                          params.set('page', String(contradiction.claim_b.page_no));
-                        }
-                        if (contradiction.claim_b?.block_index !== undefined) {
-                          params.set('block', String(contradiction.claim_b.block_index));
-                        }
-                        const query = params.toString() ? `?${params.toString()}` : '';
-                        const docId = contradiction.claim_b?.source_doc_id;
-                        if (docId) navigate(`/documents/${docId}${query}`);
-                      }}
-                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
-                    >
-                      {contradiction.claim_b.source_name}
-                      {contradiction.claim_b.page_no && (
-                        <span className="text-slate-400">(עמ' {contradiction.claim_b.page_no})</span>
-                      )}
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-500">{contradiction.claim_b.source_name}</span>
-                  )}
+          {/* 3) Gate checks (§10c) */}
+          {gates && Object.keys(gates).length > 0 && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <button
+                onClick={() => setGatesOpen(!gatesOpen)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
+              >
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Shield className="w-4 h-4" />
+                  <span>בדיקות שערים ({Object.keys(gates).length})</span>
+                </div>
+                {gatesOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+              </button>
+              {gatesOpen && (
+                <div className="p-3 grid grid-cols-2 gap-2">
+                  {Object.entries(gates).map(([key, val]) => (
+                    <div key={key} className="flex items-center gap-2 text-xs">
+                      {val === true ? <ShieldCheck className="w-3.5 h-3.5 text-green-500 flex-shrink-0" /> : val === false ? <ShieldX className="w-3.5 h-3.5 text-red-500 flex-shrink-0" /> : <Shield className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />}
+                      <span className={val === true ? 'text-green-700' : val === false ? 'text-red-700' : 'text-slate-500'}>{gateLabel[key] || key}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
+          )}
+
+          {/* 4) Reconciliation attempt (§10d) */}
+          {(contradiction.reconciliation_attempt || contradiction.reconciler_rationale) && (
+            <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+              <div className="text-xs text-indigo-600 font-medium mb-1 flex items-center gap-1">
+                <Search className="w-3 h-3" />
+                ניסיון יישוב
+              </div>
+              {contradiction.reconciliation_attempt && <p className="text-sm text-slate-700">{contradiction.reconciliation_attempt}</p>}
+              {contradiction.reconciler_rationale && <p className="text-sm text-indigo-800 mt-1">{contradiction.reconciler_rationale}</p>}
+              {contradiction.deciding_fields && contradiction.deciding_fields.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {contradiction.deciding_fields.map((f) => (
+                    <span key={f} className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">{f}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 5) Final decision (§10e) + 6) Mark as contradiction (§10f) */}
+          <div className="p-4 bg-slate-50 rounded-xl">
+            <div className="flex items-center gap-2 mb-1">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              <span className="text-xs text-slate-500 font-medium">החלטה סופית</span>
+            </div>
+            <p className="text-slate-700">{getExplanation()}</p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <button
+              disabled={markDisabled}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${markDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+              title={markDisabled ? `חסום: ${disableReasons.join(', ')}` : 'סמן כסתירה'}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              סמן כסתירה
+            </button>
+            {markDisabled && disableReasons.length > 0 && (
+              <span className="text-xs text-slate-400 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                {disableReasons.join(' | ')}
+              </span>
+            )}
           </div>
 
           {hasEvidence && (
@@ -4283,182 +4386,50 @@ const ContradictionCard: React.FC<{
 
           {onFeedback && contradiction.id && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => onFeedback('insight', contradiction.id as string, 'worked')}
-              >
-                <ThumbsUp className="w-4 h-4" />
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => onFeedback('insight', contradiction.id as string, 'not_worked')}
-              >
-                <ThumbsDown className="w-4 h-4" />
-              </Button>
-              <select
-                value={selectedLabel}
-                onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)}
-                className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs"
-              >
+              <Button size="sm" variant="ghost" onClick={() => onFeedback('insight', contradiction.id as string, 'worked')}><ThumbsUp className="w-4 h-4" /></Button>
+              <Button size="sm" variant="ghost" onClick={() => onFeedback('insight', contradiction.id as string, 'not_worked')}><ThumbsDown className="w-4 h-4" /></Button>
+              <select value={selectedLabel} onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)} className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs">
                 <option value="worked">worked</option>
                 <option value="not_worked">not_worked</option>
                 <option value="too_risky">too_risky</option>
                 <option value="excellent">excellent</option>
               </select>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => onFeedback('insight', contradiction.id as string, selectedLabel)}
-              >
-                שמור
-              </Button>
+              <Button size="sm" variant="secondary" onClick={() => onFeedback('insight', contradiction.id as string, selectedLabel)}>שמור</Button>
             </div>
           )}
 
           {insight && (
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-              {/* Score Meters */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-500 font-medium">השפעה</div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
-                      <div className="h-full bg-gradient-to-r from-red-400 to-red-600 rounded-full transition-all" style={{ width: `${(insight.impact_score || 0) * 100}%` }} />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.impact_score)}</span>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-500 font-medium">סיכון</div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
-                      <div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 rounded-full transition-all" style={{ width: `${(insight.risk_score || 0) * 100}%` }} />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.risk_score)}</span>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-500 font-medium">אימות</div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
-                      <div className="h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full transition-all" style={{ width: `${(insight.verifiability_score || 0) * 100}%` }} />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.verifiability_score)}</span>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-500 font-medium">ציון כולל</div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-slate-200 rounded-full">
-                      <div className="h-full bg-gradient-to-r from-primary-400 to-primary-600 rounded-full transition-all" style={{ width: `${(insight.composite_score || 0) * 100}%` }} />
-                    </div>
-                    <span className="text-xs font-bold text-slate-700">{renderScore(insight.composite_score)}</span>
-                  </div>
-                </div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">השפעה</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-red-400 to-red-600 rounded-full transition-all" style={{ width: `${(insight.impact_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.impact_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">סיכון</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 rounded-full transition-all" style={{ width: `${(insight.risk_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.risk_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">אימות</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full transition-all" style={{ width: `${(insight.verifiability_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.verifiability_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">ציון כולל</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-primary-400 to-primary-600 rounded-full transition-all" style={{ width: `${(insight.composite_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.composite_score)}</span></div></div>
               </div>
-
-              {/* Stage Recommendation */}
-              {insight.stage_recommendation && (
-                <div className="flex items-center gap-2">
-                  <Badge variant="warning">
-                    {insight.stage_recommendation === 'early' ? 'שלב מוקדם' : insight.stage_recommendation === 'mid' ? 'שלב אמצעי' : insight.stage_recommendation === 'late' ? 'שלב מתקדם' : `שלב: ${insight.stage_recommendation}`}
-                  </Badge>
-                  <span className="text-xs text-slate-500">מתי לשאול בחקירה</span>
-                </div>
-              )}
-
-              {/* Do Not Ask Warning */}
-              {insight.do_not_ask_flag && (
-                <div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-3 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <strong>אל תשאל/י זאת:</strong>{' '}
-                    {insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}
-                  </div>
-                </div>
-              )}
-
-              {/* Prerequisites */}
-              {insight.prerequisites && insight.prerequisites.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-500 font-medium">דרישות קדם — מה לבסס לפני השאלה:</div>
-                  <ul className="space-y-1">
-                    {insight.prerequisites.map((pre, i) => (
-                      <li key={i} className="text-sm text-slate-700 flex items-start gap-2">
-                        <span className="text-primary-400 font-bold">{i + 1}.</span>
-                        {pre}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Expected Evasions */}
-              {insight.expected_evasions && insight.expected_evasions.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs text-orange-600 font-medium">התחמקויות צפויות של העד:</div>
-                  <div className="bg-orange-50 border border-orange-100 rounded-lg p-3 space-y-2">
-                    {insight.expected_evasions.map((evasion, i) => (
-                      <div key={i} className="text-sm text-orange-800 flex items-start gap-2">
-                        <span className="text-orange-400">⚠</span>
-                        {evasion}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Best Counter Questions */}
-              {insight.best_counter_questions && insight.best_counter_questions.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs text-green-600 font-medium">שאלות נגד מומלצות:</div>
-                  <div className="bg-green-50 border border-green-100 rounded-lg p-3 space-y-2">
-                    {insight.best_counter_questions.map((question, i) => (
-                      <div key={i} className="text-sm text-green-800 flex items-start gap-2">
-                        <span className="text-green-500 font-bold">{i + 1}.</span>
-                        &ldquo;{question}&rdquo;
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {insight.stage_recommendation && (<div className="flex items-center gap-2"><Badge variant="warning">{insight.stage_recommendation === 'early' ? 'שלב מוקדם' : insight.stage_recommendation === 'mid' ? 'שלב אמצעי' : insight.stage_recommendation === 'late' ? 'שלב מתקדם' : `שלב: ${insight.stage_recommendation}`}</Badge><span className="text-xs text-slate-500">מתי לשאול בחקירה</span></div>)}
+              {insight.do_not_ask_flag && (<div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-3 flex items-start gap-2"><AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" /><div><strong>אל תשאל/י זאת:</strong>{' '}{insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}</div></div>)}
+              {insight.prerequisites && insight.prerequisites.length > 0 && (<div className="space-y-1"><div className="text-xs text-slate-500 font-medium">דרישות קדם — מה לבסס לפני השאלה:</div><ul className="space-y-1">{insight.prerequisites.map((pre, i) => (<li key={i} className="text-sm text-slate-700 flex items-start gap-2"><span className="text-primary-400 font-bold">{i + 1}.</span>{pre}</li>))}</ul></div>)}
+              {insight.expected_evasions && insight.expected_evasions.length > 0 && (<div className="space-y-1"><div className="text-xs text-orange-600 font-medium">התחמקויות צפויות של העד:</div><div className="bg-orange-50 border border-orange-100 rounded-lg p-3 space-y-2">{insight.expected_evasions.map((evasion, i) => (<div key={i} className="text-sm text-orange-800 flex items-start gap-2"><span className="text-orange-400">⚠</span>{evasion}</div>))}</div></div>)}
+              {insight.best_counter_questions && insight.best_counter_questions.length > 0 && (<div className="space-y-1"><div className="text-xs text-green-600 font-medium">שאלות נגד מומלצות:</div><div className="bg-green-50 border border-green-100 rounded-lg p-3 space-y-2">{insight.best_counter_questions.map((question, i) => (<div key={i} className="text-sm text-green-800 flex items-start gap-2"><span className="text-green-500 font-bold">{i + 1}.</span>&ldquo;{question}&rdquo;</div>))}</div></div>)}
             </div>
           )}
-
-          {/* Explanation */}
-          <div className="p-4 bg-slate-50 rounded-xl">
-            <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
-            <p className="text-slate-700">{getExplanation()}</p>
-          </div>
 
           {/* Confidence */}
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <span>ביטחון ניתוח:</span>
               <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
-                <div
-                  className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
-                  style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
-                />
+                <div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full" style={{ width: `${(contradiction.confidence || 0) * 100}%` }} />
               </div>
-              <span className="font-medium">
-                {Math.round((contradiction.confidence || 0) * 100)}%
-              </span>
+              <span className="font-medium">{Math.round((contradiction.confidence || 0) * 100)}%</span>
             </div>
             {contradiction.verifier_confidence != null && (
               <div className="flex items-center gap-2 text-sm text-slate-500">
                 <span>ביטחון מאמת:</span>
                 <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
-                  <div
-                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full"
-                    style={{ width: `${(contradiction.verifier_confidence || 0) * 100}%` }}
-                  />
+                  <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full" style={{ width: `${(contradiction.verifier_confidence || 0) * 100}%` }} />
                 </div>
-                <span className="font-medium text-green-700">
-                  {Math.round((contradiction.verifier_confidence || 0) * 100)}%
-                </span>
+                <span className="font-medium text-green-700">{Math.round((contradiction.verifier_confidence || 0) * 100)}%</span>
               </div>
             )}
           </div>
