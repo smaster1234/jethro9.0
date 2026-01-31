@@ -112,7 +112,7 @@ class VerifierLLM:
             base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
         else:
             api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "openai/gpt-4o")
             base_url = None  # Use default OpenRouter URL
 
         self.enabled = enabled_str == "true" and bool(api_key)

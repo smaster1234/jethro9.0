@@ -3,7 +3,7 @@ import { Outlet, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
 import { FullPageSpinner } from '../ui';
-import Sidebar from './Sidebar';
+import { NotebookShelf } from '../notebook';
 
 const AUTH_TIMEOUT_MS = 10_000;
 
@@ -28,7 +28,7 @@ export const Layout: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
-      <Sidebar
+      <NotebookShelf
         isCollapsed={isSidebarCollapsed}
         onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
       />
@@ -36,12 +36,12 @@ export const Layout: React.FC = () => {
       <motion.main
         initial={false}
         animate={{
-          marginRight: isSidebarCollapsed ? 80 : 280,
+          marginRight: isSidebarCollapsed ? 72 : 280,
         }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
         className="min-h-screen"
       >
-        <div className="p-8">
+        <div className="p-6">
           <Outlet />
         </div>
       </motion.main>

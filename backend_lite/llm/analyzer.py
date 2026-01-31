@@ -115,7 +115,7 @@ class AnalyzerLLM:
             base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
         else:
             api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "deepseek/deepseek-chat")
+            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "openai/gpt-4o")
             base_url = None  # Use default OpenRouter URL
 
         self.enabled = bool(api_key)
