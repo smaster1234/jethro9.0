@@ -130,13 +130,15 @@ class ContradictionCategory(str, Enum):
     V1 categories (preserved for backward compat):
     - HARD_CONTRADICTION, LOGICAL_INCONSISTENCY, NARRATIVE_AMBIGUITY, RHETORICAL_SHIFT
 
-    V2 outcome categories (§5.1):
+    V2 outcome categories (§5.1 / Cursor 5.2):
     - TRUE_CONTRADICTION – irreconcilable
     - APPARENT_TENSION_RESOLVABLE – looks contradictory but resolvable
     - DISAGREEMENT_BETWEEN_PARTIES – cross-party dispute
+    - ROLE_OR_ATTRIBUTION_MISMATCH – quote/opinion/citation vs finding
     - PLANE_MISMATCH – fact vs law/opinion
     - TIME_OR_STAGE_SHIFT – different time periods
     - AMBIGUITY_OR_VAGUENESS – vague/unclear
+    - INSUFFICIENT_CONTEXT – missing speaker_mode/plane/context
     - DUPLICATE_OR_RESTATEMENT – same idea rephrased
     """
     # V1 (backward compat)
@@ -144,13 +146,15 @@ class ContradictionCategory(str, Enum):
     LOGICAL_INCONSISTENCY = "logical_inconsistency"  # אי-עקביות לוגית
     NARRATIVE_AMBIGUITY = "narrative_ambiguity"  # עמימות נרטיבית
     RHETORICAL_SHIFT = "rhetorical_shift"  # שינוי רטורי
-    # V2 (7-category outcomes)
+    # V2 (9-category outcomes)
     TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
     APPARENT_TENSION_RESOLVABLE = "APPARENT_TENSION_RESOLVABLE"
     DISAGREEMENT_BETWEEN_PARTIES = "DISAGREEMENT_BETWEEN_PARTIES"
+    ROLE_OR_ATTRIBUTION_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
     PLANE_MISMATCH = "PLANE_MISMATCH"
     TIME_OR_STAGE_SHIFT = "TIME_OR_STAGE_SHIFT"
     AMBIGUITY_OR_VAGUENESS = "AMBIGUITY_OR_VAGUENESS"
+    INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
     DUPLICATE_OR_RESTATEMENT = "DUPLICATE_OR_RESTATEMENT"
 
 
