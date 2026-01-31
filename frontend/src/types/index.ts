@@ -138,6 +138,7 @@ export interface Document {
   role?: string;
   author?: string;
   version_label?: string;
+  doc_class?: 'primary_pleading' | 'affidavit' | 'summation' | 'motion' | 'supporting';
   status: 'pending' | 'processing' | 'completed' | 'failed';
   page_count?: number;
   language?: string;
