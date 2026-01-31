@@ -2061,7 +2061,7 @@ export const CaseDetailPage: React.FC = () => {
                                     'TRUE_CONTRADICTION': 'סתירה אמיתית',
                                     'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה',
                                     'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
-                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס',
+                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
                                     'PLANE_MISMATCH': 'חוסר התאמה במישור',
                                     'TIME_OR_STAGE_SHIFT': 'שינוי זמן/שלב',
                                     'AMBIGUITY_OR_VAGUENESS': 'עמימות',
