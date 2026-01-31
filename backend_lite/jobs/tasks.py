@@ -183,8 +183,8 @@ def update_job_progress(progress: int, message: str = None):
             if message:
                 job.meta['message'] = message
             job.save_meta()
-    except:
-        pass
+    except Exception as e:
+        logger.debug("Could not update job progress: %s", e)
 
 
 def _sanitize_error_message(error: Exception, fallback: str = "שגיאה בעיבוד המשימה") -> str:
@@ -212,8 +212,8 @@ def _set_job_error_message(message: str) -> None:
         if job:
             job.meta["error_message"] = message
             job.save_meta()
-    except:
-        pass
+    except Exception as e:
+        logger.debug("Could not set job error message: %s", e)
 
 
 def task_parse_document(
@@ -345,8 +345,8 @@ def task_parse_document(
                     doc.extra_data = doc.extra_data or {}
                     doc.extra_data['error'] = safe_error
                     db.commit()
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not update document status to failed: %s", e)
 
         raise
 
@@ -843,8 +843,8 @@ async def task_analyze_case(
             for claim, db_claim in claim_pairs:
                 try:
                     setattr(claim, "_db_id", db_claim.id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Could not attach DB ID to claim: %s", e)
 
             update_job_progress(55, "Loading learning context")
 
@@ -963,8 +963,8 @@ async def task_analyze_case(
                             confidence = apply_confidence_adjustment(
                                 confidence, contr_type, learning_ctx
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("Confidence adjustment failed: %s", e)
 
                     # Use verifier explanation if available
                     explanation = contr.explanation
@@ -1055,7 +1055,7 @@ async def task_analyze_case(
                     run.metadata_json = run.metadata_json or {}
                     run.metadata_json["error"] = safe_error
                     db.commit()
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not update analysis run status to failed: %s", e)
 
         raise

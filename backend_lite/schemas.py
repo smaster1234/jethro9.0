@@ -850,6 +850,12 @@ class ContradictionOutput(BaseModel):
         description="Computed flag: True when status is verified/likely, has locators, and quotes"
     )
 
+    # Verified flag (for frontend AnalyzePage badge display)
+    verified: bool = Field(
+        default=False,
+        description="True when contradiction is verified or likely with high confidence"
+    )
+
     # Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
     reconciler_outcome: Optional[str] = Field(None, description="9-category reconciliation outcome")
     reconciler_rationale: Optional[str] = Field(None, description="Reconciliation rationale (Hebrew)")

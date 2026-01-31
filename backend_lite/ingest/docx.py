@@ -210,8 +210,8 @@ class DOCXParser(DocumentParser):
                     metadata['created'] = core_props.created.isoformat()
                 if core_props.modified:
                     metadata['modified'] = core_props.modified.isoformat()
-            except:
-                pass
+            except Exception as e:
+                logger.debug("Could not extract DOCX metadata: %s", e)
 
             metadata['paragraph_count'] = len(blocks)
             metadata['table_count'] = len(doc.tables)
