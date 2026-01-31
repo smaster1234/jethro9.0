@@ -4217,14 +4217,14 @@ const ContradictionCard: React.FC<{
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <span className={`text-xs font-bold ${lc}`}>{label}</span>
-            {sm && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${smColor[sm] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{smLabel[sm] || sm}</span>}
-            {pl && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${plColor[pl] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{plLabel[pl] || pl}</span>}
+            {sm ? <span className={`text-[10px] px-1.5 py-0.5 rounded border ${smColor[sm] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{smLabel[sm] || sm}</span> : <span className="text-[10px] px-1.5 py-0.5 rounded border bg-slate-50 text-slate-400 border-slate-200 border-dashed">מצב דובר</span>}
+            {pl ? <span className={`text-[10px] px-1.5 py-0.5 rounded border ${plColor[pl] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{plLabel[pl] || pl}</span> : <span className="text-[10px] px-1.5 py-0.5 rounded border bg-slate-50 text-slate-400 border-slate-200 border-dashed">מישור</span>}
             {evidence?.negation && <span className="text-[10px] px-1.5 py-0.5 rounded border bg-red-100 text-red-700 border-red-200">שלילה</span>}
           </div>
         </div>
-        {evidence?.context_before && <p className="text-xs text-slate-400 italic mb-1">...{evidence.context_before}</p>}
+        {evidence?.context_before ? <p className="text-xs text-slate-400 italic mb-1">...{evidence.context_before}</p> : <p className="text-xs text-slate-300 italic mb-1">— אין הקשר קודם —</p>}
         <p className="text-slate-800 leading-relaxed">{highlightAttr(claimText)}</p>
-        {evidence?.context_after && <p className="text-xs text-slate-400 italic mt-1">{evidence.context_after}...</p>}
+        {evidence?.context_after ? <p className="text-xs text-slate-400 italic mt-1">{evidence.context_after}...</p> : <p className="text-xs text-slate-300 italic mt-1">— אין הקשר נוסף —</p>}
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2 text-xs text-slate-500">
             {evidence?.entities && evidence.entities.length > 0 && <span className="text-slate-400">ישויות: {evidence.entities.join(', ')}</span>}
@@ -4264,8 +4264,14 @@ const ContradictionCard: React.FC<{
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.1 }}
     >
-      <Card className="border-r-4 border-warning-500">
+      <Card className="border-r-4 border-warning-500 shadow-md">
         <div className="space-y-4">
+          {/* Expert Notebook header */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-l from-indigo-50 to-purple-50 rounded-lg border border-indigo-100">
+            <FileText className="w-4 h-4 text-indigo-500" />
+            <span className="text-xs font-semibold text-indigo-700">פנקס מומחה — ניתוח סתירה</span>
+          </div>
+
           {/* 1) Header */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
@@ -4301,20 +4307,20 @@ const ContradictionCard: React.FC<{
             {renderClaimPanel('טענה ב\'', 'orange', claimBText, contradiction.claim_b, ev2)}
           </div>
 
-          {/* 3) Gate checks (§10c) */}
-          {gates && Object.keys(gates).length > 0 && (
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <button
-                onClick={() => setGatesOpen(!gatesOpen)}
-                className="w-full flex items-center justify-between px-4 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
-              >
-                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                  <Shield className="w-4 h-4" />
-                  <span>בדיקות שערים ({Object.keys(gates).length})</span>
-                </div>
-                {gatesOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
-              </button>
-              {gatesOpen && (
+          {/* 3) Gate checks (§10c) — always visible */}
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setGatesOpen(!gatesOpen)}
+              className="w-full flex items-center justify-between px-4 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Shield className="w-4 h-4" />
+                <span>בדיקות שערים {gates && Object.keys(gates).length > 0 ? `(${Object.keys(gates).length})` : ''}</span>
+              </div>
+              {gatesOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+            </button>
+            {gatesOpen && (
+              gates && Object.keys(gates).length > 0 ? (
                 <div className="p-3 grid grid-cols-2 gap-2">
                   {Object.entries(gates).map(([key, val]) => (
                     <div key={key} className="flex items-center gap-2 text-xs">
@@ -4323,28 +4329,34 @@ const ContradictionCard: React.FC<{
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
-
-          {/* 4) Reconciliation attempt (§10d) */}
-          {(contradiction.reconciliation_attempt || contradiction.reconciler_rationale) && (
-            <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
-              <div className="text-xs text-indigo-600 font-medium mb-1 flex items-center gap-1">
-                <Search className="w-3 h-3" />
-                ניסיון יישוב
-              </div>
-              {contradiction.reconciliation_attempt && <p className="text-sm text-slate-700">{contradiction.reconciliation_attempt}</p>}
-              {contradiction.reconciler_rationale && <p className="text-sm text-indigo-800 mt-1">{contradiction.reconciler_rationale}</p>}
-              {contradiction.deciding_fields && contradiction.deciding_fields.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-2">
-                  {contradiction.deciding_fields.map((f) => (
-                    <span key={f} className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">{f}</span>
-                  ))}
+              ) : (
+                <div className="p-3 text-xs text-slate-400 text-center">
+                  לא בוצעו בדיקות שערים עבור סתירה זו
                 </div>
-              )}
+              )
+            )}
+          </div>
+
+          {/* 4) Reconciliation attempt (§10d) — always visible */}
+          <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+            <div className="text-xs text-indigo-600 font-medium mb-1 flex items-center gap-1">
+              <Search className="w-3 h-3" />
+              ניסיון יישוב
             </div>
-          )}
+            {contradiction.reconciliation_attempt ? (
+              <p className="text-sm text-slate-700">{contradiction.reconciliation_attempt}</p>
+            ) : contradiction.reconciler_rationale ? null : (
+              <p className="text-sm text-slate-400 italic">לא בוצע ניסיון יישוב</p>
+            )}
+            {contradiction.reconciler_rationale && <p className="text-sm text-indigo-800 mt-1">{contradiction.reconciler_rationale}</p>}
+            {contradiction.deciding_fields && contradiction.deciding_fields.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {contradiction.deciding_fields.map((f) => (
+                  <span key={f} className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">{f}</span>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* 5) Final decision (§10e) + 6) Mark as contradiction (§10f) */}
           <div className="p-4 bg-slate-50 rounded-xl">

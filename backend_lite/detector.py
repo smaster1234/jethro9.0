@@ -1267,14 +1267,15 @@ def get_rule_detector() -> RuleBasedDetector:
     return _detector
 
 
-def detect_contradictions(claims: List[Claim]) -> DetectionResult:
+def detect_contradictions(claims: List[Claim], full_text: str = "") -> DetectionResult:
     """
     Convenience function to detect contradictions.
 
     Args:
         claims: List of claims
+        full_text: Full document text for context extraction
 
     Returns:
         DetectionResult
     """
-    return get_rule_detector().detect(claims)
+    return get_rule_detector().detect(claims, full_text=full_text)

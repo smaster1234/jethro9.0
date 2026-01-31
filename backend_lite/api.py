@@ -1869,7 +1869,8 @@ def build_metadata(
 
 async def analyze_claims_internal(
     claims_data: List[dict],
-    source_name: str = "document"
+    source_name: str = "document",
+    full_text: str = "",
 ) -> AnalysisResponse:
     """
     Internal analysis function used by both endpoints.
@@ -1908,7 +1909,7 @@ async def analyze_claims_internal(
 
     # 2. Rule-based detection (always runs)
     rule_start = datetime.now()
-    rule_result = detect_contradictions(claims)
+    rule_result = detect_contradictions(claims, full_text=full_text)
     rule_based_time_ms = (datetime.now() - rule_start).total_seconds() * 1000
 
     all_contradictions = list(rule_result.contradictions)
@@ -2243,7 +2244,8 @@ async def analyze_text(request: AnalyzeTextRequest):
         # Run analysis
         return await analyze_claims_internal(
             claims_data=claims_data,
-            source_name=request.source_name or "document"
+            source_name=request.source_name or "document",
+            full_text=request.text,
         )
 
     except Exception as e:
@@ -2502,7 +2504,8 @@ async def analyze_with_tracks(request: AnalyzeTextRequest):
         # Run analysis
         analysis = await analyze_claims_internal(
             claims_data=claims_data,
-            source_name=request.source_name or "document"
+            source_name=request.source_name or "document",
+            full_text=request.text,
         )
 
         # Generate tracks
@@ -3358,8 +3361,11 @@ async def analyze_case(case_id: str, request: Optional[AnalyzeCaseRequest] = Non
         claim_dict['paragraph_index'] = getattr(c, 'paragraph_index', None)
         claims_data.append(claim_dict)
 
+    # Build full text from paragraphs for context extraction
+    combined_full_text = "\n".join(p.text for p in all_paragraphs if p.text)
+
     # Analyze
-    result = await analyze_claims_internal(claims_data, source_name=case.name)
+    result = await analyze_claims_internal(claims_data, source_name=case.name, full_text=combined_full_text)
 
     duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
