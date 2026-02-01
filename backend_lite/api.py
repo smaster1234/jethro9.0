@@ -1276,6 +1276,12 @@ def convert_contradiction_to_output(
     has_quotes = bool(contr.quote1) and bool(contr.quote2)
     usable = has_good_status and has_locators and has_quotes
 
+    # Verified flag for frontend badge display
+    verified = (
+        status == ContradictionStatus.VERIFIED
+        or (status == ContradictionStatus.LIKELY and contr.confidence >= 0.7)
+    )
+
     return ContradictionOutput(
         id=contr.id,
         type=contr.type,
@@ -1295,6 +1301,7 @@ def convert_contradiction_to_output(
         span2=None,
         explanation=contr.explanation,
         usable=usable,
+        verified=verified,
         # Category fields (hard contradiction vs narrative ambiguity)
         category=getattr(contr, 'category', None),
         ambiguity_explanation=getattr(contr, 'ambiguity_explanation', None),
@@ -1983,7 +1990,7 @@ def build_metadata(
         # Counts
         claims_ok=claims_ok,
         claims_with_issues=claims_with_issues,
-        contradictions_total=sum(1 for cr in (claim_results or []) if cr.contradiction_count > 0),
+        contradictions_total=sum(cr.contradiction_count for cr in (claim_results or [])),
         # LLM status
         mode=llm_mode,  # Legacy field
         model_used=model_used,

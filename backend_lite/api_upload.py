@@ -946,8 +946,8 @@ async def delete_folder(
                         if doc.storage_key:
                             try:
                                 storage.delete(doc.storage_key)
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.warning("Could not delete storage key %s: %s", doc.storage_key, e)
                         db.delete(doc)
 
                     for nested in nested_subfolders:
@@ -1015,7 +1015,8 @@ async def upload_documents(
         # Parse metadata
         try:
             metadata_list = json.loads(metadata_json)
-        except:
+        except Exception as e:
+            logger.warning("Could not parse metadata JSON, using empty list: %s", e)
             metadata_list = []
 
         # Extend metadata list to match files
@@ -2220,7 +2221,9 @@ async def list_analysis_runs(
 @router.get("/analysis-runs/{run_id}")
 async def get_analysis_run(
     run_id: str,
-    auth: AuthContext = Depends(get_auth_context)
+    auth: AuthContext = Depends(get_auth_context),
+    limit: int = Query(200, ge=1, le=1000, description="Max contradictions to return"),
+    offset: int = Query(0, ge=0, description="Skip first N contradictions"),
 ):
     """Get a specific analysis run with contradictions (for UI display)."""
     try:
@@ -2233,10 +2236,13 @@ async def get_analysis_run(
                 raise HTTPException(status_code=404, detail="Analysis run not found")
 
             claims_count = db.query(Claim).filter(Claim.run_id == run.id).count()
+            contradictions_total = db.query(Contradiction).filter(Contradiction.run_id == run.id).count()
             contradictions = (
                 db.query(Contradiction)
                 .filter(Contradiction.run_id == run.id)
                 .order_by(Contradiction.created_at.asc())
+                .offset(offset)
+                .limit(limit)
                 .all()
             )
 
@@ -2265,6 +2271,9 @@ async def get_analysis_run(
                 "input_document_ids": run.input_document_ids or [],
                 "metadata": run.metadata_json or {},
                 "claims_count": claims_count,
+                "contradictions_total": contradictions_total,
+                "contradictions_limit": limit,
+                "contradictions_offset": offset,
                 "contradictions": [
                     {
                         "id": c.id,
@@ -2284,6 +2293,9 @@ async def get_analysis_run(
                         "claim2_text": (claims_by_id.get(c.claim2_id).text if c.claim2_id and claims_by_id.get(c.claim2_id) else None),
                         "claim1_locator": (claims_by_id.get(c.claim1_id).locator_json if c.claim1_id and claims_by_id.get(c.claim1_id) else None),
                         "claim2_locator": (claims_by_id.get(c.claim2_id).locator_json if c.claim2_id and claims_by_id.get(c.claim2_id) else None),
+                        "verified": _enum_value(c.status) in ("confirmed", "verified") or (
+                            _enum_value(c.status) == "likely" and (c.confidence or 0) >= 0.7
+                        ),
                         "created_at": c.created_at.isoformat() if c.created_at else None,
                     }
                     for c in contradictions

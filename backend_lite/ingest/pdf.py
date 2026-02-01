@@ -7,7 +7,10 @@ Uses pypdf for extraction.
 """
 
 import io
+import logging
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 from .base import (
     DocumentParser,
@@ -92,8 +95,8 @@ class PDFTextParser(DocumentParser):
                     mediabox = page.mediabox
                     width = int(mediabox.width)
                     height = int(mediabox.height)
-                except:
-                    pass
+                except Exception:
+                    pass  # Page dimensions are optional
 
                 pages.append(PageContent(
                     page_no=page_no,
@@ -127,8 +130,8 @@ class PDFTextParser(DocumentParser):
                         metadata['author'] = reader.metadata.author
                     if reader.metadata.creator:
                         metadata['creator'] = reader.metadata.creator
-            except:
-                pass
+            except Exception as e:
+                logger.debug("Could not extract PDF metadata: %s", e)
 
             return ParseResult(
                 full_text=full_text,
@@ -163,5 +166,6 @@ class PDFTextParser(DocumentParser):
         try:
             result = self.parse(data)
             return result.metadata.get('is_scanned', False)
-        except:
+        except Exception as e:
+            logger.debug("Could not determine if PDF is scanned, assuming yes: %s", e)
             return True
