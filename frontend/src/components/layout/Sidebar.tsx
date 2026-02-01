@@ -9,7 +9,6 @@ import {
   UserCog,
   Settings,
   LogOut,
-  Scale,
   ChevronLeft,
   ChevronRight,
   BookOpen,
@@ -52,7 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
       <div className="p-6 border-b border-slate-700/50">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center flex-shrink-0">
-            <Scale className="w-6 h-6 text-white" />
+            <span className="text-white font-bold text-2xl leading-none">י</span>
           </div>
           {!isCollapsed && (
             <motion.div
@@ -60,8 +59,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <h1 className="text-xl font-bold">Jethro</h1>
-              <p className="text-xs text-slate-400">מערכת ניתוח משפטי</p>
+              <h1 className="text-xl font-bold">יתרו</h1>
+              <p className="text-xs text-slate-400">מומחה לחקירות נגדיות</p>
             </motion.div>
           )}
         </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Briefcase,
@@ -33,15 +33,22 @@ const item = {
 
 export const CasesPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/notebooks/new';
   const [cases, setCases] = useState<Case[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [showNewCaseModal, setShowNewCaseModal] = useState(false);
+  const [showNewCaseModal, setShowNewCaseModal] = useState(isNewRoute);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState('');
+
+  // Auto-open modal when navigated to /notebooks/new
+  useEffect(() => {
+    if (isNewRoute) setShowNewCaseModal(true);
+  }, [isNewRoute]);
 
   // New case form state
   const [newCase, setNewCase] = useState<CreateCaseRequest>({
@@ -90,7 +97,7 @@ export const CasesPage: React.FC = () => {
         case_number: '',
         description: '',
       });
-      navigate(`/cases/${created.id}`);
+      navigate(`/notebooks/${created.id}`);
     } catch (error) {
       setCreateError(handleApiError(error));
     } finally {
@@ -257,7 +264,7 @@ export const CasesPage: React.FC = () => {
                 <Card
                   variant="interactive"
                   padding="none"
-                  onClick={() => navigate(`/cases/${caseItem.id}`)}
+                  onClick={() => navigate(`/notebooks/${caseItem.id}`)}
                 >
                   <div className="p-5">
                     <div className="flex items-start justify-between mb-3">
@@ -306,7 +313,7 @@ export const CasesPage: React.FC = () => {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className="p-4 hover:bg-slate-50 cursor-pointer transition-colors"
-                onClick={() => navigate(`/cases/${caseItem.id}`)}
+                onClick={() => navigate(`/notebooks/${caseItem.id}`)}
               >
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-primary-100 flex items-center justify-center flex-shrink-0">
@@ -344,8 +351,8 @@ export const CasesPage: React.FC = () => {
       <Modal
         isOpen={showNewCaseModal}
         onClose={() => setShowNewCaseModal(false)}
-        title="תיק חדש"
-        description="מלאו את פרטי התיק כדי ליצור תיק חדש במערכת"
+        title="מחברת חדשה"
+        description="מלאו את פרטי התיק כדי ליצור מחברת חדשה"
         size="lg"
       >
         <form onSubmit={handleCreateCase} className="space-y-5">

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Mail, Lock, User, Scale, ArrowLeft, Eye, EyeOff, Building } from 'lucide-react';
+import { Mail, Lock, User, ArrowLeft, Eye, EyeOff, Building } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Button, Input, Card } from '../components/ui';
 import { handleApiError } from '../api';
@@ -56,7 +56,7 @@ export const RegisterPage: React.FC = () => {
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center justify-center mb-8">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-600 to-accent-600 flex items-center justify-center shadow-xl shadow-primary-500/30">
-              <Scale className="w-8 h-8 text-white" />
+              <span className="text-white font-bold text-3xl leading-none">י</span>
             </div>
           </div>
 
