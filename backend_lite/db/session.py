@@ -85,6 +85,7 @@ def init_db():
     _ensure_phase2_schema(engine)
     _ensure_b1_schema(engine)
     _ensure_notebook_schema(engine)
+    _ensure_credits_schema(engine)
 
 
 def _ensure_phase2_schema(engine) -> None:
@@ -141,6 +142,71 @@ def _ensure_notebook_schema(engine) -> None:
                 conn.execute(text(f"DROP TYPE IF EXISTS {enum_name} CASCADE"))
         except Exception:
             pass
+
+
+def _ensure_credits_schema(engine) -> None:
+    """
+    Ensure credit system columns exist (lightweight migration).
+    The credit_ledger and user_credit_balances tables may have been created
+    by an earlier schema version missing newer columns.
+    """
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+
+        # --- credit_ledger ---
+        if "credit_ledger" in tables:
+            columns = {c["name"] for c in inspector.get_columns("credit_ledger")}
+            with engine.begin() as conn:
+                if "transaction_type" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN transaction_type VARCHAR(20) DEFAULT 'grant' NOT NULL"
+                    ))
+                if "balance_after" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN balance_after INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "description" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN description VARCHAR(500)"
+                    ))
+                if "case_id" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN case_id VARCHAR(36)"
+                    ))
+                if "run_id" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN run_id VARCHAR(36)"
+                    ))
+                if "created_by" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN created_by VARCHAR(36)"
+                    ))
+
+        # --- user_credit_balances ---
+        if "user_credit_balances" in tables:
+            columns = {c["name"] for c in inspector.get_columns("user_credit_balances")}
+            with engine.begin() as conn:
+                if "total_granted" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN total_granted INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "total_consumed" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN total_consumed INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "last_transaction_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN last_transaction_at TIMESTAMP"
+                    ))
+                if "updated_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN updated_at TIMESTAMP"
+                    ))
+
+    except Exception:
+        # Non-fatal: avoid breaking startup
+        pass
 
 
 def drop_db():

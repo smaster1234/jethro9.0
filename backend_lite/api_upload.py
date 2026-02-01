@@ -3439,13 +3439,20 @@ async def analyze_case(
             # Verify case access
             case, _ = _require_case_access(db, auth, case_id)
 
-            # Check credit balance before analysis
-            has_credits, balance = check_balance(auth.user_id, auth.firm_id, db)
-            if not has_credits:
-                raise HTTPException(
-                    status_code=402,
-                    detail=f"אין מספיק קרדיטים לניתוח (יתרה: {balance}). נדרש מינימום 10 קרדיטים."
-                )
+            # Check credit balance before analysis (non-blocking)
+            balance = None
+            try:
+                has_credits, balance = check_balance(auth.user_id, auth.firm_id, db)
+                if not has_credits:
+                    raise HTTPException(
+                        status_code=402,
+                        detail=f"אין מספיק קרדיטים לניתוח (יתרה: {balance}). נדרש מינימום 10 קרדיטים."
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.warning("Credit check failed (proceeding anyway): %s", e)
+                balance = -1  # Unknown balance — proceed with analysis
             db.commit()
 
         if request is None:
@@ -3469,19 +3476,22 @@ async def analyze_case(
                 detail=result.get("message", "Analysis failed")
             )
 
-        # Deduct credits based on actual usage
+        # Deduct credits based on actual usage (non-blocking)
         if isinstance(result, dict):
-            with get_db_session() as db:
-                deduct_analysis(
-                    user_id=auth.user_id,
-                    firm_id=auth.firm_id,
-                    db=db,
-                    claims_count=result.get("claims_extracted", 0),
-                    verifier_calls=result.get("verified_count", 0) + result.get("rejected_count", 0),
-                    case_id=case_id,
-                    run_id=result.get("analysis_run_id"),
-                )
-                db.commit()
+            try:
+                with get_db_session() as db:
+                    deduct_analysis(
+                        user_id=auth.user_id,
+                        firm_id=auth.firm_id,
+                        db=db,
+                        claims_count=result.get("claims_extracted", 0),
+                        verifier_calls=result.get("verified_count", 0) + result.get("rejected_count", 0),
+                        case_id=case_id,
+                        run_id=result.get("analysis_run_id"),
+                    )
+                    db.commit()
+            except Exception as e:
+                logger.warning("Credit deduction failed (analysis still succeeded): %s", e)
 
         logger.info("Analysis complete for case %s: %s", case_id, result)
         return result or {"status": "completed", "message": "Analysis complete"}
