@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Mail, Lock, Scale, ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Button, Input, Card } from '../components/ui';
 import { handleApiError } from '../api';
@@ -53,7 +53,7 @@ export const LoginPage: React.FC = () => {
             transition={{ delay: 0.2, type: 'spring', stiffness: 200 }}
             className="w-24 h-24 rounded-3xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center mb-8 shadow-2xl shadow-primary-500/30"
           >
-            <Scale className="w-12 h-12 text-white" />
+            <span className="text-white font-bold text-4xl leading-none">י</span>
           </motion.div>
 
           <motion.h1
@@ -62,7 +62,7 @@ export const LoginPage: React.FC = () => {
             transition={{ delay: 0.3 }}
             className="text-5xl font-bold mb-4 text-center"
           >
-            Jethro
+            יתרו
           </motion.h1>
 
           <motion.p
@@ -71,7 +71,7 @@ export const LoginPage: React.FC = () => {
             transition={{ delay: 0.4 }}
             className="text-xl text-slate-300 text-center max-w-md mb-8"
           >
-            מערכת AI לזיהוי סתירות וייצור שאלות חקירה נגדית
+            מומחה לחקירות נגדיות
           </motion.p>
 
           <motion.div
@@ -105,7 +105,7 @@ export const LoginPage: React.FC = () => {
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center justify-center mb-8">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-600 to-accent-600 flex items-center justify-center shadow-xl shadow-primary-500/30">
-              <Scale className="w-8 h-8 text-white" />
+              <span className="text-white font-bold text-3xl leading-none">י</span>
             </div>
           </div>
 

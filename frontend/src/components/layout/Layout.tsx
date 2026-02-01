@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Outlet, Navigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
 import { FullPageSpinner } from '../ui';
@@ -9,14 +9,27 @@ const AUTH_TIMEOUT_MS = 10_000;
 
 export const Layout: React.FC = () => {
   const { isAuthenticated, isLoading } = useAuth();
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [timedOut, setTimedOut] = useState(false);
+  const location = useLocation();
+  const prevPath = useRef(location.pathname);
 
   useEffect(() => {
     if (!isLoading) return;
     const timer = setTimeout(() => setTimedOut(true), AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [isLoading]);
+
+  // Auto-collapse sidebar when navigating to a notebook
+  useEffect(() => {
+    const prev = prevPath.current;
+    prevPath.current = location.pathname;
+    const isNotebookRoute = /^\/notebooks\/[^/]+/.test(location.pathname);
+    const wasNotebookRoute = /^\/notebooks\/[^/]+/.test(prev);
+    if (isNotebookRoute && !wasNotebookRoute) {
+      setIsSidebarCollapsed(true);
+    }
+  }, [location.pathname]);
 
   if (isLoading && !timedOut) {
     return <FullPageSpinner message="טוען..." />;
@@ -31,6 +44,7 @@ export const Layout: React.FC = () => {
       <NotebookShelf
         isCollapsed={isSidebarCollapsed}
         onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        onNavigate={() => setIsSidebarCollapsed(true)}
       />
 
       <motion.main
