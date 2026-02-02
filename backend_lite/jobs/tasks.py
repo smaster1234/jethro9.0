@@ -681,7 +681,7 @@ async def task_analyze_case(
     from ..db.session import get_db_session
     from ..db.models import (
         Document, DocumentStatus, AnalysisRun, Claim, Contradiction,
-        Event, EventType, DocumentBlock, WitnessVersion
+        ContradictionStatus, Event, EventType, DocumentBlock, WitnessVersion
     )
     from ..extractor import extract_claims_from_text, Claim as ExtractedClaim
     from ..detector import detect_contradictions
@@ -947,13 +947,22 @@ async def task_analyze_case(
                     if cid in rejected_ids:
                         continue
 
-                    # Determine status and confidence
-                    # Use frontend-compatible values: confirmed|new|reviewed|dismissed
+                    # Determine status and confidence (DB enum values)
+                    raw_status = getattr(contr, "status", None)
+                    status_val = ContradictionStatus.SUSPICIOUS
+                    if raw_status is not None:
+                        try:
+                            status_val = ContradictionStatus(
+                                raw_status.value if hasattr(raw_status, "value") else raw_status
+                            )
+                        except ValueError:
+                            status_val = ContradictionStatus.SUSPICIOUS
+
                     if cid in verified_ids:
-                        status_val = "confirmed"
+                        if status_val != ContradictionStatus.VERIFIED:
+                            status_val = ContradictionStatus.LIKELY
                         confidence = verifier_confidences.get(cid, contr.confidence)
                     else:
-                        status_val = "new"
                         confidence = contr.confidence
 
                     # Apply learning adjustments

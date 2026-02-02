@@ -95,6 +95,16 @@ def _enum_value(v):
     return v.value if hasattr(v, "value") else v
 
 
+def _contradiction_status_for_ui(status):
+    status_val = _enum_value(status)
+    return {
+        "verified": "confirmed",
+        "likely": "reviewed",
+        "suspicious": "new",
+        "rejected": "dismissed",
+    }.get(status_val, status_val)
+
+
 class DocumentMetadata(BaseModel):
     """Document metadata for upload"""
     party: Optional[str] = None  # ours/theirs/court/unknown
@@ -2278,7 +2288,7 @@ async def get_analysis_run(
                     {
                         "id": c.id,
                         "type": c.contradiction_type,
-                        "status": _enum_value(c.status),
+                        "status": _contradiction_status_for_ui(c.status),
                         "bucket": _enum_value(c.bucket),
                         "confidence": c.confidence,
                         "severity": c.severity,
