@@ -948,12 +948,12 @@ async def task_analyze_case(
                         continue
 
                     # Determine status and confidence
-                    # Use frontend-compatible values: confirmed|new|reviewed|dismissed
+                    # Use database enum values: verified|likely|suspicious|rejected
                     if cid in verified_ids:
-                        status_val = "confirmed"
+                        status_val = "verified"
                         confidence = verifier_confidences.get(cid, contr.confidence)
                     else:
-                        status_val = "new"
+                        status_val = "suspicious"
                         confidence = contr.confidence
 
                     # Apply learning adjustments

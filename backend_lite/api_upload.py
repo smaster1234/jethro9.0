@@ -2293,7 +2293,7 @@ async def get_analysis_run(
                         "claim2_text": (claims_by_id.get(c.claim2_id).text if c.claim2_id and claims_by_id.get(c.claim2_id) else None),
                         "claim1_locator": (claims_by_id.get(c.claim1_id).locator_json if c.claim1_id and claims_by_id.get(c.claim1_id) else None),
                         "claim2_locator": (claims_by_id.get(c.claim2_id).locator_json if c.claim2_id and claims_by_id.get(c.claim2_id) else None),
-                        "verified": _enum_value(c.status) in ("confirmed", "verified") or (
+                        "verified": _enum_value(c.status) == "verified" or (
                             _enum_value(c.status) == "likely" and (c.confidence or 0) >= 0.7
                         ),
                         "created_at": c.created_at.isoformat() if c.created_at else None,
