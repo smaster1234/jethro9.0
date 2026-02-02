@@ -41,6 +41,13 @@ from .source_classifier import (
     create_source_classifier,
     classify_contradiction_sources,
 )
+from .expert_knowledge import (
+    ExpertKnowledgeBase,
+    get_knowledge_base,
+    WitnessType as ExpertWitnessType,
+    QuestionStrategy,
+    ImpeachmentType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +247,14 @@ class CrossExamQuestion:
     confrontation_phrase: Optional[str] = None    # "אבל בכתב ההגנה נאמר ש"
     source_type: Optional[str] = None             # witness_own_statement / opposing_evidence / etc
     strategic_approach: Optional[str] = None      # internal_contradiction / cross_party_conflict / etc
+    
+    # Expert knowledge fields (V4)
+    expert_technique: Optional[str] = None        # טכניקה מומחית (Younger, Pozner, etc.)
+    younger_commandment: Optional[int] = None     # דיבר רלוונטי מ-10 הדיברות
+    psychological_basis: Optional[str] = None     # בסיס פסיכולוגי (Loftus, FBI, etc.)
+    impeachment_type: Optional[str] = None        # סוג הפרכה
+    cognitive_load_technique: Optional[str] = None # טכניקת עומס קוגניטיבי
+    expert_tip: Optional[str] = None              # טיפ מומחה
 
 
 @dataclass
@@ -1041,7 +1056,17 @@ class CrossExamGenerator:
                 confrontation_phrase=getattr(q, 'confrontation_phrase', None),
                 source_type=getattr(q, 'source_type', None),
                 strategic_approach=getattr(q, 'strategic_approach', None),
+                # Expert knowledge fields (V4)
+                expert_technique=getattr(q, 'expert_technique', None),
+                younger_commandment=getattr(q, 'younger_commandment', None),
+                psychological_basis=getattr(q, 'psychological_basis', None),
+                impeachment_type=getattr(q, 'impeachment_type', None),
+                cognitive_load_technique=getattr(q, 'cognitive_load_technique', None),
+                expert_tip=getattr(q, 'expert_tip', None),
             ))
+        
+        # Enhance with expert knowledge
+        enhanced = self._add_expert_knowledge(enhanced)
         
         return enhanced
     
@@ -1212,6 +1237,116 @@ class CrossExamGenerator:
         strategy_note = phrasing.get("strategy_note", "")
         if strategy_note:
             logger.info(f"Source-aware strategy: {strategy_note}")
+        
+        return enhanced
+    
+    def _add_expert_knowledge(
+        self,
+        questions: List[CrossExamQuestion]
+    ) -> List[CrossExamQuestion]:
+        """
+        מעשיר שאלות בידע מומחה ממאגר הידע.
+        
+        מוסיף:
+        - טכניקות מומחים (Irving Younger, Pozner & Dodd)
+        - תובנות פסיכולוגיות (Loftus, FBI)
+        - טיפים מעשיים
+        """
+        knowledge_base = get_knowledge_base()
+        enhanced = []
+        
+        for i, q in enumerate(questions):
+            # זיהוי טכניקה מומחית לפי מיקום וסוג השאלה
+            expert_technique = None
+            younger_commandment = None
+            psychological_basis = None
+            impeachment_type = None
+            cognitive_load_technique = None
+            expert_tip = None
+            
+            # שאלה ראשונה - קיבוע ובניית בסיס
+            if i == 0:
+                expert_technique = "שיטת הפרקים (Pozner & Dodd) - בנה בסיס לפני עימות"
+                younger_commandment = 4  # אל תשאל שאלה שאתה לא יודע את התשובה
+                psychological_basis = "נעילת העד לגרסה לפני עימות - קשה לשנות אחר כך"
+                expert_tip = "הקשב לתשובה - השאלה הבאה תלויה בתשובה הקודמת"
+            
+            # שאלה שנייה - עימות
+            elif i == 1:
+                expert_technique = "3C - Commit, Credit, Confront (התחייבות, אמינות, עימות)"
+                younger_commandment = 3  # השתמש רק בשאלות מנחות
+                psychological_basis = "SUE - שימוש אסטרטגי בראיות"
+                impeachment_type = "prior_inconsistent"  # סתירה עם הצהרה קודמת
+                expert_tip = "אל תחשוף את כל הראיות מיד - תן לעד לספר גרסה"
+            
+            # שאלה שלישית - לחץ
+            elif i == 2:
+                expert_technique = "הגישה הישירה (Sir Charles Russell) - לך ישר לנקודה"
+                younger_commandment = 6  # אל תתווכח עם העד
+                psychological_basis = "עומס קוגניטיבי - שקרנים מתקשים לבנות סיפור ולזכור מה אמרו"
+                cognitive_load_technique = "בקש פרטים חושיים - שקרנים מתקשים להמציא אותם"
+                expert_tip = "אם העד מתחמק - חזור על השאלה בנימוס"
+            
+            # שאלה רביעית - ניצול
+            elif i == 3:
+                expert_technique = "טכניקת לינקולן - עובדה בלתי ניתנת להכחשה"
+                younger_commandment = 9  # אל תשאל שאלה אחת יותר מדי
+                psychological_basis = "Loftus - ביטחון לא שווה דיוק, עדים יכולים להיות בטוחים בזיכרון שגוי"
+                impeachment_type = "lack_of_capacity"  # חוסר יכולת לדעת
+                expert_tip = "כשהגעת לנקודה - עצור. אל תהיה חמדן."
+            
+            # שאלה חמישית - סיכום
+            elif i >= 4:
+                expert_technique = "הגישה העדינה (Rufus Choate) - סיים כג'נטלמן"
+                younger_commandment = 10  # שמור את הנקודה העיקרית לסיכום
+                psychological_basis = "זיהום חברתי של זיכרון - עדים שדיברו ביניהם מראים ירידה בדיוק מ-79% ל-34%"
+                expert_tip = "תן לעובדות לדבר - הסק מסקנות בסיכום"
+            
+            # הוספת תובנות פסיכולוגיות לפי סוג השאלה
+            question_lower = q.question.lower()
+            if "זוכר" in question_lower or "ראית" in question_lower or "שמעת" in question_lower:
+                cognitive_load_technique = "פרטים חושיים - שקרנים מתקשים להמציא אותם (FBI Research)"
+            
+            if "תצהיר" in question_lower or "כתבת" in question_lower:
+                impeachment_type = "prior_inconsistent"
+                psychological_basis = psychological_basis or "3C - נעילת העד לגרסה לפני הצגת המסמך"
+            
+            if "הצד השני" in question_lower or "הצד שכנגד" in question_lower:
+                expert_technique = expert_technique or "SUE - שימוש אסטרטגי בראיות"
+            
+            # יצירת שאלה משופרת
+            enhanced.append(CrossExamQuestion(
+                id=q.id,
+                question=q.question,
+                purpose=q.purpose,
+                severity=q.severity,
+                follow_up=q.follow_up,
+                trap_branch=q.trap_branch,
+                question_type=q.question_type,
+                intent=q.intent,
+                position_pct=q.position_pct,
+                time_allocation=q.time_allocation,
+                risk_level=q.risk_level,
+                reward_potential=q.reward_potential,
+                predicted_responses=q.predicted_responses,
+                if_admit=q.if_admit,
+                if_deny=q.if_deny,
+                if_evade=q.if_evade,
+                psychological_notes=q.psychological_notes,
+                # Source reference fields (V3)
+                source_reference=q.source_reference,
+                attribution_phrase=q.attribution_phrase,
+                confrontation_phrase=q.confrontation_phrase,
+                source_type=q.source_type,
+                strategic_approach=q.strategic_approach,
+                # Expert knowledge fields (V4)
+                expert_technique=expert_technique,
+                younger_commandment=younger_commandment,
+                psychological_basis=psychological_basis,
+                impeachment_type=impeachment_type,
+                cognitive_load_technique=cognitive_load_technique,
+                expert_tip=expert_tip,
+            ))
         
         return enhanced
 
