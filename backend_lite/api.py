@@ -402,6 +402,59 @@ def _require_case_access(db: Session, auth: AuthContext, case_id: str) -> Case:
     return case
 
 
+# =============================================================================
+# Auth Dependencies (must be defined before routes that use them)
+# =============================================================================
+
+async def get_current_user(
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_email: Optional[str] = Header(None, alias="X-User-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db_dependency)
+) -> Optional[AuthContext]:
+    """
+    Get current user from either:
+    - `Authorization: Bearer <jwt>` (preferred when present)
+    - `X-User-Id` header (legacy/backwards compatibility)
+    - `X-User-Email` header (fallback for demo tooling)
+
+    For MVP, this is a simple header-based auth.
+    Returns None if no header provided (anonymous access for backwards compat).
+    """
+    token_user_id: Optional[str] = None
+    token_email: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        payload = decode_token(token)
+        if payload:
+            token_user_id = payload.get("sub")
+            token_email = payload.get("email") or payload.get("preferred_username")
+
+    effective_user_id = token_user_id or x_user_id
+    effective_email = token_email or x_user_email
+
+    if not effective_user_id and not effective_email:
+        return None
+
+    auth_service = get_auth_service(db)
+    # Flexible auth: allow email fallback + optional dev/demo auto-provisioning
+    auth = auth_service.get_auth_context_flexible(effective_user_id, email=effective_email)
+
+    if not auth:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    return auth
+
+
+async def require_auth(
+    auth: Optional[AuthContext] = Depends(get_current_user)
+) -> AuthContext:
+    """Require authenticated user"""
+    if not auth:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return auth
+
+
 @frontend_router.get("/healthz")
 async def api_healthz():
     return {"status": "ok", "service": "backend_lite"}
