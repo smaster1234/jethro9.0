@@ -81,6 +81,36 @@ VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות בטקסט
 → outcome: TRUE_CONTRADICTION, type: quant, confidence: 0.90
 → reason: "כל" מול "חלק לא" = סתירה ישירה באותו מושא, ללא אפשרות יישוב.
 
+### דוגמה 6 — TRUE_CONTRADICTION (כמותי):
+טענה א: "התובע שילם סך של 50,000 ש"ח"
+טענה ב: "התובע שילם סך של 30,000 ש"ח בלבד"
+→ outcome: TRUE_CONTRADICTION, type: quant, confidence: 0.95
+→ reason: אותו תשלום, שני סכומים שונים שאינם יכולים להתקיים יחד.
+
+### דוגמה 7 — TRUE_CONTRADICTION (שעות):
+טענה א: "הפגישה התקיימה בשעה 10:00 בבוקר"
+טענה ב: "הפגישה התקיימה בשעה 16:00"
+→ outcome: TRUE_CONTRADICTION, type: temporal, confidence: 0.90
+→ reason: אותה פגישה, שני זמנים שונים שאינם יכולים להתקיים יחד.
+
+### דוגמה 8 — TRUE_CONTRADICTION (נוכחות):
+טענה א: "הנתבע היה נוכח בפגישה"
+טענה ב: "הנתבע לא היה נוכח בפגישה"
+→ outcome: TRUE_CONTRADICTION, type: presence, confidence: 0.95
+→ reason: סתירה ישירה — נוכח/לא נוכח באותו אירוע.
+
+### דוגמה 9 — AMBIGUITY_OR_VAGUENESS:
+טענה א: "הסכום שולם בסביבות חודש מרץ"
+טענה ב: "התשלום בוצע באפריל"
+→ outcome: AMBIGUITY_OR_VAGUENESS, confidence: 0.60
+→ reason: "בסביבות" = ניסוח עמום, ייתכן שמדובר באותו זמן.
+
+### דוגמה 10 — INSUFFICIENT_CONTEXT:
+טענה א: "החוזה נחתם"
+טענה ב: "לא נחתם הסכם"
+→ outcome: INSUFFICIENT_CONTEXT, confidence: 0.50
+→ reason: לא ברור אם מדובר באותו חוזה/הסכם — חסר הקשר.
+
 החזר JSON בלבד."""
 
 

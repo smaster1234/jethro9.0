@@ -11,6 +11,7 @@ export interface User {
   is_super_admin: boolean;
   teams?: TeamMembership[];
   team_leader_of?: string[];
+  credits?: number;
 }
 
 export interface TeamMembership {

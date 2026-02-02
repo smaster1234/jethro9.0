@@ -72,42 +72,76 @@ def estimate_analysis_cost(num_claims: int, num_verifier_calls: int = 30) -> int
 
 
 def deduct_analysis(
-    user_id: str,
-    firm_id: str,
     db,
+    user_id: str,
+    operation_type: str = "analysis",
     claims_count: int = 0,
     verifier_calls: int = 0,
+    firm_id: str = None,
     case_id: str = None,
     run_id: str = None,
-) -> int:
+) -> bool:
     """
     Deduct credits for an analysis run.
+    If firm_id is not provided, it will be fetched from the user record.
 
     Returns:
-        Amount deducted
+        bool: True if deduction successful, False if insufficient credits
     """
-    cost = int(
-        (claims_count * COST_PER_CLAIM) +
-        (verifier_calls * COST_PER_VERIFIER_CALL)
-    )
-    if cost <= 0:
-        return 0
+    from .db.models import User
+
+    # Get firm_id if not provided
+    if not firm_id:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.error(f"User {user_id} not found for credit deduction")
+            return False
+        firm_id = user.firm_id
+
+    # Calculate cost
+    if operation_type == "text_analysis":
+        cost = 10  # Fixed cost for free text analysis
+    elif operation_type == "claims_analysis":
+        cost = 5   # Fixed cost for pre-extracted claims
+    else:
+        cost = int(
+            (claims_count * COST_PER_CLAIM) +
+            (verifier_calls * COST_PER_VERIFIER_CALL)
+        )
+
+    cost = max(1, cost)
+
+    # Check balance
+    balance = get_balance(user_id, firm_id, db)
+    if balance < cost:
+        logger.warning(f"Insufficient credits for user {user_id}: has {balance}, needs {cost}")
+        return False
 
     _record_transaction(
         user_id=user_id,
         firm_id=firm_id,
         amount=-cost,
         transaction_type="analysis",
-        description=f"ניתוח: {claims_count} טענות, {verifier_calls} אימותים",
+        description=f"ניתוח ({operation_type}): {claims_count} טענות, {verifier_calls} אימותים",
         case_id=case_id,
         run_id=run_id,
         db=db,
     )
-    return cost
+    return True
 
 
-def deduct_document(user_id: str, firm_id: str, db, doc_name: str = "") -> int:
+def deduct_document(db, user_id: str, firm_id: str = None, doc_name: str = "") -> int:
     """Deduct credit for document upload."""
+    from .db.models import User
+
+    # Get firm_id if not provided
+    if not firm_id:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.error(f"User {user_id} not found for credit deduction")
+            return 0
+        firm_id = user.firm_id
+
     _record_transaction(
         user_id=user_id,
         firm_id=firm_id,

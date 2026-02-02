@@ -145,6 +145,16 @@ class RuleBasedDetector:
             'בש"א', 'ע"ע', 'ת"ע', 'ע"מ', 'הליך', 'תביעה', 'ערעור'
         }
 
+        # Time/hour patterns for detecting time contradictions
+        self.time_patterns = [
+            # HH:MM format (10:00, 14:30)
+            (r'(?:בשעה\s*)?([0-2]?\d):([0-5]\d)(?:\s*(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה))?', 'time_hhmm'),
+            # Hebrew time expressions
+            (r'בשעה\s+([0-2]?\d)(?:\s*(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה))?', 'time_hour'),
+            # Morning/afternoon/evening
+            (r'(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה)\s+(?:בשעה\s+)?([0-2]?\d):?([0-5]\d)?', 'time_period'),
+        ]
+
         # Hebrew date patterns
         self.date_patterns = [
             # DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
@@ -255,6 +265,15 @@ class RuleBasedDetector:
             (r'מספר חברה\s*[:\-]?\s*(\d{9})', 'company_id'),
         ]
 
+        # Time period modifiers (for normalization)
+        self.time_period_map = {
+            'בבוקר': 0,      # morning: no change
+            'בצהריים': 12,   # noon: add 12 if hour < 12
+            'אחה"צ': 12,     # afternoon: add 12 if hour < 12
+            'בערב': 12,      # evening: add 12 if hour < 12
+            'בלילה': 0,      # night: context dependent
+        }
+
         # Hebrew stopwords
         self.stopwords = {
             'את', 'של', 'על', 'עם', 'אל', 'מן', 'כי', 'לא', 'גם', 'או', 'אם',
@@ -303,6 +322,10 @@ class RuleBasedDetector:
         temporal = self._detect_temporal(claims)
         contradictions.extend(temporal)
 
+        # Time/hour detection (new)
+        time_conflicts = self._detect_time(claims)
+        contradictions.extend(time_conflicts)
+
         quantitative = self._detect_quantitative(claims)
         contradictions.extend(quantitative)
 
@@ -346,7 +369,7 @@ class RuleBasedDetector:
 
         logger.info(
             f"Rule-based detection complete: {len(contradictions)} contradictions "
-            f"(temporal={len(temporal)}, quant={len(quantitative)}, "
+            f"(temporal={len(temporal)}, time={len(time_conflicts)}, quant={len(quantitative)}, "
             f"attr={len(attribution)}, presence={len(presence)}, "
             f"doc={len(doc_existence)}, identity={len(identity)}) "
             f"in {elapsed_ms:.1f}ms"
@@ -358,6 +381,7 @@ class RuleBasedDetector:
             method="rule_based_v2" if enrich else "rule_based",
             metadata={
                 "temporal_count": len(temporal),
+                "time_count": len(time_conflicts),
                 "quantitative_count": len(quantitative),
                 "attribution_count": len(attribution),
                 "presence_count": len(presence),
@@ -552,6 +576,143 @@ class RuleBasedDetector:
         if d == 0:
             return f"{y}-{m:02d}"
         return f"{y}-{m:02d}-{d:02d}"
+
+    # =========================================================================
+    # T1.1b TIME_CONFLICT (hours)
+    # =========================================================================
+
+    def _detect_time(self, claims: List[Claim]) -> List[DetectedContradiction]:
+        """Detect time/hour contradictions - VERIFIED status possible"""
+        contradictions = []
+
+        # Extract times from each claim
+        claims_with_times = []
+        for claim in claims:
+            times = self._extract_times(claim.text)
+            if times:
+                claims_with_times.append((claim, times))
+
+        # Compare pairs
+        for i, (claim1, times1) in enumerate(claims_with_times):
+            for claim2, times2 in claims_with_times[i + 1:]:
+                # Check if claims are related
+                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                if relatedness < 0.15:
+                    continue
+
+                # Check for conflicting times
+                conflict = self._times_conflict(times1, times2)
+                if conflict:
+                    orig1, norm1, orig2, norm2 = conflict
+
+                    # VERIFIED if normalized times are deterministically different
+                    status = ContradictionStatus.VERIFIED if norm1 != norm2 else ContradictionStatus.LIKELY
+
+                    # Calculate time difference for severity
+                    diff_hours = abs(norm1[0] - norm2[0]) + abs(norm1[1] - norm2[1]) / 60
+                    if diff_hours >= 4:
+                        severity = Severity.HIGH
+                    elif diff_hours >= 2:
+                        severity = Severity.MEDIUM
+                    else:
+                        severity = Severity.LOW
+
+                    contradictions.append(DetectedContradiction(
+                        id=f"contr_{uuid.uuid4().hex[:8]}",
+                        claim1=claim1,
+                        claim2=claim2,
+                        type=ContradictionType.TEMPORAL_DATE,
+                        subtype=ContradictionSubtype.EXACT_DATE,  # Using EXACT_DATE for time conflicts
+                        status=status,
+                        severity=severity,
+                        confidence=0.95 if status == ContradictionStatus.VERIFIED else 0.80,
+                        same_event_confidence=relatedness,
+                        explanation=f"סתירה בשעות: {orig1} לעומת {orig2}",
+                        quote1=self._extract_quote_around(claim1.text, orig1),
+                        quote2=self._extract_quote_around(claim2.text, orig2),
+                        normalized1=self._format_time(norm1),
+                        normalized2=self._format_time(norm2),
+                        metadata={"time1": orig1, "time2": orig2, "norm1": norm1, "norm2": norm2}
+                    ))
+
+        return contradictions
+
+    def _extract_times(self, text: str) -> List[Tuple[str, Tuple[int, int]]]:
+        """Extract times from text with normalized values (hour, minute)"""
+        times = []
+
+        for pattern, time_type in self.time_patterns:
+            for match in re.finditer(pattern, text):
+                try:
+                    match_text = match.group()
+                    groups = match.groups()
+                    normalized = self._normalize_time(groups, time_type, text)
+                    if normalized:
+                        times.append((match_text, normalized))
+                except Exception:
+                    pass
+
+        return times
+
+    def _normalize_time(self, match: Any, time_type: str, full_text: str = "") -> Optional[Tuple[int, int]]:
+        """Normalize time to (hour, minute) tuple in 24-hour format"""
+        try:
+            if time_type == 'time_hhmm':
+                hour = int(match[0])
+                minute = int(match[1]) if match[1] else 0
+                # Check for period modifier in context
+                for period, offset in self.time_period_map.items():
+                    if period in full_text and hour < 12 and offset > 0:
+                        hour += offset
+                        break
+                return (hour, minute)
+
+            elif time_type == 'time_hour':
+                hour = int(match[0])
+                minute = 0
+                # Check for period modifier
+                for period, offset in self.time_period_map.items():
+                    if period in full_text and hour < 12 and offset > 0:
+                        hour += offset
+                        break
+                return (hour, minute)
+
+            elif time_type == 'time_period':
+                hour = int(match[0]) if match[0] else 12
+                minute = int(match[1]) if len(match) > 1 and match[1] else 0
+                return (hour, minute)
+
+        except (ValueError, IndexError):
+            pass
+
+        return None
+
+    def _times_conflict(
+        self,
+        times1: List[Tuple[str, Tuple[int, int]]],
+        times2: List[Tuple[str, Tuple[int, int]]]
+    ) -> Optional[Tuple[str, Tuple[int, int], str, Tuple[int, int]]]:
+        """Check if two time sets have conflicting times"""
+        for orig1, norm1 in times1:
+            for orig2, norm2 in times2:
+                if norm1 and norm2 and norm1 != norm2:
+                    h1, m1 = norm1
+                    h2, m2 = norm2
+
+                    # Different hours = conflict (allow 1 hour tolerance for rounding)
+                    if abs(h1 - h2) > 1 or (abs(h1 - h2) == 1 and abs(m1 - m2) > 30):
+                        return (orig1, norm1, orig2, norm2)
+
+                    # Same hour but different minutes (> 15 min difference)
+                    if h1 == h2 and abs(m1 - m2) > 15:
+                        return (orig1, norm1, orig2, norm2)
+
+        return None
+
+    def _format_time(self, time_tuple: Tuple[int, int]) -> str:
+        """Format time tuple as HH:MM string"""
+        h, m = time_tuple
+        return f"{h:02d}:{m:02d}"
 
     # =========================================================================
     # T1.2 QUANT_AMOUNT_CONFLICT

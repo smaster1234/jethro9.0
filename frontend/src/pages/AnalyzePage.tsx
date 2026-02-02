@@ -87,14 +87,29 @@ export const AnalyzePage: React.FC = () => {
     navigator.clipboard.writeText(textToCopy);
   };
 
+  const { user } = useAuth();
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900">ניתוח טקסט</h1>
-        <p className="text-slate-500 mt-1">
-          הדביקו טקסט מעדות, מסמך או כל מקור אחר וזהו סתירות פוטנציאליות
-        </p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-900">ניתוח טקסט</h1>
+          <p className="text-slate-500 mt-1">
+            הדביקו טקסט מעדות, מסמך או כל מקור אחר וזהו סתירות פוטנציאליות
+          </p>
+        </div>
+        {user && (
+          <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm">
+            <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">יתרת קרדיטים</div>
+              <div className="text-lg font-bold text-slate-900 leading-none">{user.credits ?? 0}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

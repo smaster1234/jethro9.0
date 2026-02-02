@@ -122,6 +122,14 @@ class Claim:
     negation: bool = False
     # Extraction confidence
     confidence_extraction: float = 1.0
+    
+    # --- V3 Source classification fields ---
+    # Document ownership and source type for cross-examination
+    source_type: Optional[str] = None              # witness_own_statement / supporting_witness / party_pleading / opposing_evidence / court_finding / external_document
+    doc_owner_party: Optional[str] = None          # plaintiff / defendant - מי הגיש את המסמך
+    doc_owner_name: Optional[str] = None           # שם בעל המסמך (עד, צד)
+    doc_date: Optional[str] = None                 # תאריך המסמך
+    is_examined_witness_doc: bool = False          # האם זה מסמך של העד הנחקר
 
     def to_dict(self) -> dict:
         return {
@@ -156,6 +164,12 @@ class Claim:
             "relations": self.relations,
             "negation": self.negation,
             "confidence_extraction": self.confidence_extraction,
+            # V3 source classification fields
+            "source_type": self.source_type,
+            "doc_owner_party": self.doc_owner_party,
+            "doc_owner_name": self.doc_owner_name,
+            "doc_date": self.doc_date,
+            "is_examined_witness_doc": self.is_examined_witness_doc,
         }
 
 

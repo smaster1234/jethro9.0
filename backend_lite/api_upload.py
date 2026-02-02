@@ -3481,9 +3481,9 @@ async def analyze_case(
             try:
                 with get_db_session() as db:
                     deduct_analysis(
+                        db=db,
                         user_id=auth.user_id,
                         firm_id=auth.firm_id,
-                        db=db,
                         claims_count=result.get("claims_extracted", 0),
                         verifier_calls=result.get("verified_count", 0) + result.get("rejected_count", 0),
                         case_id=case_id,

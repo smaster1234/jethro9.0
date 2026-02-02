@@ -101,6 +101,44 @@ _TITLE_PATTERNS = re.compile(
     re.UNICODE,
 )
 
+# Legal entity aliases dictionary - maps common variations to canonical forms
+_LEGAL_ENTITY_ALIASES = {
+    # בנקים
+    "בנק לאומי": ["הבנק הלאומי", "לאומי", "בנק לאומי לישראל"],
+    "בנק הפועלים": ["הבנק הפועלים", "פועלים", "בנק פועלים"],
+    "בנק דיסקונט": ["הבנק דיסקונט", "דיסקונט"],
+    "בנק מזרחי": ["הבנק המזרחי", "מזרחי", "בנק מזרחי טפחות"],
+    "בנק ירושלים": ["הבנק הירושלמי", "ירושלים"],
+    "בנק אגוד": ["הבנק האגוד", "אגוד"],
+    
+    # חברות ביטוח
+    "הפניקס": ["חברת הפניקס", "פניקס", "הפניקס חברה לביטוח"],
+    "הראל": ["חברת הראל", "ראל"],
+    "מגדל אור": ["חברת מגדל אור", "מגדלאור"],
+    
+    # מוסדות ממשלתיים
+    "ביטוח לאומי": ["המוסד לביטוח לאומי", "משרד הבינוי"],
+    "משרד המשפטים": ["המשרד למשפטים", "משרד המשפטים"],
+    "רשות המיסים": ["הרשות למיסים", "רמי"],
+    "משטרת המשפטים": ["המשטרה למשפטים", "משטרת המשפטים"],
+    
+    # צדדים משפטיים
+    "התובע": ["תובע", "התובעים", "המערער", "המבקש"],
+    "הנתבע": ["נתבע", "הנתבעים", "המשיב", "המשיבים"],
+    "המדינה": ["מדינת ישראל", "המדינה המשיבה"],
+    
+    # מונחים משפטיים
+    "בית המשפט": ["ביהמש", "בית משפט", "הערכאה"],
+    "בית הדין": ["ביהד", "בית דין"],
+}
+
+# Build reverse lookup for aliases
+_ALIAS_TO_CANONICAL = {}
+for canonical, aliases in _LEGAL_ENTITY_ALIASES.items():
+    _ALIAS_TO_CANONICAL[canonical.lower()] = canonical
+    for alias in aliases:
+        _ALIAS_TO_CANONICAL[alias.lower()] = canonical
+
 
 def _normalize_entity(name: str) -> str:
     """Normalize an entity name for fuzzy comparison."""
@@ -109,7 +147,13 @@ def _normalize_entity(name: str) -> str:
     name = _TITLE_PATTERNS.sub('', name).strip()
     # Remove quotes
     name = name.replace('"', '').replace("'", '').replace('״', '').replace('׳', '')
-    return name.lower()
+    normalized = name.lower()
+    
+    # Check if this is a known alias and return canonical form
+    if normalized in _ALIAS_TO_CANONICAL:
+        return _ALIAS_TO_CANONICAL[normalized].lower()
+    
+    return normalized
 
 
 def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:

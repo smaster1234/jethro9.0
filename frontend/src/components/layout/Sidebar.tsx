@@ -26,13 +26,14 @@ const navItems = [
   { icon: Briefcase, label: 'תיקים', path: '/cases' },
   { icon: Search, label: 'ניתוח טקסט', path: '/analyze' },
   { icon: BookOpen, label: 'מחברת מומחים', path: '/expert-notebook' },
-  { icon: Users, label: 'צוותים', path: '/teams' },
-  { icon: UserCog, label: 'משתמשים', path: '/users' },
+  { icon: Users, label: 'צוותים', path: '/teams', adminOnly: true },
+  { icon: UserCog, label: 'משתמשים', path: '/users', adminOnly: true },
   { icon: Settings, label: 'הגדרות', path: '/settings' },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
   const { user, logout } = useAuth();
+  const isAdmin = user?.system_role === 'admin' || user?.system_role === 'super_admin';
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -68,7 +69,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle }) => {
 
       {/* Navigation */}
       <nav className="flex-1 p-4 space-y-2 overflow-y-auto custom-scrollbar">
-        {navItems.map((item) => (
+        {navItems.filter(item => !item.adminOnly || isAdmin).map((item) => (
           <NavLink
             key={item.path}
             to={item.path}

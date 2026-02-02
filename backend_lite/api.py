@@ -259,6 +259,17 @@ elif FRONTEND_BUILD_AVAILABLE:
 # Include upload router if available
 if UPLOAD_ENABLED and upload_router:
     app.include_router(upload_router, prefix="/api/v1")
+    
+    @app.get("/api/v1/me/credits")
+    async def api_get_my_credits(
+        db: Session = Depends(get_db_dependency),
+        auth: AuthContext = Depends(get_auth_context),
+    ):
+        """Get current user's credit balance and recent transactions."""
+        from .credits import get_balance_info
+        info = get_balance_info(auth.user_id, auth.firm_id, db)
+        return info
+        
     logger.info("Upload system enabled at /api/v1")
 
 
@@ -401,14 +412,84 @@ async def api_health():
     return await api_healthz()
 
 
+@frontend_router.post("/auth/register")
+async def api_register(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db_dependency)
+):
+    """Register a new user via frontend API"""
+    email = payload.get("email")
+    password = payload.get("password")
+    name = payload.get("name")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+        
+    auth_service = get_auth_service(db)
+    try:
+        user = auth_service.register_user(email, password, name)
+        access_token = create_access_token(data={"sub": user.id, "email": user.email})
+        refresh_token = create_refresh_token(data={"sub": user.id})
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@frontend_router.post("/auth/login")
+async def api_login(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db_dependency)
+):
+    """Login via frontend API"""
+    email = payload.get("email")
+    password = payload.get("password")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+        
+    auth_service = get_auth_service(db)
+    user = auth_service.authenticate_user(email, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+    access_token = create_access_token(data={"sub": user.id, "email": user.email})
+    refresh_token = create_refresh_token(data={"sub": user.id})
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+
 @frontend_router.get("/auth/me")
-async def api_auth_me():
+async def api_auth_me(
+    auth: Optional[AuthContext] = Depends(get_current_user),
+    db: Session = Depends(get_db_dependency)
+):
     """
-    React UI expects `/api/auth/me`. We keep it best-effort:
-    - If JWT auth present: return user info
-    - Else: return a minimal anonymous user (prevents UI hard-fail)
+    React UI expects `/api/auth/me`.
+    Returns current user info including credits if authenticated.
     """
-    return {"user": {"id": None, "email": None, "name": "Guest", "role": "user", "is_admin": False}}
+    if not auth:
+        return {"user": {"id": None, "email": None, "name": "Guest", "role": "user", "is_admin": False}}
+    
+    from .credits import get_balance
+    balance = get_balance(auth.user_id, auth.firm_id, db)
+    
+    return {
+        "user": {
+            "id": auth.user_id,
+            "email": auth.email,
+            "name": auth.name,
+            "role": auth.system_role,
+            "is_admin": auth.system_role in ("admin", "super_admin"),
+            "credits": balance
+        }
+    }
 
 
 @frontend_router.get("/cases/recent")
@@ -2395,12 +2476,14 @@ async def health_check():
     responses={
         200: {"description": "Successful analysis"},
         400: {"model": ErrorResponse, "description": "Invalid input"},
+        402: {"model": ErrorResponse, "description": "Insufficient credits"},
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
 async def analyze_text(
     request: AnalyzeTextRequest,
-    auth: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
 ):
     """
     Analyze free Hebrew text for contradictions.
@@ -2418,6 +2501,12 @@ async def analyze_text(
             status_code=413,
             detail=f"Text too large ({len(request.text.encode('utf-8'))} bytes). Max: {MAX_ANALYZE_TEXT_BYTES} bytes"
         )
+
+    # Deduct credits before analysis
+    from .credits import deduct_analysis
+    success, error = deduct_analysis(db, auth.user_id, auth.firm_id)
+    if not success:
+        raise HTTPException(status_code=402, detail=error or "Insufficient credits for analysis")
 
     try:
         # Extract claims from text
@@ -2461,12 +2550,14 @@ async def analyze_text(
     responses={
         200: {"description": "Successful analysis"},
         400: {"model": ErrorResponse, "description": "Invalid input"},
+        402: {"model": ErrorResponse, "description": "Insufficient credits"},
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
 async def analyze_claims(
     request: AnalyzeClaimsRequest,
-    auth: AuthContext = Depends(get_auth_context),
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
 ):
     """
     Analyze pre-extracted claims for contradictions.
@@ -2480,6 +2571,12 @@ async def analyze_claims(
     # Enforce claims count limit
     if len(request.claims) > 500:
         raise HTTPException(status_code=413, detail=f"Too many claims ({len(request.claims)}). Max: 500")
+
+    # Deduct credits before analysis
+    from .credits import deduct_analysis
+    success, error = deduct_analysis(db, auth.user_id, auth.firm_id)
+    if not success:
+        raise HTTPException(status_code=402, detail=error or "Insufficient credits for analysis")
 
     try:
         # Convert to dict format
