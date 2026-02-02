@@ -181,10 +181,8 @@ class QuestionTypeSelector:
         
         elif question_type == QuestionType.CONFRONTATION:
             # עימות ישיר - הצגת שתי הגרסאות
-            quote_a = variables.get('quote_a', '')
-            quote_b = variables.get('quote_b', '')
-            if quote_a and quote_b:
-                return f'אמרת: "{quote_a[:60]}...". אבל גם אמרת: "{quote_b[:60]}...". איך שתי הטענות יכולות להיות נכונות?'
+            # השאלה המקורית כבר מנוסחת נכון עם התייחסות למקור
+            # לא לשנות אותה כאן
             return question
         
         elif question_type == QuestionType.CLARIFICATION:
@@ -293,20 +291,29 @@ class PlaybookLoader:
             Path("/home/user/JETHRO4/backend/knowledge/contradiction_playbooks_v1.yaml"),
         ]
 
+        loaded_playbooks = {}
         for path in possible_paths:
             if path.exists():
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         data = yaml.safe_load(f)
-                        cls._playbooks = data.get('playbooks', {})
+                        loaded_playbooks = data.get('playbooks', {})
                         logger.info(f"Loaded playbooks from {path}")
-                        return cls._playbooks
+                        break
                 except Exception as e:
                     logger.warning(f"Failed to load playbooks from {path}: {e}")
 
-        # Fallback to embedded minimal playbooks
-        cls._playbooks = cls._get_embedded_playbooks()
-        logger.info("Using embedded playbooks")
+        # תמיד מזג עם embedded playbooks כדי להוסיף cross_party ו-internal
+        embedded = cls._get_embedded_playbooks()
+        cls._playbooks = {**embedded, **loaded_playbooks}
+        
+        # ודא ש-cross_party ו-internal תמיד קיימים
+        if "cross_party" not in cls._playbooks:
+            cls._playbooks["cross_party"] = embedded.get("cross_party", {})
+        if "internal" not in cls._playbooks:
+            cls._playbooks["internal"] = embedded.get("internal", {})
+        
+        logger.info(f"Loaded playbooks: {list(cls._playbooks.keys())}")
         return cls._playbooks
 
     @classmethod
@@ -408,6 +415,39 @@ class PlaybookLoader:
                         "אם העד טוען לטעות: שאל כמה טעויות נוספות יש בעדותו"
                     ]
                 }
+            },
+            "cross_party": {
+                "name_he": "עימות בין צדדים",
+                "cross_examination": {
+                    "question_set": [
+                        "אתה טוען ש-{fact_a}, נכון?",
+                        "הצד השני טוען ש-{fact_b}. מה תגובתך?",
+                        "יש לך ראיה שתומכת בגרסה שלך?",
+                        "למה הצד השני היה ממציא גרסה שונה?",
+                        "אם הגרסה שלך נכונה, איך אתה מסביר את הראיות של הצד השני?"
+                    ],
+                    "trap_branches": [
+                        "אם העד מכחיש: הצג את הראיה הסותרת",
+                        "אם העד מתחמק: דרוש תשובה ישירה",
+                        "אם העד מודה: שאל למה לא אמר את זה קודם"
+                    ]
+                }
+            },
+            "internal": {
+                "name_he": "סתירה פנימית",
+                "cross_examination": {
+                    "question_set": [
+                        "בתצהירך כתבת: {quote_a}, נכון?",
+                        "אבל במקום אחר כתבת: {quote_b}, נכון?",
+                        "שתי הטענות האלה לא יכולות להיות נכונות יחד. איזו נכונה?",
+                        "למה הגרסה השתנתה?",
+                        "אין לך הסבר לסתירה הזו?"
+                    ],
+                    "trap_branches": [
+                        "אם העד טוען לטעות: שאל מי ניסח את התצהיר",
+                        "אם העד מנסה לגשר: הצג את שתי הגרסאות זו ליד זו"
+                    ]
+                }
             }
         }
 
@@ -444,8 +484,26 @@ class CrossExamGenerator:
         Returns:
             CrossExamSet with questions
         """
-        # Get appropriate playbook
-        playbook_key = self.type_to_playbook.get(contradiction.type, "factual")
+        # קודם כל - זהה את סוג העימות (פנימי/חיצוני)
+        source_context = self._create_source_context(contradiction)
+        strategic_approach = None
+        
+        if source_context:
+            phrasing = source_context.get_question_phrasing()
+            strategic_approach = phrasing.get("approach", "general_contradiction")
+        
+        # בחר playbook לפי הגישה האסטרטגית
+        approach_to_playbook = {
+            "internal_contradiction": "internal",
+            "cross_party_conflict": "cross_party",
+            "supporting_witness_conflict": "witness",
+        }
+        
+        if strategic_approach and strategic_approach in approach_to_playbook:
+            playbook_key = approach_to_playbook[strategic_approach]
+        else:
+            playbook_key = self.type_to_playbook.get(contradiction.type, "factual")
+        
         playbook = self.playbooks.get(playbook_key, self.playbooks.get("factual", {}))
 
         cross_exam = playbook.get("cross_examination", {})
@@ -514,8 +572,7 @@ class CrossExamGenerator:
         # SOURCE-AWARE QUESTION GENERATION (V3)
         # ========================================
         
-        # Create source classifier for this contradiction
-        source_context = self._create_source_context(contradiction)
+        # source_context כבר נוצר בתחילת הפונקציה
         
         # Enhance questions with source references
         if source_context:
@@ -1083,6 +1140,20 @@ class CrossExamGenerator:
         phrasing = source_context.get_question_phrasing()
         approach = phrasing.get("approach", "general_contradiction")
         
+        # בחירת playbook מותאם לגישה האסטרטגית
+        approach_to_playbook = {
+            "internal_contradiction": "internal",
+            "cross_party_conflict": "cross_party",
+            "supporting_witness_conflict": "witness",
+            "contradict_court_finding": "factual",
+            "contradict_document": "factual",
+        }
+        
+        playbook_key = approach_to_playbook.get(approach)
+        approach_playbook = None
+        if playbook_key and playbook_key in self.playbooks:
+            approach_playbook = self.playbooks[playbook_key]
+        
         enhanced = []
         for i, q in enumerate(questions):
             # השאלה הראשונה - הוסף התייחסות למקור
@@ -1097,11 +1168,11 @@ class CrossExamGenerator:
                 enhanced.append(CrossExamQuestion(
                     id=q.id,
                     question=source_aware_question,
-                    purpose=q.purpose,
+                    purpose="עימות ראשוני עם הסתירה",
                     severity=q.severity,
                     follow_up=q.follow_up,
                     trap_branch=q.trap_branch,
-                    question_type=q.question_type if hasattr(q, 'question_type') else "confrontation",
+                    question_type="confrontation",
                     # Source reference fields
                     source_reference=source_context.claim1_source.reference_phrase,
                     attribution_phrase=phrasing.get("opening", ""),
@@ -1110,10 +1181,20 @@ class CrossExamGenerator:
                     strategic_approach=approach,
                 ))
             else:
-                # שאר השאלות - הוסף מטא-דאטה בלבד
+                # שאר השאלות - השתמש ב-playbook מותאם לגישה
+                new_question = q.question
+                
+                # אם יש playbook מותאם, השתמש בשאלות שלו
+                if approach_playbook:
+                    cross_exam = approach_playbook.get("cross_examination", {})
+                    question_set = cross_exam.get("question_set", [])
+                    if i < len(question_set):
+                        variables = self._extract_variables(contradiction)
+                        new_question = self._fill_template(question_set[i], variables)
+                
                 enhanced.append(CrossExamQuestion(
                     id=q.id,
-                    question=q.question,
+                    question=new_question,
                     purpose=q.purpose,
                     severity=q.severity,
                     follow_up=q.follow_up,
