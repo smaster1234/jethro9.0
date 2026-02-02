@@ -217,6 +217,12 @@ export const CaseDetailPage: React.FC = () => {
   const [deleteFolderError, setDeleteFolderError] = useState('');
   const [deleteFolderRecursive, setDeleteFolderRecursive] = useState(false);
 
+  // Delete document state
+  const [showDeleteDocModal, setShowDeleteDocModal] = useState(false);
+  const [docToDelete, setDocToDelete] = useState<DocumentType | null>(null);
+  const [isDeletingDoc, setIsDeletingDoc] = useState(false);
+  const [deleteDocError, setDeleteDocError] = useState('');
+
   // Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
@@ -899,6 +905,30 @@ export const CaseDetailPage: React.FC = () => {
       setDeleteFolderError(handleApiError(error));
     } finally {
       setIsDeletingFolder(false);
+    }
+  };
+
+  const handleDeleteDocClick = (doc: DocumentType) => {
+    setDocToDelete(doc);
+    setDeleteDocError('');
+    setShowDeleteDocModal(true);
+  };
+
+  const handleDeleteDoc = async () => {
+    if (!docToDelete) return;
+
+    setIsDeletingDoc(true);
+    setDeleteDocError('');
+
+    try {
+      await documentsApi.delete(docToDelete.id);
+      setShowDeleteDocModal(false);
+      setDocToDelete(null);
+      await fetchDocuments();
+    } catch (error) {
+      setDeleteDocError(handleApiError(error));
+    } finally {
+      setIsDeletingDoc(false);
     }
   };
 
