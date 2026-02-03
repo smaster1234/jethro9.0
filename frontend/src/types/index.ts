@@ -458,7 +458,7 @@ export interface Contradiction {
   tier?: number;
   // Severity and status
   severity?: 'low' | 'medium' | 'high' | 'critical';
-  status?: 'new' | 'reviewed' | 'confirmed' | 'dismissed';
+  status?: 'verified' | 'likely' | 'suspicious' | 'rejected' | 'new' | 'reviewed' | 'confirmed' | 'dismissed';
   bucket?: string;
   // Scores
   confidence?: number;

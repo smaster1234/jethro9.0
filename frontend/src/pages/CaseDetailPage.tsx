@@ -1963,10 +1963,10 @@ export const CaseDetailPage: React.FC = () => {
                                   className="px-3 py-2 text-sm rounded-lg border border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 outline-none"
                                 >
                                   <option value="">כל הסטטוסים</option>
-                                  <option value="new">חדש</option>
-                                  <option value="reviewed">נבדק</option>
-                                  <option value="confirmed">מאושר</option>
-                                  <option value="dismissed">נדחה</option>
+                                  <option value="verified">מאומת</option>
+                                  <option value="likely">סביר</option>
+                                  <option value="suspicious">חשוד</option>
+                                  <option value="rejected">נדחה</option>
                                 </select>
                                 {(contradictionSearchQuery || contradictionSeverityFilter || contradictionStatusFilter) && (
                                   <button

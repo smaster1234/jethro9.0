@@ -3495,6 +3495,9 @@ async def analyze_case(
                 logger.warning("Credit deduction failed (analysis still succeeded): %s", e)
 
         logger.info("Analysis complete for case %s: %s", case_id, result)
+        if isinstance(result, dict) and result.get("analysis_run_id"):
+            # Add run_id alias for frontend compatibility
+            result["run_id"] = result["analysis_run_id"]
         return result or {"status": "completed", "message": "Analysis complete"}
 
     except HTTPException:

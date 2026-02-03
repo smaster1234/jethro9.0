@@ -95,7 +95,7 @@ export const FindingsTab: React.FC = () => {
     total: contradictions.length,
     critical: contradictions.filter((c) => c.severity === 'critical').length,
     high: contradictions.filter((c) => c.severity === 'high').length,
-    verified: contradictions.filter((c) => c.status === 'confirmed').length,
+    verified: contradictions.filter((c) => c.verified || c.status === 'verified').length,
   };
 
   if (isLoading) {
