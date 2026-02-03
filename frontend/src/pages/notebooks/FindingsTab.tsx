@@ -58,18 +58,27 @@ export const FindingsTab: React.FC = () => {
 
   useEffect(() => {
     if (!notebookId) return;
-    const fetch = async () => {
+    const fetchData = async () => {
       setIsLoading(true);
       try {
         const runsData = await casesApi.listRuns(notebookId, 20);
         setRuns(runsData);
+
+        // Fetch full run details (with contradictions) for the latest completed run
+        const latestCompleted = runsData.find((r) => r.status === 'completed');
+        if (latestCompleted) {
+          const fullRun = await casesApi.getRun(latestCompleted.id);
+          setRuns((prev) =>
+            prev.map((r) => (r.id === fullRun.id ? fullRun : r))
+          );
+        }
       } catch {
         // silently fail
       } finally {
         setIsLoading(false);
       }
     };
-    fetch();
+    fetchData();
   }, [notebookId]);
 
   // Get contradictions from the latest completed run
