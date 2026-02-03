@@ -1246,7 +1246,12 @@ class CrossExamGenerator:
     ) -> List[CrossExamQuestion]:
         """
         מעשיר שאלות בידע מומחה ממאגר הידע.
-        
+
+        V5: Adaptive expert knowledge integration:
+        - Selects technique based on question INTENT and CONTENT (not just position)
+        - Maps QuestionIntent to optimal expert techniques and Younger commandments
+        - Content-based detection overrides position-based defaults
+
         מוסיף:
         - טכניקות מומחים (Irving Younger, Pozner & Dodd)
         - תובנות פסיכולוגיות (Loftus, FBI)
@@ -1254,65 +1259,126 @@ class CrossExamGenerator:
         """
         knowledge_base = get_knowledge_base()
         enhanced = []
-        
+
+        # Intent-to-technique mapping (adaptive, not position-based)
+        INTENT_TECHNIQUE_MAP = {
+            "establish_baseline": {
+                "technique": "שיטת הפרקים (Pozner & Dodd) - בנה בסיס לפני עימות",
+                "commandment": 4,
+                "psychology": "נעילת העד לגרסה לפני עימות - קשה לשנות אחר כך",
+                "tip": "הקשב לתשובה - השאלה הבאה תלויה בתשובה הקודמת",
+                "impeachment": None,
+                "cognitive_load": None,
+            },
+            "lock_testimony": {
+                "technique": "3C - Commit, Credit, Confront (התחייבות, אמינות, עימות)",
+                "commandment": 3,
+                "psychology": "SUE - שימוש אסטרטגי בראיות: תן לעד לדבר לפני חשיפת ראיות",
+                "tip": "אל תחשוף את כל הראיות מיד - תן לעד לספר גרסה",
+                "impeachment": "prior_inconsistent",
+                "cognitive_load": None,
+            },
+            "probe_weakness": {
+                "technique": "הגישה הישירה (Sir Charles Russell) - לך ישר לנקודה",
+                "commandment": 6,
+                "psychology": "עומס קוגניטיבי - שקרנים מתקשים לבנות סיפור ולזכור מה אמרו",
+                "tip": "אם העד מתחמק - חזור על השאלה בנימוס",
+                "impeachment": None,
+                "cognitive_load": "בקש פרטים חושיים - שקרנים מתקשים להמציא אותם",
+            },
+            "create_contradiction": {
+                "technique": "3C שלב 3 - Confront: הצג את הסתירה",
+                "commandment": 3,
+                "psychology": "SUE - חשוף את הסתירה רק אחרי נעילת גרסה",
+                "tip": "וודא שהעד ננעל לגרסה לפני העימות",
+                "impeachment": "prior_inconsistent",
+                "cognitive_load": None,
+            },
+            "exploit_contradiction": {
+                "technique": "טכניקת לינקולן - עובדה בלתי ניתנת להכחשה",
+                "commandment": 9,
+                "psychology": "Loftus - ביטחון לא שווה דיוק, עדים בטוחים בזיכרון שגוי",
+                "tip": "כשהגעת לנקודה - עצור. אל תהיה חמדן.",
+                "impeachment": "lack_of_capacity",
+                "cognitive_load": None,
+            },
+            "psychological_pressure": {
+                "technique": "עומס קוגניטיבי (Vrij & Granhag)",
+                "commandment": 8,
+                "psychology": "שינוי סדר כרונולוגי: בקש לספר מהסוף — שקרנים מתקשים",
+                "tip": "שמור על קור רוח - הלחץ צריך לבוא מהשאלות, לא ממך",
+                "impeachment": None,
+                "cognitive_load": "בקש פרטים חושיים (FBI Research)",
+            },
+            "surprise_attack": {
+                "technique": "SUE - Strategic Use of Evidence: חשוף ראיה מפתיעה",
+                "commandment": 4,
+                "psychology": "אפקט ההפתעה: תגובה ספונטנית אמינה יותר מתגובה מוכנה",
+                "tip": "הכן את הראיה מראש ותן לעד קודם להכחיש",
+                "impeachment": "documents",
+                "cognitive_load": None,
+            },
+            "closing_trap": {
+                "technique": "הגישה העדינה (Rufus Choate) - סיים כג'נטלמן",
+                "commandment": 10,
+                "psychology": "זיהום חברתי של זיכרון: ירידה בדיוק מ-79% ל-34%",
+                "tip": "תן לעובדות לדבר - הסק מסקנות בסיכום",
+                "impeachment": None,
+                "cognitive_load": None,
+            },
+            "build_rapport": {
+                "technique": "שיטת הפרקים (Pozner & Dodd) - בנה בסיס",
+                "commandment": 5,
+                "psychology": "בניית אמון מפחיתה התנגדות ומעלה שיתוף פעולה",
+                "tip": "התחל בשאלות חיוביות — בנה מומנטום של 'כן'",
+                "impeachment": None,
+                "cognitive_load": None,
+            },
+        }
+
         for i, q in enumerate(questions):
-            # זיהוי טכניקה מומחית לפי מיקום וסוג השאלה
-            expert_technique = None
-            younger_commandment = None
-            psychological_basis = None
-            impeachment_type = None
-            cognitive_load_technique = None
-            expert_tip = None
-            
-            # שאלה ראשונה - קיבוע ובניית בסיס
-            if i == 0:
-                expert_technique = "שיטת הפרקים (Pozner & Dodd) - בנה בסיס לפני עימות"
-                younger_commandment = 4  # אל תשאל שאלה שאתה לא יודע את התשובה
-                psychological_basis = "נעילת העד לגרסה לפני עימות - קשה לשנות אחר כך"
-                expert_tip = "הקשב לתשובה - השאלה הבאה תלויה בתשובה הקודמת"
-            
-            # שאלה שנייה - עימות
-            elif i == 1:
-                expert_technique = "3C - Commit, Credit, Confront (התחייבות, אמינות, עימות)"
-                younger_commandment = 3  # השתמש רק בשאלות מנחות
-                psychological_basis = "SUE - שימוש אסטרטגי בראיות"
-                impeachment_type = "prior_inconsistent"  # סתירה עם הצהרה קודמת
-                expert_tip = "אל תחשוף את כל הראיות מיד - תן לעד לספר גרסה"
-            
-            # שאלה שלישית - לחץ
-            elif i == 2:
-                expert_technique = "הגישה הישירה (Sir Charles Russell) - לך ישר לנקודה"
-                younger_commandment = 6  # אל תתווכח עם העד
-                psychological_basis = "עומס קוגניטיבי - שקרנים מתקשים לבנות סיפור ולזכור מה אמרו"
-                cognitive_load_technique = "בקש פרטים חושיים - שקרנים מתקשים להמציא אותם"
-                expert_tip = "אם העד מתחמק - חזור על השאלה בנימוס"
-            
-            # שאלה רביעית - ניצול
-            elif i == 3:
-                expert_technique = "טכניקת לינקולן - עובדה בלתי ניתנת להכחשה"
-                younger_commandment = 9  # אל תשאל שאלה אחת יותר מדי
-                psychological_basis = "Loftus - ביטחון לא שווה דיוק, עדים יכולים להיות בטוחים בזיכרון שגוי"
-                impeachment_type = "lack_of_capacity"  # חוסר יכולת לדעת
-                expert_tip = "כשהגעת לנקודה - עצור. אל תהיה חמדן."
-            
-            # שאלה חמישית - סיכום
-            elif i >= 4:
-                expert_technique = "הגישה העדינה (Rufus Choate) - סיים כג'נטלמן"
-                younger_commandment = 10  # שמור את הנקודה העיקרית לסיכום
-                psychological_basis = "זיהום חברתי של זיכרון - עדים שדיברו ביניהם מראים ירידה בדיוק מ-79% ל-34%"
-                expert_tip = "תן לעובדות לדבר - הסק מסקנות בסיכום"
-            
-            # הוספת תובנות פסיכולוגיות לפי סוג השאלה
-            question_lower = q.question.lower()
+            # Get intent-based expert knowledge (adaptive)
+            intent_key = str(q.intent) if q.intent else ""
+            intent_data = INTENT_TECHNIQUE_MAP.get(intent_key)
+
+            # Fallback: position-based for questions without mapped intent
+            if not intent_data:
+                n = max(len(questions) - 1, 1)
+                pct = i / n
+                if pct < 0.2:
+                    intent_data = INTENT_TECHNIQUE_MAP["establish_baseline"]
+                elif pct < 0.4:
+                    intent_data = INTENT_TECHNIQUE_MAP["lock_testimony"]
+                elif pct < 0.6:
+                    intent_data = INTENT_TECHNIQUE_MAP["probe_weakness"]
+                elif pct < 0.8:
+                    intent_data = INTENT_TECHNIQUE_MAP["exploit_contradiction"]
+                else:
+                    intent_data = INTENT_TECHNIQUE_MAP["closing_trap"]
+
+            expert_technique = intent_data["technique"]
+            younger_commandment = intent_data["commandment"]
+            psychological_basis = intent_data["psychology"]
+            impeachment_type = intent_data["impeachment"]
+            cognitive_load_technique = intent_data["cognitive_load"]
+            expert_tip = intent_data["tip"]
+
+            # Content-based enhancements (override when text indicates patterns)
+            question_lower = q.question.lower() if q.question else ""
             if "זוכר" in question_lower or "ראית" in question_lower or "שמעת" in question_lower:
                 cognitive_load_technique = "פרטים חושיים - שקרנים מתקשים להמציא אותם (FBI Research)"
-            
+
             if "תצהיר" in question_lower or "כתבת" in question_lower:
                 impeachment_type = "prior_inconsistent"
                 psychological_basis = psychological_basis or "3C - נעילת העד לגרסה לפני הצגת המסמך"
-            
+
             if "הצד השני" in question_lower or "הצד שכנגד" in question_lower:
                 expert_technique = expert_technique or "SUE - שימוש אסטרטגי בראיות"
+
+            # Risk-based warnings
+            risk = getattr(q, 'risk_level', 0.0) or 0.0
+            if risk > 0.6:
+                expert_tip = (expert_tip or "") + " | סיכון גבוה — דיבר 9: אל תשאל שאלה אחת יותר מדי"
             
             # יצירת שאלה משופרת
             enhanced.append(CrossExamQuestion(

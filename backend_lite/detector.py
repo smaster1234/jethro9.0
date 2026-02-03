@@ -1195,24 +1195,64 @@ class RuleBasedDetector:
     # =========================================================================
 
     def _claims_relatedness(self, text1: str, text2: str) -> float:
-        """Calculate relatedness score between two claims (0-1)"""
+        """
+        Calculate relatedness score between two claims (0-1).
+
+        Uses a combined approach:
+        1. Semantic TF-IDF similarity (character n-grams) — captures morphological variants
+        2. Word overlap — fast exact-match baseline
+        3. Entity overlap — from entity graph if available
+
+        The combined score is weighted: 60% semantic + 25% word overlap + 15% entity.
+        """
+        # Word overlap (fast baseline)
         words1 = self._get_meaningful_words(text1)
         words2 = self._get_meaningful_words(text2)
 
-        if not words1 or not words2:
-            return 0.5  # Uncertain
-
-        common = words1 & words2
-        min_len = min(len(words1), len(words2))
-
-        if min_len == 0:
+        if not words1 and not words2:
             return 0.5
 
-        return len(common) / min_len
+        word_score = 0.0
+        min_len = min(len(words1), len(words2)) if words1 and words2 else 1
+        if min_len > 0 and words1 and words2:
+            common = words1 & words2
+            word_score = len(common) / min_len
+
+        # Semantic similarity (TF-IDF with character n-grams)
+        semantic_score = 0.0
+        try:
+            from .semantic import get_semantic_engine
+            engine = get_semantic_engine()
+            # Use ad-hoc similarity if index exists (claim objects) or text-based
+            semantic_score = engine._compute_adhoc_similarity(text1, text2)
+        except Exception:
+            semantic_score = word_score  # Fallback to word overlap
+
+        # Entity overlap (if graph is built)
+        entity_score = 0.0
+        try:
+            from .entity_graph import get_entity_graph
+            graph = get_entity_graph()
+            if graph._built:
+                # Extract entities from both texts and check overlap
+                ents1 = set(e[0] for e in graph._extract_entities(text1))
+                ents2 = set(e[0] for e in graph._extract_entities(text2))
+                if ents1 and ents2:
+                    intersection = ents1 & ents2
+                    union = ents1 | ents2
+                    entity_score = len(intersection) / len(union) if union else 0.0
+                elif not ents1 and not ents2:
+                    entity_score = 0.3  # Unknown
+        except Exception:
+            pass
+
+        # Combined score
+        combined = (0.60 * semantic_score) + (0.25 * word_score) + (0.15 * entity_score)
+        return combined
 
     def _claims_related(self, text1: str, text2: str) -> bool:
         """Check if two claims are related (legacy method)"""
-        return self._claims_relatedness(text1, text2) > 0.15
+        return self._claims_relatedness(text1, text2) > 0.12
 
     def _get_meaningful_words(self, text: str) -> set:
         """Extract meaningful words from text"""
