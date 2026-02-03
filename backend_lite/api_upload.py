@@ -2208,6 +2208,7 @@ async def list_analysis_runs(
                     "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                     "claims_count": claims_count,
                     "contradictions_count": contradictions_count,
+                    "contradictions_total": contradictions_count,  # Alias for consistency with getRun
                 })
             return result
 

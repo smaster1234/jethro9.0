@@ -1801,7 +1801,7 @@ export const CaseDetailPage: React.FC = () => {
                             </div>
                             <div>
                               <div className="text-2xl font-bold text-warning-600">
-                                {run.contradictions_count || 0}
+                                {run.contradictions_total || run.contradictions_count || 0}
                               </div>
                               <div className="text-xs text-slate-500">סתירות</div>
                             </div>
@@ -1857,7 +1857,7 @@ export const CaseDetailPage: React.FC = () => {
                           </div>
                           <div>
                             <div className="text-2xl font-bold text-warning-600">
-                              {selectedRun.contradictions?.length || selectedRun.contradictions_count || 0}
+                              {selectedRun.contradictions?.length || selectedRun.contradictions_total || selectedRun.contradictions_count || 0}
                             </div>
                             <div className="text-xs text-slate-500">סתירות</div>
                           </div>

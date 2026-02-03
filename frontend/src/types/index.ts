@@ -592,6 +592,9 @@ export interface AnalysisRun {
   completed_at?: string;
   claims_count?: number;
   contradictions_count?: number;
+  contradictions_total?: number;
+  contradictions_limit?: number;
+  contradictions_offset?: number;
   input_document_ids?: string[];
   metadata?: Record<string, unknown>;
   contradictions?: Contradiction[];
