@@ -14,13 +14,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 #   >= 2GB RAM: Both models (default) — best accuracy
 #   >= 1GB RAM: DISABLE_QA_MODEL=1    — HeBERT only, regex QA fallback
 #   <  1GB RAM: DISABLE_HEBERT=1 DISABLE_QA_MODEL=1 — TF-IDF + regex only
+#
+# To use a custom fine-tuned model, set in Railway:
+#   LEGAL_HEBERT_MODEL=your-username/Legal-heBERT-trial-courts
+ARG LEGAL_HEBERT_MODEL=avichr/Legal-heBERT
 RUN python -c "\
+import os; \
+model = os.environ.get('LEGAL_HEBERT_MODEL', 'avichr/Legal-heBERT'); \
 from transformers import AutoTokenizer, AutoModel, pipeline; \
-AutoTokenizer.from_pretrained('avichr/Legal-heBERT'); \
-AutoModel.from_pretrained('avichr/Legal-heBERT'); \
+AutoTokenizer.from_pretrained(model); \
+AutoModel.from_pretrained(model); \
 pipeline('question-answering', model='shay681/HeBERT_finetuned_Legal_Clauses', \
          tokenizer='shay681/HeBERT_finetuned_Legal_Clauses'); \
-print('Models cached successfully') \
+print(f'Models cached: {model} + Legal QA') \
 "
 
 # Copy all code to backend_lite/
