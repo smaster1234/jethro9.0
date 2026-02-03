@@ -35,15 +35,19 @@ export const CrossExamTab: React.FC = () => {
 
   useEffect(() => {
     if (!notebookId) return;
-    const fetch = async () => {
+    const fetchData = async () => {
       setIsLoading(true);
       try {
         const runs = await casesApi.listRuns(notebookId, 5);
         const latest = runs.find((r) => r.status === 'completed');
-        if (latest?.metadata) {
-          const crossExam = (latest.metadata as Record<string, unknown>).cross_exam_questions;
-          if (Array.isArray(crossExam)) {
-            setSets(crossExam as CrossExamSet[]);
+        if (latest) {
+          // Fetch full run details to get metadata with cross_exam_questions
+          const fullRun = await casesApi.getRun(latest.id);
+          if (fullRun?.metadata) {
+            const crossExam = (fullRun.metadata as Record<string, unknown>).cross_exam_questions;
+            if (Array.isArray(crossExam)) {
+              setSets(crossExam as CrossExamSet[]);
+            }
           }
         }
       } catch {
@@ -52,7 +56,7 @@ export const CrossExamTab: React.FC = () => {
         setIsLoading(false);
       }
     };
-    fetch();
+    fetchData();
   }, [notebookId]);
 
   if (isLoading) {
