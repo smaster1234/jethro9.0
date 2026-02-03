@@ -317,7 +317,12 @@ class EntityGraph:
     # =========================================================================
 
     def _extract_entities(self, text: str) -> List[Tuple[str, str]]:
-        """Extract entities from text. Returns (entity_text, entity_type) tuples."""
+        """
+        Extract entities from text. Returns (entity_text, entity_type) tuples.
+
+        Uses regex patterns as primary extraction, supplemented by QA model
+        for speaker/subject identification when available.
+        """
         entities = []
 
         # Roles (הנתבע, התובע, etc.)
@@ -330,6 +335,24 @@ class EntityGraph:
             cleaned = _TITLE_STRIP.sub('', full_name).strip()
             if cleaned and len(cleaned) >= 4:
                 entities.append((cleaned, EntityType.PERSON))
+
+        # QA-based entity supplementation: extract entities regex might miss
+        if not any(e[1] == EntityType.PERSON for e in entities):
+            try:
+                from .legal_qa import get_legal_qa
+                qa = get_legal_qa()
+                # Ask QA who is being discussed in the text
+                for question in ["מי ביצע את הפעולה?", "על מי מדובר?"]:
+                    result = qa.answer(question, text, min_confidence=0.30)
+                    if result and len(result.answer) >= 3:
+                        # Check it's not a role we already captured
+                        answer = result.answer.strip()
+                        existing_texts = {e[0] for e in entities}
+                        if answer not in existing_texts:
+                            entities.append((answer, EntityType.PERSON))
+                        break
+            except Exception:
+                pass
 
         # Amounts
         for match in _AMOUNT_PATTERN.finditer(text):

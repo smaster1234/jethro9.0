@@ -13,8 +13,11 @@ Rule-based claim extraction with context enrichment:
 
 import re
 import uuid
+import logging
 from typing import List, Optional, Set, Dict, Any
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # Import from sanitize module
 from .sanitize import (
@@ -299,7 +302,7 @@ class ClaimExtractor:
                 source=source_name,
                 page=page_no,
                 block_index=block_index,
-                speaker=None,  # Can be enhanced with speaker detection
+                speaker=None,
                 doc_id=doc_id,
                 paragraph_id=paragraph_id,
                 paragraph_index=paragraph_index,
@@ -312,6 +315,9 @@ class ClaimExtractor:
                 }
             )
             claims.append(claim)
+
+        # Enrich claims with QA-extracted semantic fields
+        self._enrich_claims(claims)
 
         return claims
 
@@ -355,6 +361,76 @@ class ClaimExtractor:
                 claims.append(claim)
 
         return claims
+
+    def _enrich_claims(self, claims: List['Claim']) -> None:
+        """
+        Enrich claims with semantic fields using the Legal QA engine.
+
+        Fills: speaker, speaker_role, speaker_mode, subject, predicate, object,
+               plane, modality, negation, time_reference, entities, relations,
+               confidence_extraction.
+
+        Uses QA model when available, regex fallback otherwise.
+        Non-fatal: if enrichment fails for any claim, it remains with defaults.
+        """
+        try:
+            from .legal_qa import get_legal_qa
+        except ImportError:
+            return
+
+        try:
+            qa = get_legal_qa()
+        except Exception as e:
+            logger.debug("Legal QA not available for enrichment: %s", e)
+            return
+
+        for claim in claims:
+            try:
+                facts = qa.extract_legal_facts(claim.text)
+
+                # Fill empty fields (don't overwrite existing values)
+                if facts.speaker and not claim.speaker:
+                    claim.speaker = facts.speaker
+                if facts.speaker_role and not claim.speaker_role:
+                    claim.speaker_role = facts.speaker_role
+                if facts.subject and not claim.subject:
+                    claim.subject = facts.subject
+                if facts.action and not claim.predicate:
+                    claim.predicate = facts.action
+                if facts.object and not claim.object:
+                    claim.object = facts.object
+                if facts.plane and not claim.plane:
+                    claim.plane = facts.plane
+                if facts.modality and not claim.modality:
+                    claim.modality = facts.modality
+                if facts.date and not claim.time_reference:
+                    claim.time_reference = facts.date
+                if facts.negation:
+                    claim.negation = True
+
+                # Build relations summary
+                if facts.subject and facts.action:
+                    parts = [facts.subject, facts.action]
+                    if facts.object:
+                        parts.append(facts.object)
+                    claim.relations = " ".join(parts)
+
+                # Speaker mode inference
+                if not claim.speaker_mode:
+                    if facts.speaker_role == 'court':
+                        claim.speaker_mode = SPEAKER_MODE_FINDING
+                    elif facts.plane == 'LAW':
+                        claim.speaker_mode = SPEAKER_MODE_LAW_CITATION
+                    elif facts.plane == 'OPINION':
+                        claim.speaker_mode = SPEAKER_MODE_OPINION
+                    elif facts.speaker_role in ('plaintiff', 'defendant', 'witness'):
+                        claim.speaker_mode = SPEAKER_MODE_PARTY_CLAIM
+
+                # Adjust extraction confidence based on QA confidence
+                claim.confidence_extraction = max(0.5, facts.confidence)
+
+            except Exception as e:
+                logger.debug("Enrichment failed for claim %s: %s", claim.id, e)
 
     def _normalize_text(self, text: str) -> str:
         """Normalize Hebrew text"""

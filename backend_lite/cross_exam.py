@@ -684,7 +684,7 @@ class CrossExamGenerator:
         ]
 
     def _extract_variables(self, contradiction: DetectedContradiction) -> Dict[str, str]:
-        """Extract template variables from contradiction"""
+        """Extract template variables from contradiction, enriched with QA facts."""
         # Sanitize quotes - remove system text
         quote1 = self._sanitize_quote(contradiction.quote1)
         quote2 = self._sanitize_quote(contradiction.quote2)
@@ -716,6 +716,54 @@ class CrossExamGenerator:
             variables["person_a"] = ", ".join(metadata["attr1"])
         if "attr2" in metadata:
             variables["person_b"] = ", ".join(metadata["attr2"])
+
+        # --- QA-based fact extraction (fills gaps from metadata) ---
+        try:
+            from .legal_qa import get_legal_qa
+            qa = get_legal_qa()
+
+            claim1_text = getattr(contradiction.claim1, 'text', quote1) if contradiction.claim1 else quote1
+            claim2_text = getattr(contradiction.claim2, 'text', quote2) if contradiction.claim2 else quote2
+
+            if claim1_text and claim2_text:
+                comparison = qa.extract_key_facts_for_contradiction(claim1_text, claim2_text)
+                facts1 = comparison['facts1']
+                facts2 = comparison['facts2']
+
+                # Fill missing dates from QA
+                if "date_a" not in variables and facts1.date:
+                    variables["date_a"] = facts1.date
+                if "date_b" not in variables and facts2.date:
+                    variables["date_b"] = facts2.date
+
+                # Fill missing amounts from QA
+                if "amount_a" not in variables and facts1.amount:
+                    variables["amount_a"] = facts1.amount
+                if "amount_b" not in variables and facts2.amount:
+                    variables["amount_b"] = facts2.amount
+
+                # Fill missing persons from QA
+                if "person_a" not in variables and facts1.speaker:
+                    variables["person_a"] = facts1.speaker
+                if "person_b" not in variables and facts2.speaker:
+                    variables["person_b"] = facts2.speaker
+
+                # NEW: QA-extracted action/subject for targeted questions
+                if facts1.action:
+                    variables["action_a"] = facts1.action
+                if facts2.action:
+                    variables["action_b"] = facts2.action
+                if facts1.subject:
+                    variables["subject_a"] = facts1.subject
+                if facts2.subject:
+                    variables["subject_b"] = facts2.subject
+
+                # Store contradiction focus for question generation
+                variables["_contradiction_focus"] = comparison['contradiction_focus']
+                variables["_differences"] = str(comparison['differences'])
+
+        except Exception as e:
+            logger.debug("QA enrichment for cross-exam variables failed: %s", e)
 
         return variables
 
