@@ -1043,12 +1043,20 @@ async def task_analyze_case(
                     pair_key = tuple(sorted([contr.claim1.id, contr.claim2.id]))
                     agreement = engine_agreement.get(pair_key, 'rule')
 
-                    # Semantic similarity
+                    # Semantic similarity + negation analysis
                     sem_score = 0.0
+                    negation_val = 0.0
+                    contradiction_sig = 0.0
                     try:
-                        sem_score = semantic_engine.relatedness(contr.claim1, contr.claim2)
+                        neg_result = semantic_engine.negation_aware_relatedness(contr.claim1, contr.claim2)
+                        sem_score = neg_result['similarity']
+                        negation_val = neg_result['negation_contrast']
+                        contradiction_sig = neg_result['contradiction_signal']
                     except Exception:
-                        pass
+                        try:
+                            sem_score = semantic_engine.relatedness(contr.claim1, contr.claim2)
+                        except Exception:
+                            pass
 
                     # Entity overlap
                     ent_overlap = 0.0
@@ -1062,10 +1070,23 @@ async def task_analyze_case(
                     # Temporal evidence
                     temporal_boost = 0.0
                     has_temporal = False
+                    has_impossible_seq = False
                     try:
                         temp_evidence = temporal_graph.temporal_evidence(contr.claim1, contr.claim2)
                         temporal_boost = temp_evidence.get('anomaly_boost', 0.0)
                         has_temporal = temp_evidence.get('has_temporal_conflict', False)
+                    except Exception:
+                        pass
+                    # Check if any anomaly is an impossible sequence for this pair
+                    try:
+                        for anom in temporal_graph.get_anomalies():
+                            if anom.anomaly_type == "IMPOSSIBLE_SEQUENCE":
+                                c1id = contr.claim1.id
+                                c2id = contr.claim2.id
+                                if c1id in anom.claim_ids and c2id in anom.claim_ids:
+                                    has_impossible_seq = True
+                                    temporal_boost = max(temporal_boost, 0.15)
+                                    break
                     except Exception:
                         pass
 
@@ -1084,8 +1105,11 @@ async def task_analyze_case(
                         semantic_similarity=sem_score,
                         entity_overlap=ent_overlap,
                         same_subject_score=subject_score,
+                        negation_contrast=negation_val,
+                        contradiction_signal=contradiction_sig,
                         temporal_boost=temporal_boost,
                         has_temporal_conflict=has_temporal,
+                        has_impossible_sequence=has_impossible_seq,
                         learning_adjustment=learning_adj,
                         type_precision=type_prec,
                         both_engines_agree=(agreement == 'both'),

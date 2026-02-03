@@ -138,7 +138,8 @@ class EntityGraph:
     Cross-document entity resolution graph.
 
     Extracts entities from claims, merges duplicates using fuzzy matching,
-    and provides entity-overlap scoring for claim pairs.
+    resolves pronouns and role references to named entities, and provides
+    entity-overlap scoring for claim pairs.
     """
 
     def __init__(
@@ -154,6 +155,9 @@ class EntityGraph:
         self._claim_entities: Dict[str, Set[str]] = defaultdict(set)  # claim_id -> set of entity canonicals
         self._built = False
 
+        # Coreference state: maps pronoun/role mentions to resolved entity canonicals
+        self._coref_map: Dict[str, str] = {}  # "הנתבע" -> "דוד כהן"
+
     def build(self, claims: list) -> None:
         """
         Build entity graph from a list of claims.
@@ -163,6 +167,7 @@ class EntityGraph:
         """
         self._entities.clear()
         self._claim_entities.clear()
+        self._coref_map.clear()
 
         # Step 1: Extract entities from each claim
         raw_entities: List[Tuple[str, str, str, str]] = []  # (claim_id, doc_id, entity_text, entity_type)
@@ -179,7 +184,13 @@ class EntityGraph:
         # Step 2: Cluster and merge entities
         self._cluster_entities(raw_entities)
 
-        # Step 3: Build claim -> entity mapping
+        # Step 3: Resolve coreferences — link pronouns/roles to named entities
+        self._resolve_coreferences(claims)
+
+        # Step 4: Apply coreference — extend claim entity sets with resolved references
+        self._apply_coreferences(claims)
+
+        # Step 5: Build claim -> entity mapping
         for canonical, entity in self._entities.items():
             for cid in entity.claim_ids:
                 self._claim_entities[cid].add(canonical)
@@ -188,9 +199,10 @@ class EntityGraph:
 
         # Stats
         cross_doc = sum(1 for e in self._entities.values() if len(e.doc_ids) > 1)
+        coref_count = len(self._coref_map)
         logger.info(
-            "Entity graph built: %d entities (%d cross-document), %d claims",
-            len(self._entities), cross_doc, len(self._claim_entities),
+            "Entity graph built: %d entities (%d cross-document), %d coreferences, %d claims",
+            len(self._entities), cross_doc, coref_count, len(self._claim_entities),
         )
 
     def entity_overlap(self, claim_a, claim_b) -> float:
@@ -500,6 +512,127 @@ class EntityGraph:
             return 0.0  # Different amounts are different entities
         except ValueError:
             return SequenceMatcher(None, a, b).ratio()
+
+    # =========================================================================
+    # Coreference Resolution
+    # =========================================================================
+
+    def _resolve_coreferences(self, claims: list) -> None:
+        """
+        Resolve coreferences: link role mentions (הנתבע, התובע) and pronouns
+        to specific named PERSON entities.
+
+        Strategy:
+        1. For each claim, if it contains both a ROLE and a PERSON → the person fills that role
+        2. For each document, if one claim names the person and another uses the role → link
+        3. Build global role→person mapping from document-level evidence
+        """
+        # Collect (doc_id -> role -> person) evidence
+        doc_role_person: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
+
+        # First pass: find claims where ROLE and PERSON co-occur
+        for claim in claims:
+            cid = getattr(claim, 'id', str(id(claim)))
+            doc_id = getattr(claim, 'doc_id', '')
+            text = getattr(claim, 'text', str(claim))
+
+            extracted = self._extract_entities(text)
+            roles_in_claim = [e[0] for e in extracted if e[1] == EntityType.ROLE]
+            persons_in_claim = [e[0] for e in extracted if e[1] == EntityType.PERSON]
+
+            # If exactly one role and at least one person in the same claim,
+            # assume the person fills that role
+            if len(roles_in_claim) == 1 and persons_in_claim:
+                role = roles_in_claim[0]
+                # Use the first person mentioned (most likely the subject)
+                person = self._normalize_entity(persons_in_claim[0], EntityType.PERSON)
+                doc_role_person[doc_id][role].add(person)
+
+        # Also check for "X הוא הנתבע" / "הנתבע, מר X" patterns in raw text
+        for claim in claims:
+            doc_id = getattr(claim, 'doc_id', '')
+            text = getattr(claim, 'text', str(claim))
+
+            # Pattern: "הנתבע/התובע, מר/גברת <name>"
+            coref_pattern = re.compile(
+                r'(הנתבע|התובע|המשיב|המערער|המבקש|הנתבעת|התובעת|המשיבה)'
+                r'[,\s]+(?:מר|גברת|גב)\s+'
+                r'([\u0590-\u05FF]{2,}\s+[\u0590-\u05FF]{2,})',
+                re.UNICODE,
+            )
+            for m in coref_pattern.finditer(text):
+                role = m.group(1)
+                person = self._normalize_entity(m.group(2), EntityType.PERSON)
+                doc_role_person[doc_id][role].add(person)
+
+        # Build global role -> person mapping (use most frequent mapping)
+        global_role_person: Dict[str, str] = {}
+        for doc_id, role_persons in doc_role_person.items():
+            for role, persons in role_persons.items():
+                if len(persons) == 1:
+                    global_role_person[role] = next(iter(persons))
+                else:
+                    # Multiple persons for same role — don't resolve ambiguously
+                    pass
+
+        # Also collect across documents for roles consistently mapped
+        all_role_persons: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for doc_id, role_persons in doc_role_person.items():
+            for role, persons in role_persons.items():
+                for person in persons:
+                    all_role_persons[role][person] += 1
+
+        for role, person_counts in all_role_persons.items():
+            if role not in global_role_person:
+                # Use majority vote
+                best_person = max(person_counts, key=person_counts.get)
+                if person_counts[best_person] >= 2 or len(person_counts) == 1:
+                    global_role_person[role] = best_person
+
+        self._coref_map = global_role_person
+        if global_role_person:
+            logger.info("Coreference resolved: %s", {k: v for k, v in global_role_person.items()})
+
+    def _apply_coreferences(self, claims: list) -> None:
+        """
+        Apply resolved coreferences: for claims that mention a role (הנתבע),
+        add the resolved person entity to that claim's entity set.
+        """
+        if not self._coref_map:
+            return
+
+        for claim in claims:
+            cid = getattr(claim, 'id', str(id(claim)))
+            text = getattr(claim, 'text', str(claim))
+
+            for role_match in _ROLE_PATTERNS.finditer(text):
+                role = role_match.group()
+                if role in self._coref_map:
+                    person_canonical = self._coref_map[role]
+                    # Find or create the person entity
+                    if person_canonical in self._entities:
+                        self._entities[person_canonical].claim_ids.add(cid)
+                    else:
+                        # Create entity if needed
+                        entity = Entity(
+                            canonical=person_canonical,
+                            entity_type=EntityType.PERSON,
+                        )
+                        entity.claim_ids.add(cid)
+                        entity.mentions.add(role)
+                        self._entities[person_canonical] = entity
+
+            # Also resolve pronouns using closest antecedent heuristic
+            for pronoun, gender in _PRONOUN_MAP.items():
+                if pronoun in text:
+                    # Find the closest PERSON entity in the same claim
+                    extracted = self._extract_entities(text)
+                    persons = [e[0] for e in extracted if e[1] == EntityType.PERSON]
+                    if persons:
+                        # Use the first person in the claim as the antecedent
+                        person_canonical = self._normalize_entity(persons[0], EntityType.PERSON)
+                        if person_canonical in self._entities:
+                            self._entities[person_canonical].claim_ids.add(cid)
 
 
 # =============================================================================

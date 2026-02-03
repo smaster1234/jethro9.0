@@ -51,10 +51,13 @@ class ContradictionSignals:
     semantic_similarity: float = 0.0     # Semantic relatedness between claims
     entity_overlap: float = 0.0          # Entity overlap score
     same_subject_score: float = 0.0      # Same-subject probability
+    negation_contrast: float = 0.0       # Negation polarity contrast (0-1)
+    contradiction_signal: float = 0.0    # High similarity + opposing polarity (0-1)
 
     # Temporal signals
     temporal_boost: float = 0.0          # Temporal evidence boost (0-0.3)
     has_temporal_conflict: bool = False   # Direct temporal conflict detected
+    has_impossible_sequence: bool = False # Causal ordering violation detected
 
     # Learning signals
     learning_adjustment: float = 0.0     # From feedback loop (-0.15 to +0.1)
@@ -92,24 +95,35 @@ class EnsembleScorer:
     - Temporal evidence: confirms date-related contradictions
     """
 
-    # Default weights for each signal
+    # Default weights — derived from signal reliability characteristics:
+    # - Rule-based: High precision for structured data (dates/amounts), lower for semantics
+    # - LLM: Broad understanding but can hallucinate
+    # - Negation: Direct polarity evidence — high precision when present
+    # - Semantic: Only measures topical relatedness, not contradiction
+    # - Entity/subject: Context filters, not contradiction indicators
+    # - Temporal: Rare but very reliable when present
+    # - Agreement: Cross-validation between independent detectors
     DEFAULT_WEIGHTS = {
-        'rule_confidence': 0.30,
-        'llm_confidence': 0.25,
-        'semantic_similarity': 0.15,
-        'entity_overlap': 0.10,
+        'rule_confidence': 0.25,
+        'llm_confidence': 0.20,
+        'negation_contrast': 0.12,    # NEW: opposing polarity is strong evidence
+        'semantic_similarity': 0.10,
+        'entity_overlap': 0.08,
         'same_subject': 0.10,
         'temporal': 0.05,
-        'agreement_bonus': 0.05,
+        'agreement_bonus': 0.10,
     }
 
     # Status thresholds
-    VERIFIED_THRESHOLD = 0.82
-    LIKELY_THRESHOLD = 0.60
+    VERIFIED_THRESHOLD = 0.78   # Lowered: system is now more selective upstream
+    LIKELY_THRESHOLD = 0.55
     # Below LIKELY_THRESHOLD = suspicious
 
     def __init__(self, weights: Optional[Dict[str, float]] = None):
         self.weights = weights or self.DEFAULT_WEIGHTS.copy()
+        # Track scoring statistics for self-calibration
+        self._score_history: List[float] = []
+        self._signal_correlations: Dict[str, List[float]] = defaultdict(list)
 
     def score(self, signals: ContradictionSignals) -> EnsembleResult:
         """
@@ -137,37 +151,52 @@ class EnsembleScorer:
             total_weight += w
             signals_used['llm_confidence'] = signals.llm_confidence
 
-        # 3. Semantic similarity
+        # 3. Negation contrast — opposing polarity is DIRECT contradiction evidence
+        if signals.negation_contrast > 0:
+            w = self.weights['negation_contrast']
+            weighted_sum += signals.negation_contrast * w
+            total_weight += w
+            signals_used['negation_contrast'] = signals.negation_contrast
+            if signals.negation_contrast >= 0.5:
+                boosted_by.append("קוטביות מנוגדת (שלילה/היפוך)")
+
+        # 4. Contradiction signal (combined high-similarity + negation)
+        if signals.contradiction_signal > 0.3:
+            # Strong signal: claims are similar AND have opposing polarity
+            boost = signals.contradiction_signal * 0.15
+            weighted_sum += boost
+            signals_used['contradiction_signal'] = signals.contradiction_signal
+            boosted_by.append(f"אות סתירה חזק ({signals.contradiction_signal:.0%})")
+
+        # 5. Semantic similarity — acts as a GATE
         if signals.semantic_similarity > 0:
             w = self.weights['semantic_similarity']
-            # Semantic similarity acts as a GATE: low similarity penalizes
-            if signals.semantic_similarity < 0.15:
+            if signals.semantic_similarity < 0.12:
                 # Very low similarity - these claims are likely unrelated
                 penalized_by.append("סמנטיקה: טענות לא קשורות")
-                weighted_sum -= 0.15
+                weighted_sum -= 0.12
             else:
                 weighted_sum += signals.semantic_similarity * w
                 total_weight += w
                 signals_used['semantic_similarity'] = signals.semantic_similarity
 
-        # 4. Entity overlap
+        # 6. Entity overlap
         if signals.entity_overlap > 0:
             w = self.weights['entity_overlap']
             weighted_sum += signals.entity_overlap * w
             total_weight += w
             signals_used['entity_overlap'] = signals.entity_overlap
-
             if signals.entity_overlap >= 0.5:
                 boosted_by.append("ישויות משותפות")
 
-        # 5. Same subject score
+        # 7. Same subject score
         if signals.same_subject_score > 0:
             w = self.weights['same_subject']
             weighted_sum += signals.same_subject_score * w
             total_weight += w
             signals_used['same_subject'] = signals.same_subject_score
 
-        # 6. Temporal evidence (additive boost)
+        # 8. Temporal evidence (additive boost)
         if signals.temporal_boost > 0:
             weighted_sum += signals.temporal_boost
             signals_used['temporal_boost'] = signals.temporal_boost
@@ -177,11 +206,16 @@ class EnsembleScorer:
             weighted_sum += 0.1
             boosted_by.append("סתירה זמנית ישירה")
 
-        # 7. Agreement bonus (both engines found it)
+        if signals.has_impossible_sequence:
+            weighted_sum += 0.15
+            boosted_by.append("רצף סיבתי בלתי אפשרי")
+
+        # 9. Agreement bonus (both engines found it)
         if signals.both_engines_agree:
             w = self.weights['agreement_bonus']
-            weighted_sum += 0.15 * w / 0.05  # Significant boost
-            signals_used['agreement_bonus'] = 0.15
+            weighted_sum += w  # Full weight as bonus (cross-validation)
+            total_weight += w
+            signals_used['agreement_bonus'] = 1.0
             boosted_by.append("שני מנועי זיהוי מסכימים")
 
         # Normalize
@@ -190,17 +224,22 @@ class EnsembleScorer:
         else:
             base_score = signals.rule_confidence  # Fallback to rule only
 
-        # 8. Learning adjustment (additive)
+        # 10. Learning adjustment (additive)
         base_score += signals.learning_adjustment
         if signals.learning_adjustment > 0:
             boosted_by.append(f"למידה: +{signals.learning_adjustment:.2f}")
         elif signals.learning_adjustment < 0:
             penalized_by.append(f"למידה: {signals.learning_adjustment:.2f}")
 
-        # 9. Historical precision adjustment
-        if signals.type_precision is not None and signals.type_precision < 0.4:
-            base_score *= 0.85  # Penalize types with historically low precision
-            penalized_by.append(f"precision היסטורי נמוך ({signals.type_precision:.0%})")
+        # 11. Historical precision — smooth penalty instead of hard threshold
+        if signals.type_precision is not None and signals.type_precision < 0.6:
+            # Smooth sigmoid penalty: precision 0.0 → multiply by 0.7, precision 0.6 → multiply by 1.0
+            penalty = 0.7 + 0.3 * (signals.type_precision / 0.6)
+            base_score *= penalty
+            penalized_by.append(f"precision היסטורי: {signals.type_precision:.0%}")
+
+        # 12. Self-calibration: track score distribution for threshold adjustment
+        self._score_history.append(base_score)
 
         # Clamp to [0, 1]
         final = max(0.0, min(1.0, base_score))

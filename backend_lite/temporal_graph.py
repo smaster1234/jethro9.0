@@ -369,7 +369,8 @@ class TemporalGraph:
         """
         Extract an event key from the context around a date.
 
-        Uses key nouns/verbs near the date as the event identifier.
+        Uses a combination of event nouns and entity names for better grouping.
+        Prioritizes known event types to avoid false groupings.
         """
         if not context:
             return None
@@ -382,19 +383,58 @@ class TemporalGraph:
         stopwords = {
             'של', 'את', 'על', 'עם', 'אל', 'מן', 'כי', 'גם', 'או',
             'היה', 'היתה', 'היו', 'הוא', 'היא', 'שנת', 'בשנת', 'מיום',
-            'ביום', 'בתאריך',
+            'ביום', 'בתאריך', 'לפני', 'אחרי', 'במהלך', 'בזמן', 'כאשר',
+            'אשר', 'כפי', 'לפי', 'כמו', 'בין', 'עד',
         }
         meaningful = [w for w in words if w not in stopwords]
 
         if not meaningful:
             return None
 
-        # Use first 3 meaningful words as event key
-        return '_'.join(meaningful[:3])
+        # Prioritize known event nouns for the key (more stable grouping)
+        event_nouns = {
+            'חתימה', 'תשלום', 'הסכם', 'חוזה', 'פגישה', 'דיון', 'ישיבה',
+            'תאונה', 'אירוע', 'בדיקה', 'ביקור', 'עסקה', 'העברה', 'מסירה',
+            'פיטורין', 'התפטרות', 'מינוי', 'תביעה', 'ערעור', 'הזמנה',
+            'החלטה', 'הפגישה', 'האירוע', 'התאונה', 'החתימה', 'ההסכם',
+            'הדיון', 'הישיבה', 'הבדיקה', 'הביקור', 'העסקה', 'התשלום',
+        }
+        found_event = None
+        for w in meaningful:
+            if w in event_nouns:
+                found_event = w
+                break
+
+        # Build key: event_noun + first entity/subject word
+        entity_words = [w for w in meaningful if w != found_event and w not in event_nouns]
+
+        if found_event:
+            if entity_words:
+                return f"{found_event}_{entity_words[0]}"
+            return found_event
+
+        # Fallback: use first 2 meaningful words (less reliable but better than 3)
+        return '_'.join(meaningful[:2])
 
     # =========================================================================
     # Anomaly Detection
     # =========================================================================
+
+    # Causal ordering constraints for Hebrew legal events
+    # If event A is a key and event B is in the values list, then A must precede B
+    CAUSAL_ORDER = {
+        'חתימה': ['תשלום', 'ביצוע', 'מסירה', 'העברה', 'רישום'],
+        'הסכם': ['תשלום', 'ביצוע', 'מסירה', 'העברה', 'הפרה'],
+        'מינוי': ['פעולה', 'עבודה', 'ביצוע', 'פיטורין', 'התפטרות'],
+        'קבלה לעבודה': ['עבודה', 'פיטורין', 'התפטרות'],
+        'תביעה': ['דיון', 'ישיבה', 'פסק דין', 'ערעור'],
+        'דיון': ['פסק דין', 'ערעור', 'החלטה'],
+        'פסק דין': ['ערעור', 'ביצוע'],
+        'הזמנה': ['אספקה', 'מסירה', 'תשלום'],
+        'משא ומתן': ['חתימה', 'הסכם'],
+        'פגישה': ['סיכום', 'הסכמה'],
+        'בדיקה': ['דוח', 'ממצאים', 'החלטה'],
+    }
 
     def _detect_anomalies(self) -> None:
         """Detect temporal anomalies in the timeline."""
@@ -436,6 +476,94 @@ class TemporalGraph:
 
         # DATE_CLUSTER_OUTLIER: Find dates that are outliers in their cluster
         self._detect_date_outliers()
+
+        # IMPOSSIBLE_SEQUENCE: Causal ordering violations
+        self._detect_impossible_sequences()
+
+    def _detect_impossible_sequences(self) -> None:
+        """
+        Detect impossible event sequences using causal ordering constraints.
+
+        If event A must precede event B (e.g., "חתימה" before "תשלום"),
+        but claims show A's date > B's date, flag as IMPOSSIBLE_SEQUENCE.
+        """
+        # Build event_type -> (earliest_date, latest_date, claim_ids) mapping
+        event_type_dates: Dict[str, List[Tuple[date, str]]] = defaultdict(list)
+
+        for event_key, event in self._timeline_events.items():
+            # Extract the event type from the key (first meaningful word)
+            event_type = self._extract_event_type(event_key)
+            if not event_type:
+                continue
+
+            for ref in event.date_refs:
+                if ref.normalized:
+                    y, m, d = ref.normalized
+                    if y > 0 and m > 0 and d > 0:
+                        try:
+                            dt = date(y, m, d)
+                            event_type_dates[event_type].append((dt, ref.claim_id))
+                        except ValueError:
+                            pass
+
+        # Check causal constraints
+        for cause_type, effect_types in self.CAUSAL_ORDER.items():
+            if cause_type not in event_type_dates:
+                continue
+
+            cause_dates = event_type_dates[cause_type]
+            latest_cause = max(cause_dates, key=lambda x: x[0])
+
+            for effect_type in effect_types:
+                if effect_type not in event_type_dates:
+                    continue
+
+                effect_dates = event_type_dates[effect_type]
+                earliest_effect = min(effect_dates, key=lambda x: x[0])
+
+                # Violation: cause happens AFTER effect
+                if latest_cause[0] > earliest_effect[0]:
+                    days_diff = (latest_cause[0] - earliest_effect[0]).days
+                    if days_diff > 1:  # Allow 1 day tolerance
+                        self._anomalies.append(TemporalAnomaly(
+                            anomaly_type="IMPOSSIBLE_SEQUENCE",
+                            claim_ids=[latest_cause[1], earliest_effect[1]],
+                            description=(
+                                f"רצף בלתי אפשרי: '{cause_type}' ({self._format_date_obj(latest_cause[0])}) "
+                                f"מאוחר מ-'{effect_type}' ({self._format_date_obj(earliest_effect[0])}) "
+                                f"— הפרש של {days_diff} ימים"
+                            ),
+                            dates_involved=[
+                                self._format_date_obj(latest_cause[0]),
+                                self._format_date_obj(earliest_effect[0]),
+                            ],
+                            severity=min(1.0, 0.6 + (days_diff / 365.0) * 0.4),
+                            confidence=0.75,
+                        ))
+
+    @staticmethod
+    def _extract_event_type(event_key: str) -> Optional[str]:
+        """Extract the primary event type from an event key."""
+        if not event_key:
+            return None
+        # Event keys are underscore-separated Hebrew words
+        words = event_key.split('_')
+        # Look for known event types
+        known_events = {
+            'חתימה', 'תשלום', 'הסכם', 'מינוי', 'פיטורין', 'התפטרות',
+            'תביעה', 'דיון', 'ישיבה', 'פגישה', 'בדיקה', 'משא',
+            'מסירה', 'העברה', 'רישום', 'ביצוע', 'הזמנה', 'אספקה',
+            'ערעור', 'החלטה', 'פסק', 'עבודה', 'קבלה',
+        }
+        for word in words:
+            if word in known_events:
+                return word
+        return words[0] if words else None
+
+    @staticmethod
+    def _format_date_obj(d: date) -> str:
+        """Format a date object as DD/MM/YYYY string."""
+        return f"{d.day:02d}/{d.month:02d}/{d.year}"
 
     def _detect_date_outliers(self) -> None:
         """Detect date outliers - when most claims say date X but one says date Y."""

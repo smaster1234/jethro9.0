@@ -1202,8 +1202,9 @@ class RuleBasedDetector:
         1. Semantic TF-IDF similarity (character n-grams) — captures morphological variants
         2. Word overlap — fast exact-match baseline
         3. Entity overlap — from entity graph if available
+        4. Negation contrast — detects opposing polarity (boosts relatedness for contradictions)
 
-        The combined score is weighted: 60% semantic + 25% word overlap + 15% entity.
+        The combined score is weighted: 50% semantic + 20% word + 15% entity + 15% negation.
         """
         # Word overlap (fast baseline)
         words1 = self._get_meaningful_words(text1)
@@ -1223,7 +1224,6 @@ class RuleBasedDetector:
         try:
             from .semantic import get_semantic_engine
             engine = get_semantic_engine()
-            # Use ad-hoc similarity if index exists (claim objects) or text-based
             semantic_score = engine._compute_adhoc_similarity(text1, text2)
         except Exception:
             semantic_score = word_score  # Fallback to word overlap
@@ -1234,7 +1234,6 @@ class RuleBasedDetector:
             from .entity_graph import get_entity_graph
             graph = get_entity_graph()
             if graph._built:
-                # Extract entities from both texts and check overlap
                 ents1 = set(e[0] for e in graph._extract_entities(text1))
                 ents2 = set(e[0] for e in graph._extract_entities(text2))
                 if ents1 and ents2:
@@ -1246,8 +1245,26 @@ class RuleBasedDetector:
         except Exception:
             pass
 
+        # Negation contrast — opposing polarity INCREASES relatedness
+        # because negated claims about the same topic ARE related (they contradict)
+        negation_boost = 0.0
+        try:
+            from .semantic import compute_negation_contrast
+            negation = compute_negation_contrast(text1, text2)
+            if negation > 0 and (semantic_score > 0.15 or word_score > 0.15):
+                # Claims discuss the same thing but with opposite polarity —
+                # they're definitely related (likely contradictory)
+                negation_boost = negation
+        except Exception:
+            pass
+
         # Combined score
-        combined = (0.60 * semantic_score) + (0.25 * word_score) + (0.15 * entity_score)
+        combined = (
+            0.50 * semantic_score +
+            0.20 * word_score +
+            0.15 * entity_score +
+            0.15 * negation_boost
+        )
         return combined
 
     def _claims_related(self, text1: str, text2: str) -> bool:

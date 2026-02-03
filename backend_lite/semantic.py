@@ -28,6 +28,7 @@ Usage:
 """
 
 import math
+import re
 import logging
 import hashlib
 from typing import List, Dict, Tuple, Optional, Set
@@ -35,6 +36,92 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Negation Detection for Hebrew Legal Text
+# =============================================================================
+
+# Hebrew negation markers that invert claim meaning
+_NEGATION_MARKERS = re.compile(
+    r'\b('
+    r'לא|אין|איננו|איננה|אינו|אינה|אינם|אינן|'
+    r'מעולם\s+לא|לעולם\s+לא|בשום\s+(?:אופן|מקרה|פנים)|'
+    r'אף\s+(?:פעם|אחד)|ללא|בלי|טרם|'
+    r'מכחיש|שולל|דוחה|מתנגד|חולק\s+על|'
+    r'לא\s+(?:היה|היתה|היו|נעשה|נעשתה|בוצע|בוצעה|התקיים|התקיימה|סוכם|הוסכם)'
+    r')\b',
+    re.UNICODE,
+)
+
+# Patterns that explicitly indicate opposition/contradiction
+_OPPOSITION_PATTERNS = re.compile(
+    r'\b('
+    r'בניגוד\s+ל|להיפך|לעומת\s+זאת|אך|אולם|אלא|'
+    r'שונה\s+(?:מ|מן)|סותר|נוגד'
+    r')\b',
+    re.UNICODE,
+)
+
+# Antonym pairs common in Hebrew legal text
+_LEGAL_ANTONYMS = [
+    ('קיבל', 'לא קיבל'), ('שילם', 'לא שילם'), ('חתם', 'לא חתם'),
+    ('נכח', 'לא נכח'), ('הסכים', 'לא הסכים'), ('אישר', 'לא אישר'),
+    ('ידע', 'לא ידע'), ('ראה', 'לא ראה'), ('שמע', 'לא שמע'),
+    ('קיבל', 'דחה'), ('הסכים', 'סירב'), ('אישר', 'דחה'),
+    ('נוכח', 'נעדר'), ('הגיע', 'לא הגיע'), ('עבד', 'לא עבד'),
+    ('פוטר', 'התפטר'), ('שכר', 'פיטר'),
+    ('לפני', 'אחרי'), ('לפני', 'לאחר'),
+    ('תובע', 'נתבע'),
+]
+
+
+def detect_negation_polarity(text: str) -> Tuple[bool, int]:
+    """
+    Detect negation in Hebrew text.
+
+    Returns:
+        (has_negation, negation_count)
+    """
+    negations = _NEGATION_MARKERS.findall(text)
+    return (len(negations) > 0, len(negations))
+
+
+def compute_negation_contrast(text_a: str, text_b: str) -> float:
+    """
+    Compute a negation contrast score between two claims.
+
+    Returns a value from -1.0 to +1.0:
+    - Positive: claims have opposing polarity (potential contradiction)
+    - Zero: same polarity or no negation detected
+    - Negative: both negated (might actually agree)
+    """
+    neg_a, count_a = detect_negation_polarity(text_a)
+    neg_b, count_b = detect_negation_polarity(text_b)
+
+    # Check for antonym pairs
+    antonym_found = False
+    text_a_lower = text_a.lower() if text_a else ""
+    text_b_lower = text_b.lower() if text_b else ""
+    for word_a, word_b in _LEGAL_ANTONYMS:
+        if (word_a in text_a_lower and word_b in text_b_lower) or \
+           (word_b in text_a_lower and word_a in text_b_lower):
+            antonym_found = True
+            break
+
+    # Opposing polarity: one negated, other not
+    if neg_a != neg_b:
+        score = 0.6
+        if antonym_found:
+            score = 0.85
+        return score
+
+    # Both have same polarity
+    if antonym_found:
+        return 0.5  # Antonyms detected even without clear negation
+
+    # Both negated or both positive — no contrast
+    return 0.0
 
 
 @dataclass
@@ -314,6 +401,43 @@ class SemanticEngine:
         norm_b = math.sqrt(sum(v * v for v in vec_b.values())) if vec_b else 0.0
 
         return self._cosine_similarity(vec_a, norm_a, vec_b, norm_b)
+
+    def negation_aware_relatedness(self, claim_a, claim_b) -> Dict[str, float]:
+        """
+        Compute relatedness WITH negation awareness.
+
+        Returns dict with:
+        - similarity: standard TF-IDF cosine similarity (0-1)
+        - negation_contrast: opposing polarity score (0-1)
+        - contradiction_signal: high similarity + opposing polarity = contradiction (0-1)
+        - relatedness: final relatedness score for filtering (0-1)
+        """
+        # Standard similarity
+        similarity = self.relatedness(claim_a, claim_b)
+
+        # Negation contrast
+        text_a = getattr(claim_a, 'text', str(claim_a))
+        text_b = getattr(claim_b, 'text', str(claim_b))
+        negation = compute_negation_contrast(text_a, text_b)
+
+        # Contradiction signal: HIGH when claims are similar BUT have opposing polarity
+        # This is the key insight — similar claims with opposite meaning = contradiction
+        contradiction_signal = 0.0
+        if negation > 0 and similarity > 0.2:
+            # Scale: more similar + more negation = stronger contradiction signal
+            contradiction_signal = min(1.0, similarity * negation * 2.0)
+
+        # Relatedness for filtering: claims ARE related if they discuss the same thing,
+        # EVEN IF they contradict each other. So similarity remains the filter,
+        # but we note the contradiction.
+        relatedness = similarity
+
+        return {
+            'similarity': round(similarity, 4),
+            'negation_contrast': round(negation, 4),
+            'contradiction_signal': round(contradiction_signal, 4),
+            'relatedness': round(relatedness, 4),
+        }
 
 
 # =============================================================================
