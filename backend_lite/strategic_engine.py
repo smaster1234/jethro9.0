@@ -12,7 +12,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Set
 import math
 import random
 from collections import defaultdict
@@ -217,24 +217,87 @@ class GameTheoryEngine:
         depth: int = 3
     ) -> Tuple[List[int], float]:
         """
-        ניתוח Minimax - מציאת המסלול שממקסם את התוצאה הגרועה ביותר
-        
+        ניתוח Minimax עם Alpha-Beta Pruning.
+
+        מציאת סדר שאלות שממקסם את התוצאה הגרועה ביותר (worst-case optimization).
+        Uses alpha-beta pruning to avoid exploring clearly suboptimal branches.
+
         מחזיר: (סדר שאלות אופטימלי, ערך מינימקס)
         """
         if not questions:
             return [], 0.0
-        
+
+        n = len(questions)
+        actual_depth = min(depth, n)
+
         best_sequence = []
-        best_minimax_value = float('-inf')
-        
-        # בדיקת כל הפרמוטציות (עד עומק מסוים)
-        for sequence in cls._generate_sequences(len(questions), min(depth, len(questions))):
-            minimax_value = cls._evaluate_sequence(questions, sequence)
-            if minimax_value > best_minimax_value:
-                best_minimax_value = minimax_value
-                best_sequence = sequence
-        
-        return best_sequence, best_minimax_value
+        best_value = float('-inf')
+
+        def _alphabeta(
+            seq: List[int], remaining: Set[int],
+            current_depth: int, alpha: float, beta: float,
+            is_maximizing: bool,
+        ) -> float:
+            """Alpha-beta pruning over question sequences."""
+            if current_depth == 0 or not remaining:
+                return cls._evaluate_sequence_v2(questions, seq)
+
+            if is_maximizing:
+                value = float('-inf')
+                for idx in sorted(remaining, key=lambda i: questions[i].reward_potential, reverse=True):
+                    new_remaining = remaining - {idx}
+                    child_value = _alphabeta(
+                        seq + [idx], new_remaining,
+                        current_depth - 1, alpha, beta, False,
+                    )
+                    value = max(value, child_value)
+                    alpha = max(alpha, value)
+                    if alpha >= beta:
+                        break  # Beta cutoff
+                return value
+            else:
+                # Minimizing (witness chooses worst response)
+                value = float('+inf')
+                for idx in sorted(remaining, key=lambda i: questions[i].risk_level, reverse=True):
+                    new_remaining = remaining - {idx}
+                    child_value = _alphabeta(
+                        seq + [idx], new_remaining,
+                        current_depth - 1, alpha, beta, True,
+                    )
+                    value = min(value, child_value)
+                    beta = min(beta, value)
+                    if alpha >= beta:
+                        break  # Alpha cutoff
+                return value
+
+        # Start search from each possible first question
+        all_indices = set(range(n))
+        for start_idx in range(n):
+            remaining = all_indices - {start_idx}
+            value = _alphabeta(
+                [start_idx], remaining,
+                actual_depth - 1, float('-inf'), float('+inf'), True,
+            )
+            if value > best_value:
+                best_value = value
+                best_sequence = [start_idx]
+
+        # Build full sequence greedily after finding best start
+        if best_sequence:
+            used = set(best_sequence)
+            while len(best_sequence) < n:
+                remaining = [i for i in range(n) if i not in used]
+                if not remaining:
+                    break
+                # Pick next question that maximizes worst-case value
+                best_next = max(
+                    remaining,
+                    key=lambda i: cls._evaluate_sequence_v2(questions, best_sequence + [i]),
+                )
+                best_sequence.append(best_next)
+                used.add(best_next)
+
+        return best_sequence, best_value
     
     @classmethod
     def _get_profile_adjustments(cls, profile: WitnessProfile) -> Dict[ResponsePrediction, float]:
@@ -309,28 +372,94 @@ class GameTheoryEngine:
     
     @classmethod
     def _evaluate_sequence(cls, questions: List[StrategicQuestion], sequence: List[int]) -> float:
-        """הערכת רצף שאלות"""
+        """הערכת רצף שאלות (legacy)"""
+        return cls._evaluate_sequence_v2(questions, sequence)
+
+    @classmethod
+    def _evaluate_sequence_v2(cls, questions: List[StrategicQuestion], sequence: List[int]) -> float:
+        """
+        הערכת רצף שאלות עם מודל משופר.
+
+        מתחשב ב:
+        1. התאמת מיקום (position fitness) — שאלה במיקום הנכון
+        2. רצף לוגי (logical flow) — בסיס → נעילה → עימות → ניצול
+        3. ניהול סיכון (risk management) — לא מרכזים סיכון גבוה ברצף
+        4. תלויות (dependencies) — שאלות עם תלויות נשמרות בסדר
+        5. Worst-case value — ערך מינימלי בכל שלב
+        """
         if not sequence:
             return 0.0
-        
+
+        n = len(sequence)
         total_value = 0.0
+        cumulative_risk = 0.0
+        prev_intent = None
+
+        # Define logical flow order (preferred sequence of intents)
+        INTENT_ORDER = {
+            QuestionIntent.ESTABLISH_BASELINE: 0,
+            QuestionIntent.BUILD_RAPPORT: 1,
+            QuestionIntent.LOCK_TESTIMONY: 2,
+            QuestionIntent.PROBE_WEAKNESS: 3,
+            QuestionIntent.CREATE_CONTRADICTION: 4,
+            QuestionIntent.EXPLOIT_CONTRADICTION: 5,
+            QuestionIntent.PSYCHOLOGICAL_PRESSURE: 6,
+            QuestionIntent.SURPRISE_ATTACK: 7,
+            QuestionIntent.CLOSING_TRAP: 8,
+            QuestionIntent.STRATEGIC_RETREAT: 4,  # Can appear anywhere mid
+        }
+
         for i, q_idx in enumerate(sequence):
             if q_idx >= len(questions):
                 continue
             q = questions[q_idx]
-            
-            # ערך בסיסי
-            value = q.reward_potential - q.risk_level * 0.5
-            
-            # בונוס למיקום נכון
-            expected_position = q.position / 100.0
-            actual_position = i / len(sequence)
-            position_bonus = 1.0 - abs(expected_position - actual_position)
-            
-            total_value += value * position_bonus
-        
-        # Minimax: מחזיר את הערך המינימלי (worst case)
-        return total_value * 0.7  # פקטור שמרנות
+
+            # 1. Base value: reward minus risk
+            base = q.reward_potential * (1.0 - q.risk_level * 0.4)
+
+            # 2. Position fitness: how close to optimal position
+            expected_pct = q.position / 100.0
+            actual_pct = i / max(n - 1, 1)
+            position_fit = 1.0 - abs(expected_pct - actual_pct)
+
+            # 3. Logical flow bonus: reward correct ordering of intents
+            current_order = INTENT_ORDER.get(q.intent, 4)
+            flow_bonus = 0.0
+            if prev_intent is not None:
+                prev_order = INTENT_ORDER.get(prev_intent, 4)
+                if current_order >= prev_order:
+                    flow_bonus = 0.15  # Correct flow
+                else:
+                    flow_bonus = -0.10  # Backwards flow penalty
+
+            # 4. Risk management: penalize consecutive high-risk questions
+            cumulative_risk += q.risk_level
+            risk_penalty = 0.0
+            if i > 0 and cumulative_risk / (i + 1) > 0.5:
+                risk_penalty = -0.1  # Too much risk concentrated early
+
+            # 5. Dependency check: EXPLOIT must come after CREATE
+            dependency_bonus = 0.0
+            if q.intent == QuestionIntent.EXPLOIT_CONTRADICTION:
+                # Check if CREATE came before
+                preceding_intents = [
+                    questions[sequence[j]].intent
+                    for j in range(i)
+                    if j < len(sequence) and sequence[j] < len(questions)
+                ]
+                if QuestionIntent.CREATE_CONTRADICTION in preceding_intents:
+                    dependency_bonus = 0.2
+                else:
+                    dependency_bonus = -0.15
+
+            step_value = base * position_fit + flow_bonus + risk_penalty + dependency_bonus
+            total_value += step_value
+
+            prev_intent = q.intent
+
+        # Normalize and apply conservatism factor
+        normalized = total_value / max(n, 1)
+        return normalized * 0.85  # Conservative estimate
 
 
 # =============================================================================

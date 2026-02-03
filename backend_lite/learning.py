@@ -67,12 +67,23 @@ class FewShotExample:
 
 
 @dataclass
+class FalsePositivePattern:
+    """A mined pattern from false positives that should be avoided."""
+    pattern_type: str       # 'cross_party', 'low_overlap', 'short_claims', 'same_source', etc.
+    description: str        # Human-readable Hebrew description
+    frequency: int          # How many times this pattern appeared in FPs
+    confidence: float       # How confident we are this is a FP pattern (0-1)
+    filter_rule: str        # Machine-readable rule for filtering
+
+
+@dataclass
 class LearningContext:
     """Context for the current analysis, informed by past feedback."""
     few_shot_positive: List[FewShotExample] = field(default_factory=list)
     few_shot_negative: List[FewShotExample] = field(default_factory=list)
     confidence_adjustments: Dict[str, float] = field(default_factory=dict)
     type_precision: Dict[str, float] = field(default_factory=dict)
+    false_positive_patterns: List[FalsePositivePattern] = field(default_factory=list)
     total_feedback_count: int = 0
     confirmed_count: int = 0
     rejected_count: int = 0
@@ -191,12 +202,21 @@ def get_learning_context(
                 elif precision <= 0.5:
                     ctx.confidence_adjustments[ctype] = -0.05  # Slight penalize
 
+        # Mine false positive patterns for smarter filtering
+        try:
+            ctx.false_positive_patterns = mine_false_positive_patterns(
+                firm_id, db_session, lookback_days=lookback_days,
+            )
+        except Exception as e:
+            logger.warning("Pattern mining failed (non-fatal): %s", e)
+
         logger.info(
             "Learning context: %d feedbacks, %d confirmed, %d rejected, "
-            "%d positive examples, %d negative examples, %d type adjustments",
+            "%d positive examples, %d negative examples, %d type adjustments, "
+            "%d FP patterns",
             ctx.total_feedback_count, ctx.confirmed_count, ctx.rejected_count,
             len(ctx.few_shot_positive), len(ctx.few_shot_negative),
-            len(ctx.confidence_adjustments),
+            len(ctx.confidence_adjustments), len(ctx.false_positive_patterns),
         )
 
         return ctx
@@ -256,6 +276,150 @@ def apply_confidence_adjustment(
             contradiction_type, confidence, adjusted, adjustment,
         )
     return adjusted
+
+
+def mine_false_positive_patterns(
+    firm_id: str,
+    db_session: Any,
+    lookback_days: int = 90,
+    min_pattern_count: int = 2,
+) -> List[FalsePositivePattern]:
+    """
+    Mine patterns from rejected contradictions to identify systematic false positives.
+
+    Analyzed patterns:
+    1. Cross-party disagreements labeled as contradictions
+    2. Claims from same document/source (restatements)
+    3. Very short claims with insufficient context
+    4. Low-confidence detections that were rejected
+    5. Specific contradiction types with very low precision
+    6. Claims with different speakers (expert vs party)
+
+    Returns list of FalsePositivePattern objects.
+    """
+    try:
+        from .db.models import Feedback, Contradiction, Claim, Case, Document
+        from collections import Counter
+
+        cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+
+        # Get all rejected contradictions with their claims
+        rejected = (
+            db_session.query(Contradiction, Claim, Claim)
+            .join(
+                Feedback,
+                Feedback.entity_id == Contradiction.id,
+            )
+            .join(Case, Case.id == Feedback.case_id)
+            .outerjoin(
+                Claim,
+                Claim.id == Contradiction.claim1_id,
+            )
+            .filter(
+                Feedback.entity_type == "contradiction",
+                Case.firm_id == firm_id,
+                Feedback.label.in_(["not_worked", "false_positive"]),
+                Feedback.created_at >= cutoff,
+            )
+            .limit(200)
+            .all()
+        )
+
+        if not rejected:
+            return []
+
+        patterns: List[FalsePositivePattern] = []
+        pattern_counts: Dict[str, int] = Counter()
+
+        for contr, claim1, claim2 in rejected:
+            if not contr:
+                continue
+
+            # Pattern 1: Cross-party (different document parties)
+            if claim1 and claim2:
+                doc1_id = getattr(claim1, 'document_id', None)
+                doc2_id = getattr(claim2, 'document_id', None)
+                if doc1_id and doc2_id and doc1_id != doc2_id:
+                    pattern_counts['cross_party'] += 1
+
+            # Pattern 2: Same document source
+            if claim1 and claim2:
+                doc1_id = getattr(claim1, 'document_id', None)
+                doc2_id = getattr(claim2, 'document_id', None)
+                if doc1_id and doc2_id and doc1_id == doc2_id:
+                    pattern_counts['same_source'] += 1
+
+            # Pattern 3: Short claims
+            text1 = getattr(claim1, 'text', '') if claim1 else ''
+            text2 = getattr(claim2, 'text', '') if claim2 else ''
+            if text1 and text2 and (len(text1) < 30 or len(text2) < 30):
+                pattern_counts['short_claims'] += 1
+
+            # Pattern 4: Low confidence
+            if contr.confidence and contr.confidence < 0.5:
+                pattern_counts['low_confidence'] += 1
+
+            # Pattern 5: Track by type
+            if contr.contradiction_type:
+                pattern_counts[f'type:{contr.contradiction_type}'] += 1
+
+        # Convert counts to patterns (only frequent ones)
+        total_rejected = len(rejected)
+
+        pattern_descriptions = {
+            'cross_party': (
+                "חלופי צדדים: סתירות בין טענות של צדדים שונים (לא סתירה — מחלוקת)",
+                "cross_party_disagree"
+            ),
+            'same_source': (
+                "מקור זהה: טענות מאותו מסמך שאינן סותרות (ניסוח מחדש)",
+                "same_document_restatement"
+            ),
+            'short_claims': (
+                "טענות קצרות: הקשר לא מספיק לקביעת סתירה",
+                "claim_too_short"
+            ),
+            'low_confidence': (
+                "ביטחון נמוך: זיהויים עם confidence נמוך נדחים באופן שיטתי",
+                "low_confidence_systematic"
+            ),
+        }
+
+        for pattern_key, count in pattern_counts.items():
+            if count < min_pattern_count:
+                continue
+
+            frequency_ratio = count / total_rejected if total_rejected > 0 else 0
+
+            if pattern_key in pattern_descriptions:
+                desc, rule = pattern_descriptions[pattern_key]
+                patterns.append(FalsePositivePattern(
+                    pattern_type=pattern_key,
+                    description=desc,
+                    frequency=count,
+                    confidence=min(0.95, frequency_ratio * 1.5),
+                    filter_rule=rule,
+                ))
+            elif pattern_key.startswith('type:'):
+                ctype = pattern_key.replace('type:', '')
+                if frequency_ratio > 0.3:  # >30% of FPs are this type
+                    patterns.append(FalsePositivePattern(
+                        pattern_type=f'type_weak_{ctype}',
+                        description=f"סוג '{ctype}' מייצר false positives בשיעור גבוה ({frequency_ratio:.0%})",
+                        frequency=count,
+                        confidence=min(0.9, frequency_ratio),
+                        filter_rule=f"penalize_type:{ctype}",
+                    ))
+
+        logger.info(
+            "Mined %d false positive patterns from %d rejected contradictions",
+            len(patterns), total_rejected,
+        )
+        return patterns
+
+    except Exception as e:
+        logger.warning("False positive pattern mining failed: %s", e)
+        return []
 
 
 def get_learning_stats(firm_id: str, db_session: Any) -> Dict[str, Any]:

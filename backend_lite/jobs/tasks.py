@@ -688,6 +688,10 @@ async def task_analyze_case(
     from ..anchors import build_anchor_from_claim
     from ..insights import compute_insights_for_run
     from ..llm.verifier import get_verifier
+    from ..semantic import SemanticEngine, reset_semantic_engine
+    from ..entity_graph import EntityGraph, reset_entity_graph
+    from ..temporal_graph import TemporalGraph, reset_temporal_graph
+    from ..ensemble import EnsembleScorer, ContradictionSignals, get_ensemble_scorer
 
     start_time = datetime.utcnow()
     update_job_progress(10, "Loading documents")
@@ -846,6 +850,35 @@ async def task_analyze_case(
                 except Exception as e:
                     logger.warning("Could not attach DB ID to claim: %s", e)
 
+            update_job_progress(50, "Building analysis graphs")
+
+            # ── Pre-detection: Build semantic, entity, and temporal graphs ──
+            semantic_engine = SemanticEngine()
+            entity_graph = EntityGraph()
+            temporal_graph = TemporalGraph()
+
+            if all_claims:
+                try:
+                    reset_semantic_engine()
+                    semantic_engine.index_claims(all_claims)
+                    logger.info("Semantic index built for %d claims", len(all_claims))
+                except Exception as e:
+                    logger.warning("Semantic indexing failed (non-fatal): %s", e)
+
+                try:
+                    reset_entity_graph()
+                    entity_graph.build(all_claims)
+                    logger.info("Entity graph built for %d claims", len(all_claims))
+                except Exception as e:
+                    logger.warning("Entity graph failed (non-fatal): %s", e)
+
+                try:
+                    reset_temporal_graph()
+                    temporal_graph.build(all_claims)
+                    logger.info("Temporal graph built: %d anomalies", len(temporal_graph.get_anomalies()))
+                except Exception as e:
+                    logger.warning("Temporal graph failed (non-fatal): %s", e)
+
             update_job_progress(55, "Loading learning context")
 
             # Load learning context from past feedback
@@ -860,14 +893,71 @@ async def task_analyze_case(
 
             update_job_progress(60, "Detecting contradiction candidates")
 
-            # ── Step 1: Rule-based detection (fast pre-filter) ──
+            # ── Step 1: Rule-based detection ──
             saved_count = 0
             if all_claims:
                 detection_result = detect_contradictions(all_claims)
-                raw_candidates = detection_result.contradictions
+                rule_candidates = detection_result.contradictions
                 logger.info(
                     "Rule-based detection: %d candidates from %d claims",
-                    len(raw_candidates), len(all_claims),
+                    len(rule_candidates), len(all_claims),
+                )
+
+                # ── Step 1b: LLM Analyzer (parallel detection path) ──
+                llm_candidates = []
+                try:
+                    from ..llm.analyzer import get_analyzer
+                    analyzer = get_analyzer()
+                    if analyzer and analyzer.enabled:
+                        update_job_progress(62, "Running LLM analyzer")
+                        analyzer_result = await analyzer.analyze(
+                            all_claims,
+                            extra_system_context=few_shot_section,
+                        )
+                        if analyzer_result and hasattr(analyzer_result, 'contradictions'):
+                            llm_candidates = analyzer_result.contradictions
+                        elif isinstance(analyzer_result, list):
+                            llm_candidates = analyzer_result
+                        logger.info(
+                            "LLM analyzer: %d candidates from %d claims",
+                            len(llm_candidates), len(all_claims),
+                        )
+                except ImportError:
+                    logger.info("LLM analyzer not available, using rule-based only")
+                except Exception as e:
+                    logger.warning("LLM analyzer failed (non-fatal): %s", e)
+
+                # ── Step 1c: Merge & deduplicate candidates from both engines ──
+                rule_pairs = set()
+                for c in rule_candidates:
+                    pair = tuple(sorted([c.claim1.id, c.claim2.id]))
+                    rule_pairs.add(pair)
+
+                llm_pairs = set()
+                for c in llm_candidates:
+                    pair_key = tuple(sorted([
+                        getattr(c, 'claim1', c).id if hasattr(c, 'claim1') else str(c.get('claim1_id', '')),
+                        getattr(c, 'claim2', c).id if hasattr(c, 'claim2') else str(c.get('claim2_id', '')),
+                    ]))
+                    llm_pairs.add(pair_key)
+
+                # Track which engine found each contradiction
+                both_engine_pairs = rule_pairs & llm_pairs
+                rule_only_pairs = rule_pairs - llm_pairs
+                llm_only_pairs = llm_pairs - rule_pairs
+                engine_agreement = {}  # pair -> 'both'|'rule'|'llm'
+                for p in both_engine_pairs:
+                    engine_agreement[p] = 'both'
+                for p in rule_only_pairs:
+                    engine_agreement[p] = 'rule'
+                for p in llm_only_pairs:
+                    engine_agreement[p] = 'llm'
+
+                # Use rule-based candidates as primary (they have proper DetectedContradiction objects)
+                raw_candidates = rule_candidates
+                logger.info(
+                    "Detection merge: %d rule-only, %d LLM-only, %d both engines",
+                    len(rule_only_pairs), len(llm_only_pairs), len(both_engine_pairs),
                 )
 
                 # ── Step 2: LLM verification (filter false positives) ──
@@ -937,9 +1027,11 @@ async def task_analyze_case(
                         len(raw_candidates),
                     )
 
-                update_job_progress(80, "Saving contradictions")
+                update_job_progress(80, "Scoring and saving contradictions")
 
-                # ── Step 3: Save contradictions to DB ──
+                # ── Step 3: Ensemble scoring + save to DB ──
+                ensemble_scorer = get_ensemble_scorer()
+
                 for contr in raw_candidates:
                     cid = id(contr)
 
@@ -947,26 +1039,79 @@ async def task_analyze_case(
                     if cid in rejected_ids:
                         continue
 
-                    # Determine status and confidence
-                    # Use database enum values: verified|likely|suspicious|rejected
+                    # Build ensemble signals
+                    pair_key = tuple(sorted([contr.claim1.id, contr.claim2.id]))
+                    agreement = engine_agreement.get(pair_key, 'rule')
+
+                    # Semantic similarity
+                    sem_score = 0.0
+                    try:
+                        sem_score = semantic_engine.relatedness(contr.claim1, contr.claim2)
+                    except Exception:
+                        pass
+
+                    # Entity overlap
+                    ent_overlap = 0.0
+                    subject_score = 0.0
+                    try:
+                        ent_overlap = entity_graph.entity_overlap(contr.claim1, contr.claim2)
+                        subject_score = entity_graph.same_subject_score(contr.claim1, contr.claim2)
+                    except Exception:
+                        pass
+
+                    # Temporal evidence
+                    temporal_boost = 0.0
+                    has_temporal = False
+                    try:
+                        temp_evidence = temporal_graph.temporal_evidence(contr.claim1, contr.claim2)
+                        temporal_boost = temp_evidence.get('anomaly_boost', 0.0)
+                        has_temporal = temp_evidence.get('has_temporal_conflict', False)
+                    except Exception:
+                        pass
+
+                    # Learning adjustment
+                    learning_adj = 0.0
+                    type_prec = None
+                    contr_type = contr.type.value if hasattr(contr.type, 'value') else str(contr.type)
+                    if learning_ctx:
+                        learning_adj = learning_ctx.confidence_adjustments.get(contr_type, 0.0)
+                        type_prec = learning_ctx.type_precision.get(contr_type)
+
+                    signals = ContradictionSignals(
+                        rule_confidence=contr.confidence,
+                        llm_confidence=None,  # analyzer doesn't give per-contradiction confidence
+                        verifier_confidence=verifier_confidences.get(cid),
+                        semantic_similarity=sem_score,
+                        entity_overlap=ent_overlap,
+                        same_subject_score=subject_score,
+                        temporal_boost=temporal_boost,
+                        has_temporal_conflict=has_temporal,
+                        learning_adjustment=learning_adj,
+                        type_precision=type_prec,
+                        both_engines_agree=(agreement == 'both'),
+                        rule_only=(agreement == 'rule'),
+                        llm_only=(agreement == 'llm'),
+                        contradiction_type=contr_type,
+                        severity=contr.severity.value if hasattr(contr.severity, 'value') else str(contr.severity),
+                    )
+
+                    ensemble_result = ensemble_scorer.score(signals)
+
+                    # Use ensemble status if verifier didn't explicitly verify
                     if cid in verified_ids:
                         status_val = "verified"
-                        confidence = verifier_confidences.get(cid, contr.confidence)
+                        confidence = ensemble_result.final_confidence
+                    elif ensemble_result.final_status == "verified":
+                        status_val = "likely"  # Only verifier can set "verified"
+                        confidence = ensemble_result.final_confidence
+                    elif ensemble_result.final_status == "likely":
+                        status_val = "likely"
+                        confidence = ensemble_result.final_confidence
                     else:
                         status_val = "suspicious"
-                        confidence = contr.confidence
+                        confidence = ensemble_result.final_confidence
 
-                    # Apply learning adjustments
-                    if learning_ctx:
-                        contr_type = contr.type.value if hasattr(contr.type, 'value') else str(contr.type)
-                        try:
-                            confidence = apply_confidence_adjustment(
-                                confidence, contr_type, learning_ctx
-                            )
-                        except Exception as e:
-                            logger.warning("Confidence adjustment failed: %s", e)
-
-                    # Use verifier explanation if available
+                    # Use verifier explanation if available, enriched with ensemble
                     explanation = contr.explanation
                     verifier_reason = verifier_explanations.get(cid)
                     if verifier_reason:
