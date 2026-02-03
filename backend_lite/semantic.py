@@ -55,14 +55,21 @@ LEGAL_HEBERT_MODEL = os.environ.get(
     "LEGAL_HEBERT_MODEL", "avichr/Legal-heBERT"
 )
 
-try:
-    import torch
-    from transformers import AutoTokenizer, AutoModel
-    _HEBERT_AVAILABLE = True
-    logger.info("Legal-HeBERT available (torch + transformers installed)")
-except ImportError:
-    logger.info("Legal-HeBERT not available — using TF-IDF fallback. "
-                "Install: pip install transformers torch")
+# Allow disabling HeBERT for low-memory environments (e.g. Railway 512MB).
+# Set DISABLE_HEBERT=1 to force TF-IDF only and save ~500MB RAM.
+_HEBERT_DISABLED = os.environ.get("DISABLE_HEBERT", "").strip() in ("1", "true", "yes")
+
+if _HEBERT_DISABLED:
+    logger.info("Legal-HeBERT disabled via DISABLE_HEBERT — using TF-IDF only")
+else:
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModel
+        _HEBERT_AVAILABLE = True
+        logger.info("Legal-HeBERT available (torch + transformers installed)")
+    except ImportError:
+        logger.info("Legal-HeBERT not available — using TF-IDF fallback. "
+                    "Install: pip install transformers torch")
 
 
 def _load_hebert():

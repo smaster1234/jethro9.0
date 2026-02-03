@@ -33,12 +33,17 @@ logger = logging.getLogger(__name__)
 _QA_MODEL_AVAILABLE = False
 _qa_pipeline = None
 
-try:
-    from transformers import pipeline as hf_pipeline
-    import torch
-    _QA_MODEL_AVAILABLE = True
-except ImportError:
-    pass
+# Allow disabling the QA model entirely for low-memory environments (e.g. Railway 512MB)
+# Set DISABLE_QA_MODEL=1 to force regex-only mode and save ~500MB RAM.
+_QA_MODEL_DISABLED = os.environ.get("DISABLE_QA_MODEL", "").strip() in ("1", "true", "yes")
+
+if not _QA_MODEL_DISABLED:
+    try:
+        from transformers import pipeline as hf_pipeline
+        import torch
+        _QA_MODEL_AVAILABLE = True
+    except ImportError:
+        pass
 
 # Model identifier — can be overridden via environment variable
 LEGAL_QA_MODEL = os.environ.get(
