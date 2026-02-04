@@ -123,6 +123,19 @@ class ContradictionStatus(str, Enum):
     SUSPICIOUS = "suspicious"
 
 
+class ContradictionDecision(str, Enum):
+    """
+    Tri-state final decision for contradiction detection.
+
+    - CONTRADICTION: confirmed contradiction (high confidence)
+    - NOT_CONTRADICTION: confirmed non-contradiction or compatible claims
+    - AMBIGUOUS: uncertain / gray zone — needs human review or LLM adjudication
+    """
+    CONTRADICTION = "contradiction"
+    NOT_CONTRADICTION = "not_contradiction"
+    AMBIGUOUS = "ambiguous"
+
+
 class ContradictionCategory(str, Enum):
     """
     Category that distinguishes hard contradictions from narrative ambiguity.

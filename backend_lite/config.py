@@ -14,14 +14,31 @@ Environment variables:
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
 - RAG_MODE: bm25|hebert|hybrid (default: hybrid)
 - HEBERT_MODEL: HuggingFace model name (default: avichr/Legal-heBERT)
+
+NLI / Calibration / Adjudicator settings:
+- NLI_ENABLED: Enable NLI cross-encoder (default: true)
+- NLI_MODEL_NAME: HuggingFace NLI model (default: MoritzLaurer/mDeBERTa-v3-base-mnli-xnli)
+- NLI_BATCH_SIZE: Batch size for NLI inference (default: 16)
+- NLI_MAX_LENGTH: Max token length for NLI (default: 512)
+- CALIBRATION_ENABLED: Enable temperature scaling calibration (default: true)
+- LLM_ADJUDICATOR_ENABLED: Enable LLM gray-zone adjudicator (default: true)
+- LLM_ADJUDICATOR_MAX_RATIO: Max % of pairs sent to LLM (default: 0.10)
 """
 
 import os
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from functools import lru_cache
 
 from .schemas import LLMMode
+
+
+# ── NLI threshold presets ────────────────────────────────────────────────────
+NLI_THRESHOLDS: Dict[str, Dict[str, float]] = {
+    "strict": {"contradiction": 0.75, "ambiguous": 0.45},
+    "balanced": {"contradiction": 0.55, "ambiguous": 0.30},
+}
 
 
 class Settings(BaseSettings):
@@ -59,6 +76,19 @@ class Settings(BaseSettings):
     max_claims_per_request: int = 500
     precision_mode: str = "balanced"  # "balanced" | "strict"
 
+    # ── NLI Cross-Encoder ────────────────────────────────────────────────
+    nli_enabled: bool = True
+    nli_model_name: str = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+    nli_batch_size: int = 16
+    nli_max_length: int = 512
+
+    # ── Calibration (temperature scaling) ────────────────────────────────
+    calibration_enabled: bool = True
+
+    # ── LLM Gray-zone Adjudicator ────────────────────────────────────────
+    llm_adjudicator_enabled: bool = True
+    llm_adjudicator_max_ratio: float = 0.10  # ≤10% of pairs go to LLM
+
     # Database
     db_path: str = "./cases.db"
 
@@ -79,6 +109,12 @@ class Settings(BaseSettings):
         case_sensitive = False
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    # ── Convenience: NLI thresholds for current precision_mode ───────────
+    @property
+    def nli_thresholds(self) -> Dict[str, float]:
+        """Return NLI thresholds for the active precision_mode."""
+        return NLI_THRESHOLDS.get(self.precision_mode, NLI_THRESHOLDS["balanced"])
 
     def validate_llm_config(self) -> List[str]:
         """Validate LLM configuration, return list of warnings"""
@@ -104,6 +140,10 @@ class Settings(BaseSettings):
         if self.verifier_enabled and not self.openrouter_api_key:
             warnings.append("VERIFIER_ENABLED=true but OPENROUTER_API_KEY not set (verifier uses OpenRouter)")
 
+        # Check NLI + adjudicator config
+        if self.llm_adjudicator_enabled and self.llm_mode == LLMMode.NONE:
+            warnings.append("LLM_ADJUDICATOR_ENABLED=true but LLM_MODE=none — adjudicator will be skipped")
+
         return warnings
 
 
@@ -113,7 +153,12 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Convenience function
+# Convenience functions
 def get_llm_mode() -> LLMMode:
     """Get current LLM mode"""
     return get_settings().llm_mode
+
+
+def get_nli_thresholds() -> Dict[str, float]:
+    """Get NLI thresholds for current precision_mode."""
+    return get_settings().nli_thresholds
