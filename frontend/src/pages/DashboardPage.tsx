@@ -11,9 +11,11 @@ import {
   Clock,
   CheckCircle,
   Search,
+  Target,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { casesApi, healthApi } from '../api';
+import { casesApi, healthApi, statsApi } from '../api';
+import type { StatsOverview } from '../api';
 import { Card, Button, Badge, EmptyState, Spinner } from '../components/ui';
 import type { Case, HealthResponse } from '../types';
 
@@ -80,6 +82,7 @@ export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const [cases, setCases] = useState<Case[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [stats, setStats] = useState<StatsOverview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -87,12 +90,14 @@ export const DashboardPage: React.FC = () => {
     setIsLoading(true);
     setLoadError('');
     try {
-      const [casesData, healthData] = await Promise.all([
+      const [casesData, healthData, statsData] = await Promise.all([
         casesApi.listMyCases(),
         healthApi.check(),
+        statsApi.overview().catch(() => null),
       ]);
       setCases(casesData);
       setHealth(healthData);
+      setStats(statsData);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       setLoadError('לא ניתן להתחבר לשרת. ודא שהשרת פועל ונסה שוב.');
@@ -105,8 +110,10 @@ export const DashboardPage: React.FC = () => {
     fetchData();
   }, []);
 
-  const activeCases = cases.filter((c) => c.status !== 'closed');
-  const totalDocs = cases.reduce((acc, c) => acc + (c.document_count || 0), 0);
+  const activeCases = stats?.cases_active ?? cases.filter((c) => c.status !== 'closed').length;
+  const totalDocs = stats?.documents_total ?? cases.reduce((acc, c) => acc + (c.document_count || 0), 0);
+  const totalContradictions = stats?.contradictions_total ?? 0;
+  const analysisRunsTotal = stats?.analysis_runs_total ?? 0;
 
   const getStatusBadge = (status?: string) => {
     switch (status) {
@@ -167,11 +174,11 @@ export const DashboardPage: React.FC = () => {
       </motion.div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <StatCard
           icon={<Briefcase className="w-6 h-6" />}
           label="תיקים פעילים"
-          value={activeCases.length}
+          value={activeCases}
           color="primary"
         />
         <StatCard
@@ -183,8 +190,14 @@ export const DashboardPage: React.FC = () => {
         <StatCard
           icon={<AlertTriangle className="w-6 h-6" />}
           label="סתירות שזוהו"
-          value="--"
+          value={totalContradictions}
           color="warning"
+        />
+        <StatCard
+          icon={<Target className="w-6 h-6" />}
+          label="ריצות ניתוח"
+          value={analysisRunsTotal}
+          color="danger"
         />
         <StatCard
           icon={<CheckCircle className="w-6 h-6" />}
@@ -291,6 +304,12 @@ export const DashboardPage: React.FC = () => {
                         <FileText className="w-4 h-4" />
                         <span>{caseItem.document_count || 0} מסמכים</span>
                       </div>
+                      {(caseItem as Case & { contradictions_count?: number }).contradictions_count ? (
+                        <div className="flex items-center gap-1 text-warning-600">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span>{(caseItem as Case & { contradictions_count?: number }).contradictions_count} סתירות</span>
+                        </div>
+                      ) : null}
                       <div className="flex items-center gap-1">
                         <Clock className="w-4 h-4" />
                         <span>

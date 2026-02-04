@@ -2,17 +2,18 @@
 Claim Extractor - Extract claims from Hebrew legal text
 ========================================================
 
-Simple, rule-based claim extraction:
+Rule-based claim extraction with context enrichment:
 1. Sanitize input (remove report/meta sections)
 2. Split text into paragraphs/sentences
 3. Normalize Hebrew text
 4. Filter signatures/contact info
-5. Return minimal Claim objects (max 500 chars)
+5. Enrich with context window, speaker, plane, time, modality
+6. Return enriched Claim objects
 """
 
 import re
 import uuid
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict, Any
 from dataclasses import dataclass, field
 
 # Import from sanitize module
@@ -37,18 +38,46 @@ __all__ = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Plane / Speaker / Modality constants
+# ---------------------------------------------------------------------------
+PLANE_FACT = "FACT"
+PLANE_LAW = "LAW"
+PLANE_OPINION = "OPINION"
+PLANE_PROCEDURAL = "PROCEDURAL"
+
+SPEAKER_MODE_FINDING = "finding"
+SPEAKER_MODE_PARTY_CLAIM = "party_claim"
+SPEAKER_MODE_QUOTE = "quote"
+SPEAKER_MODE_LAW_CITATION = "law_citation"
+SPEAKER_MODE_OPINION = "opinion"
+
+MODALITY_CERTAIN = "certain"
+MODALITY_POSSIBLE = "possible"
+MODALITY_OBLIGATION = "obligation"
+MODALITY_PERMISSION = "permission"
+MODALITY_UNCERTAIN = "uncertain"
+
+
 @dataclass
 class Claim:
     """
-    Minimal claim representation for detection.
-    Compatible with core/models.py Claim but standalone.
+    Enriched claim representation for detection.
 
-    Now includes locator fields for evidence tracking.
+    Includes:
+    - Core text and locator fields (backward compatible)
+    - Context window (sentences before/after)
+    - Speaker / role / speaker_mode
+    - Plane (FACT/LAW/OPINION/PROCEDURAL)
+    - Time reference and modality
+    - Scope/quantifiers, entities, negation
+    - Confidence of extraction
     """
     id: str
     text: str
     source: Optional[str] = None
     page: Optional[int] = None
+    block_index: Optional[int] = None
     speaker: Optional[str] = None
 
     # Locator fields for evidence
@@ -57,6 +86,7 @@ class Claim:
     paragraph_index: Optional[int] = None
     char_start: Optional[int] = None
     char_end: Optional[int] = None
+    bbox: Optional[Dict[str, Any]] = None
 
     # For detection
     subject: Optional[str] = None
@@ -66,22 +96,80 @@ class Claim:
     # Metadata
     metadata: dict = field(default_factory=dict)
 
+    # --- V2 enrichment fields ---
+    # Normalized claim text for comparison
+    normalized_claim: Optional[str] = None
+    # Context: 1-3 sentences before / after
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
+    # Section / heading path
+    section_path: Optional[str] = None
+    # Speaker role
+    speaker_role: Optional[str] = None          # court / plaintiff / defendant / witness / counsel / external
+    speaker_mode: Optional[str] = None          # finding / party_claim / quote / law_citation / opinion
+    # Plane
+    plane: Optional[str] = None                 # FACT / LAW / OPINION / PROCEDURAL
+    # Time
+    time_reference: Optional[str] = None        # date/period text extracted
+    # Modality
+    modality: Optional[str] = None              # certain / possible / obligation / permission / uncertain
+    # Scope / quantifiers
+    scope_quantifiers: Optional[str] = None     # all/part/always/usually/conditional
+    # Entities and relations
+    entities: List[str] = field(default_factory=list)
+    relations: Optional[str] = None             # "who did what to whom" summary
+    # Negation
+    negation: bool = False
+    # Extraction confidence
+    confidence_extraction: float = 1.0
+    
+    # --- V3 Source classification fields ---
+    # Document ownership and source type for cross-examination
+    source_type: Optional[str] = None              # witness_own_statement / supporting_witness / party_pleading / opposing_evidence / court_finding / external_document
+    doc_owner_party: Optional[str] = None          # plaintiff / defendant - מי הגיש את המסמך
+    doc_owner_name: Optional[str] = None           # שם בעל המסמך (עד, צד)
+    doc_date: Optional[str] = None                 # תאריך המסמך
+    is_examined_witness_doc: bool = False          # האם זה מסמך של העד הנחקר
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "text": self.text,
             "source": self.source,
             "page": self.page,
+            "block_index": self.block_index,
             "speaker": self.speaker,
             "doc_id": self.doc_id,
             "paragraph_id": self.paragraph_id,
             "paragraph_index": self.paragraph_index,
             "char_start": self.char_start,
             "char_end": self.char_end,
+            "bbox": self.bbox,
             "subject": self.subject,
             "predicate": self.predicate,
             "object": self.object,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            # V2 fields
+            "normalized_claim": self.normalized_claim,
+            "context_before": self.context_before,
+            "context_after": self.context_after,
+            "section_path": self.section_path,
+            "speaker_role": self.speaker_role,
+            "speaker_mode": self.speaker_mode,
+            "plane": self.plane,
+            "time_reference": self.time_reference,
+            "modality": self.modality,
+            "scope_quantifiers": self.scope_quantifiers,
+            "entities": self.entities,
+            "relations": self.relations,
+            "negation": self.negation,
+            "confidence_extraction": self.confidence_extraction,
+            # V3 source classification fields
+            "source_type": self.source_type,
+            "doc_owner_party": self.doc_owner_party,
+            "doc_owner_name": self.doc_owner_name,
+            "doc_date": self.doc_date,
+            "is_examined_witness_doc": self.is_examined_witness_doc,
         }
 
 
@@ -138,7 +226,11 @@ class ClaimExtractor:
         doc_id: Optional[str] = None,
         paragraph_id: Optional[str] = None,
         paragraph_index: Optional[int] = None,
-        char_offset: int = 0
+        char_offset: int = 0,
+        page_no: Optional[int] = None,
+        block_index: Optional[int] = None,
+        bbox: Optional[Dict[str, Any]] = None,
+        sanitize: bool = True,
     ) -> List[Claim]:
         """
         Extract claims from free text.
@@ -159,15 +251,18 @@ class ClaimExtractor:
             return []
 
         # STEP 1: Sanitize input - remove report/meta sections
-        text = sanitize_input(text)
+        if sanitize:
+            text = sanitize_input(text)
+            if not text:
+                return []
+
+        # Normalize text (positions are computed on normalized text)
+        text = self._normalize_text(text)
         if not text:
             return []
 
-        # Store original text for position tracking
+        # Store normalized text for position tracking
         original_text = text
-
-        # Normalize text
-        text = self._normalize_text(text)
 
         # Choose extraction strategy
         if strategy == "auto":
@@ -202,13 +297,15 @@ class ClaimExtractor:
                 id=f"claim_{i}",
                 text=segment,
                 source=source_name,
-                page=None,  # Can be enhanced if page markers exist
+                page=page_no,
+                block_index=block_index,
                 speaker=None,  # Can be enhanced with speaker detection
                 doc_id=doc_id,
                 paragraph_id=paragraph_id,
                 paragraph_index=paragraph_index,
                 char_start=char_offset + seg_start,
                 char_end=char_offset + seg_end,
+                bbox=bbox,
                 metadata={
                     "extraction_strategy": strategy,
                     "segment_index": i
@@ -239,7 +336,18 @@ class ClaimExtractor:
                 text=item.get("text", ""),
                 source=item.get("source"),
                 page=item.get("page"),
+                block_index=item.get("block_index"),
                 speaker=item.get("speaker"),
+                doc_id=item.get("doc_id"),
+                paragraph_id=item.get("paragraph_id"),
+                paragraph_index=(
+                    item.get("paragraph_index")
+                    if item.get("paragraph_index") is not None
+                    else item.get("paragraph")
+                ),
+                char_start=item.get("char_start"),
+                char_end=item.get("char_end"),
+                bbox=item.get("bbox"),
                 metadata=item.get("metadata", {})
             )
 
@@ -403,7 +511,11 @@ def extract_claims(
     doc_id: Optional[str] = None,
     paragraph_id: Optional[str] = None,
     paragraph_index: Optional[int] = None,
-    char_offset: int = 0
+    char_offset: int = 0,
+    page_no: Optional[int] = None,
+    block_index: Optional[int] = None,
+    bbox: Optional[Dict[str, Any]] = None,
+    sanitize: bool = True,
 ) -> List[Claim]:
     """
     Convenience function to extract claims from text.
@@ -427,7 +539,11 @@ def extract_claims(
         doc_id=doc_id,
         paragraph_id=paragraph_id,
         paragraph_index=paragraph_index,
-        char_offset=char_offset
+        char_offset=char_offset,
+        page_no=page_no,
+        block_index=block_index,
+        bbox=bbox,
+        sanitize=sanitize,
     )
 
 # Alias for backwards compatibility

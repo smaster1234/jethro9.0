@@ -10,6 +10,8 @@ Legal Contradiction Detection System powered by AI
 
 JETHRO 9.0 is a standalone contradiction detection service designed for legal document analysis. It identifies contradictions, inconsistencies, and discrepancies across multiple documents, and generates cross-examination questions.
 
+Current release version is stored in `VERSION`.
+
 ### Key Features
 
 - **Contradiction Detection** - Temporal, quantitative, factual, and version contradictions
@@ -34,16 +36,111 @@ cd jethro9.0
 cp .env.example .env
 
 # Start all services
-docker-compose up -d
+docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs -f web
+docker compose logs -f web
 ```
 
 Access the application at: http://localhost:8000
+
+---
+
+## Golden Path (E2E, <10 דקות)
+
+הסקריפט מריץ נתיב זהב מקצה לקצה (כולל העלאת מסמכים לדוגמה):
+
+```bash
+./scripts/golden_path.sh
+```
+
+ברירת מחדל משתמשת ב־`backend_lite/fixtures/*.txt` ובכתובת `http://localhost:8000`.
+ניתן להגדיר:
+
+```bash
+BASE_URL=http://localhost:8000 \
+DOC1=backend_lite/fixtures/temporal_01.txt \
+DOC2=backend_lite/fixtures/temporal_02.txt \
+./scripts/golden_path.sh
+```
+
+הסקריפט מבצע:
+1. `docker compose up -d`
+2. הרשמה והפקת טוקן
+3. יצירת תיק
+4. העלאת מסמכים
+5. הרצת ניתוח + המתנה לסיום
+6. יצירת עד/גרסאות והפקת diff
+7. יצירת תכנית חקירה וייצוא DOCX
+
+הסקריפט מזהה אוטומטית `docker compose` או `docker-compose`.
+
+טיפ: ניתן להצביע על מסמכי DOCX/PDF קיימים ע"י שינוי `DOC1`/`DOC2`.
+
+---
+
+## Org Setup (B1) — משרדים, חברים ותפקידים
+
+המערכת תומכת במשרדים (Organizations) עם תפקידים:
+`viewer` (קריאה בלבד), `intern` (הכנה ללא ייצוא), `lawyer`/`owner` (כולל ייצוא).
+
+### יצירת משרד וחברים
+```bash
+# יצירת משרד
+POST /api/v1/orgs
+
+# רשימת משרדים למשתמש הנוכחי
+GET /api/v1/orgs
+
+# הוספת משתמש קיים
+POST /api/v1/orgs/{org_id}/members  (body: { user_id, role })
+
+# הזמנה במייל
+POST /api/v1/orgs/{org_id}/invites  (body: { email, role, expires_in_days })
+
+# קבלת הזמנה
+POST /api/v1/invites/{token}/accept
+```
+
+### שיוך תיק למשרד
+בשדה `organization_id` ביצירת תיק (`POST /cases`) או באמצעות ברירת מחדל אוטומטית.
+
+---
+
+## Training Mode 2.0 (C1)
+
+```bash
+# התחלת אימון
+POST /api/v1/cases/{case_id}/training/start
+{ "plan_id": "...", "witness_id": "...", "persona": "cooperative" }
+
+# תור אימון
+POST /api/v1/training/{session_id}/turn
+{ "step_id": "step-1", "chosen_branch": "לא זוכר" }
+
+# חזרה צעד (מוגבל ל-2)
+POST /api/v1/training/{session_id}/back
+
+# סיום וסיכום
+POST /api/v1/training/{session_id}/finish
+```
+
+---
+
+## Feedback Loop (C3)
+
+תגיות משוב לשלב תובנות/צעדי תכנית:
+- worked
+- not_worked
+- too_risky
+- excellent
+
+הצגה בממשק:
+- “מעולה במשרד” אם excellent ≥ 2
+- “מסוכן מדי” אם too_risky ≥ 2
 
 ### Option 2: Local Development
 
@@ -63,6 +160,8 @@ export LLM_MODE=none
 # Run the server
 uvicorn backend_lite.api:app --reload --port 8000
 ```
+
+> אם `docker compose` לא זמין, ניתן להשתמש ב־`docker-compose`.
 
 ---
 
@@ -113,9 +212,29 @@ jethro9.0/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/auth/register` | POST | Register new firm |
-| `/api/v1/auth/login` | POST | Login |
-| `/api/v1/auth/me` | GET | Get current user |
+| `/auth/register` | POST | Register new firm |
+| `/auth/login` | POST | Login |
+| `/auth/me` | GET | Get current user |
+
+### Organizations & Training
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/orgs` | GET/POST | List/create organizations |
+| `/api/v1/orgs/{id}/members` | GET/POST | List/add org members |
+| `/api/v1/orgs/{id}/invites` | POST | Invite by email |
+| `/api/v1/invites/{token}/accept` | POST | Accept invite |
+| `/api/v1/cases/{case_id}/training/start` | POST | Start training session |
+| `/api/v1/training/{session_id}/turn` | POST | Record training turn |
+| `/api/v1/training/{session_id}/back` | POST | Undo last turn |
+| `/api/v1/training/{session_id}/finish` | POST | Finish + summary |
+
+### Feedback Loop (C3)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/feedback` | POST | Create feedback (insight/plan_step) |
+| `/api/v1/feedback?case_id=...&entity_type=...` | GET | List feedback + aggregates |
 
 ---
 
@@ -131,6 +250,16 @@ jethro9.0/
 | `LLM_MODE` | No | `none` | `none`, `openrouter`, `deepseek`, `gemini` |
 | `PORT` | No | `8000` | Server port |
 | `BACKEND_LITE_ROLE` | No | `web` | `web` or `worker` |
+
+---
+
+## DOCX Debug (CLI)
+
+לבדיקה מהירה של DOCX ללא חשיפת טקסט:
+
+```bash
+python3 scripts/inspect_docx.py path/to/file.docx
+```
 
 ### LLM Configuration
 

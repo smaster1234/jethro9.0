@@ -1,0 +1,710 @@
+"""
+Reconciler — "Can be reconciled?" 6-layer test and 9-category outcome
+======================================================================
+
+For each candidate pair (A, B) the reconciler attempts to reconcile them
+through 6 ordered layers.  If any layer succeeds, the pair is NOT a
+TRUE_CONTRADICTION.
+
+Layers (§6 of Cursor 5.2 spec):
+    1. Time / period alignment
+    2. Scope / condition alignment
+    3. Quantifier mismatch ("all" vs "part")
+    4. Modality mismatch (obligation vs possibility)
+    5. Speaker / role mismatch (finding vs party-claim)
+    6. Plane mismatch (FACT vs LAW)
+
+Outcome categories (§7 of Cursor 5.2 spec):
+    TRUE_CONTRADICTION
+    APPARENT_TENSION_RESOLVABLE
+    DISAGREEMENT_BETWEEN_PARTIES
+    ROLE_OR_ATTRIBUTION_MISMATCH
+    PLANE_MISMATCH
+    TIME_OR_STAGE_SHIFT
+    AMBIGUITY_OR_VAGUENESS
+    INSUFFICIENT_CONTEXT
+    DUPLICATE_OR_RESTATEMENT
+"""
+
+import re
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional, Set
+from difflib import SequenceMatcher
+
+from .extractor import (
+    Claim,
+    PLANE_FACT,
+    PLANE_LAW,
+    PLANE_OPINION,
+    PLANE_PROCEDURAL,
+    SPEAKER_MODE_FINDING,
+    SPEAKER_MODE_PARTY_CLAIM,
+    SPEAKER_MODE_QUOTE,
+    SPEAKER_MODE_LAW_CITATION,
+    SPEAKER_MODE_OPINION,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Outcome constants — matching §7 of Cursor 5.2 spec
+# ---------------------------------------------------------------------------
+OUTCOME_TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
+OUTCOME_APPARENT_TENSION = "APPARENT_TENSION_RESOLVABLE"
+OUTCOME_DISAGREEMENT = "DISAGREEMENT_BETWEEN_PARTIES"
+OUTCOME_ROLE_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
+OUTCOME_PLANE_MISMATCH = "PLANE_MISMATCH"
+OUTCOME_TIME_SHIFT = "TIME_OR_STAGE_SHIFT"
+OUTCOME_AMBIGUITY = "AMBIGUITY_OR_VAGUENESS"
+OUTCOME_INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
+OUTCOME_DUPLICATE = "DUPLICATE_OR_RESTATEMENT"
+
+ALL_OUTCOMES = [
+    OUTCOME_TRUE_CONTRADICTION,
+    OUTCOME_APPARENT_TENSION,
+    OUTCOME_DISAGREEMENT,
+    OUTCOME_ROLE_MISMATCH,
+    OUTCOME_PLANE_MISMATCH,
+    OUTCOME_TIME_SHIFT,
+    OUTCOME_AMBIGUITY,
+    OUTCOME_INSUFFICIENT_CONTEXT,
+    OUTCOME_DUPLICATE,
+]
+
+# Confidence threshold below which we refuse to label TRUE_CONTRADICTION
+TRUE_CONTRADICTION_THRESHOLD = 0.75
+
+
+@dataclass
+class ReconciliationResult:
+    """Output of the reconciliation engine for one (A, B) pair."""
+    outcome: str                             # one of ALL_OUTCOMES
+    contradiction_score: float = 0.0         # 0-1, 1 = maximally irreconcilable
+    severity: str = "low"                    # low / medium / high
+    severity_score: float = 0.0              # 0-1
+    reconciliation_attempt: str = ""         # short summary of reconciliation try
+    rationale: str = ""                      # detailed explanation (Hebrew)
+    conflict_predicate: str = ""             # what exactly clashes
+    deciding_fields: List[str] = field(default_factory=list)  # which fields decided
+    debug: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy entity matching for Hebrew legal names
+# ---------------------------------------------------------------------------
+
+# Common Hebrew title/prefix patterns to strip for comparison
+_TITLE_PATTERNS = re.compile(
+    r'^(?:מר|גב|גברת|עו"ד|ד"ר|פרופ|רו"ח|שופט|שופטת|כב|כבוד|הנתבע|התובע|המשיב|המערער|המבקש|המשיבה|התובעת|הנתבעת)\s*',
+    re.UNICODE,
+)
+
+# Legal entity aliases dictionary - maps common variations to canonical forms
+_LEGAL_ENTITY_ALIASES = {
+    # בנקים
+    "בנק לאומי": ["הבנק הלאומי", "לאומי", "בנק לאומי לישראל"],
+    "בנק הפועלים": ["הבנק הפועלים", "פועלים", "בנק פועלים"],
+    "בנק דיסקונט": ["הבנק דיסקונט", "דיסקונט"],
+    "בנק מזרחי": ["הבנק המזרחי", "מזרחי", "בנק מזרחי טפחות"],
+    "בנק ירושלים": ["הבנק הירושלמי", "ירושלים"],
+    "בנק אגוד": ["הבנק האגוד", "אגוד"],
+    
+    # חברות ביטוח
+    "הפניקס": ["חברת הפניקס", "פניקס", "הפניקס חברה לביטוח"],
+    "הראל": ["חברת הראל", "ראל"],
+    "מגדל אור": ["חברת מגדל אור", "מגדלאור"],
+    
+    # מוסדות ממשלתיים
+    "ביטוח לאומי": ["המוסד לביטוח לאומי", "משרד הבינוי"],
+    "משרד המשפטים": ["המשרד למשפטים", "משרד המשפטים"],
+    "רשות המיסים": ["הרשות למיסים", "רמי"],
+    "משטרת המשפטים": ["המשטרה למשפטים", "משטרת המשפטים"],
+    
+    # צדדים משפטיים
+    "התובע": ["תובע", "התובעים", "המערער", "המבקש"],
+    "הנתבע": ["נתבע", "הנתבעים", "המשיב", "המשיבים"],
+    "המדינה": ["מדינת ישראל", "המדינה המשיבה"],
+    
+    # מונחים משפטיים
+    "בית המשפט": ["ביהמש", "בית משפט", "הערכאה"],
+    "בית הדין": ["ביהד", "בית דין"],
+}
+
+# Build reverse lookup for aliases
+_ALIAS_TO_CANONICAL = {}
+for canonical, aliases in _LEGAL_ENTITY_ALIASES.items():
+    _ALIAS_TO_CANONICAL[canonical.lower()] = canonical
+    for alias in aliases:
+        _ALIAS_TO_CANONICAL[alias.lower()] = canonical
+
+
+def _normalize_entity(name: str) -> str:
+    """Normalize an entity name for fuzzy comparison."""
+    name = name.strip()
+    # Remove titles/prefixes
+    name = _TITLE_PATTERNS.sub('', name).strip()
+    # Remove quotes
+    name = name.replace('"', '').replace("'", '').replace('״', '').replace('׳', '')
+    normalized = name.lower()
+    
+    # Check if this is a known alias and return canonical form
+    if normalized in _ALIAS_TO_CANONICAL:
+        return _ALIAS_TO_CANONICAL[normalized].lower()
+    
+    return normalized
+
+
+def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
+    """
+    Check if two entity names refer to the same entity.
+    Uses normalized exact match first, then fuzzy match.
+    Handles Hebrew name patterns:
+    - "יוסי כהן" matches "מר כהן" (last name match)
+    - "חברת אלפא בע״מ" matches "אלפא" (contains)
+    """
+    na = _normalize_entity(a)
+    nb = _normalize_entity(b)
+
+    if not na or not nb:
+        return False
+
+    # Exact match after normalization
+    if na == nb:
+        return True
+
+    # One contains the other (handles "אלפא" vs "חברת אלפא בע״מ")
+    if na in nb or nb in na:
+        return True
+
+    # Last-word match (handles "יוסי כהן" vs "מר כהן")
+    words_a = na.split()
+    words_b = nb.split()
+    if words_a and words_b:
+        if words_a[-1] == words_b[-1] and len(words_a[-1]) > 2:
+            return True
+
+    # Fuzzy similarity
+    ratio = SequenceMatcher(None, na, nb).ratio()
+    return ratio >= threshold
+
+
+def _fuzzy_entity_overlap(entities_a: List[str], entities_b: List[str]) -> Set[str]:
+    """
+    Find overlapping entities between two lists using fuzzy matching.
+    Returns a set of matched entity names (from list A).
+    """
+    if not entities_a or not entities_b:
+        return set()
+
+    # First try exact intersection (fast path)
+    exact = set(entities_a) & set(entities_b)
+    if exact:
+        return exact
+
+    # Fuzzy matching
+    matched: Set[str] = set()
+    for ea in entities_a:
+        for eb in entities_b:
+            if _entities_match(ea, eb):
+                matched.add(ea)
+                break
+    return matched
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def reconcile_pair(
+    claim_a: Claim,
+    claim_b: Claim,
+    detector_type: Optional[str] = None,
+    detector_confidence: float = 0.5,
+    normalized_a: Optional[str] = None,
+    normalized_b: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> ReconciliationResult:
+    """
+    Attempt to reconcile claim pair.  Returns a ReconciliationResult with
+    the final 9-category outcome (Cursor 5.2 spec §7).
+
+    The function tries to *resolve* the tension.  If it fails through all
+    6 layers, the outcome is TRUE_CONTRADICTION (if confidence is above
+    threshold) or AMBIGUITY_OR_VAGUENESS.
+
+    Pre-gates (§3, §4):
+    - Claim completeness check → INSUFFICIENT_CONTEXT if missing fields
+    - Duplicate / restatement check → DUPLICATE_OR_RESTATEMENT
+    """
+    metadata = metadata or {}
+    debug: Dict[str, Any] = {}
+
+    # --- Pre-gate 0: Claim completeness (§3/§4) ---
+    # If critical enrichment fields are missing, we cannot confirm TRUE_CONTRADICTION.
+    # "No claim may be interpreted without context."
+    incomplete_a = _check_claim_completeness(claim_a)
+    incomplete_b = _check_claim_completeness(claim_b)
+    debug["claim_a_complete"] = not incomplete_a
+    debug["claim_b_complete"] = not incomplete_b
+
+    # --- Pre-gate 1: Duplicate / restatement check ---
+    if _is_duplicate(claim_a, claim_b):
+        return ReconciliationResult(
+            outcome=OUTCOME_DUPLICATE,
+            contradiction_score=0.0,
+            reconciliation_attempt="הטענות חוזרות על אותו רעיון בניסוח שונה",
+            rationale="זיהוי חזרה / שחזור ללא סתירה",
+            deciding_fields=["normalized_claim"],
+            debug=debug,
+        )
+
+    deciding: List[str] = []
+    reconciliation_parts: List[str] = []
+
+    # --- Layer 1: Time / period alignment ---
+    time_ok, time_note = _check_time_alignment(claim_a, claim_b)
+    debug["time_match"] = time_ok
+    if not time_ok:
+        deciding.append("time_reference")
+        reconciliation_parts.append(time_note)
+        return ReconciliationResult(
+            outcome=OUTCOME_TIME_SHIFT,
+            contradiction_score=0.2,
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt=time_note,
+            rationale="הטענות מתייחסות לזמנים או שלבים שונים — אין סתירה אמיתית",
+            conflict_predicate="time_reference",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- Layer 2: Scope / condition alignment ---
+    scope_ok, scope_note = _check_scope_alignment(claim_a, claim_b)
+    debug["scope_match"] = scope_ok
+    if not scope_ok:
+        deciding.append("scope_quantifiers")
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=0.35,
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt=scope_note,
+            rationale="הטענות שונות בהיקף או בתנאי — ניתנות ליישוב",
+            conflict_predicate="scope",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- Layer 3: Quantifier mismatch ---
+    quant_ok, quant_note = _check_quantifier(claim_a, claim_b)
+    debug["quantifier_match"] = quant_ok
+    if not quant_ok:
+        deciding.append("scope_quantifiers")
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=0.35,
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt=quant_note,
+            rationale="הפער נובע מכימות שונה (כולם/חלק) — לא סתירה אמיתית",
+            conflict_predicate="quantifier",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- Layer 4: Modality mismatch ---
+    mod_ok, mod_note = _check_modality(claim_a, claim_b)
+    debug["modality_match"] = mod_ok
+    if not mod_ok:
+        deciding.append("modality")
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=0.25,
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt=mod_note,
+            rationale="הבדל במודאליות (חובה/רשות/ייתכן) — לא סתירה עובדתית",
+            conflict_predicate="modality",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- Layer 5: Speaker / role (finding vs party-claim) ---
+    speaker_ok, speaker_note, speaker_outcome = _check_speaker_mode(claim_a, claim_b)
+    debug["speaker_match"] = speaker_ok
+    if not speaker_ok:
+        deciding.append("speaker_mode")
+        return ReconciliationResult(
+            outcome=speaker_outcome,
+            contradiction_score=0.3,
+            severity="low",
+            severity_score=0.25,
+            reconciliation_attempt=speaker_note,
+            rationale="מדובר בגרסאות של צדדים שונים — מחלוקת, לא סתירה פנימית"
+                      if speaker_outcome == OUTCOME_DISAGREEMENT
+                      else "ייחוס/תפקיד שונה — אי-התאמה בייחוס, לא סתירה עובדתית",
+            conflict_predicate="speaker_mode",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- Layer 6: Plane mismatch ---
+    plane_ok, plane_note = _check_plane(claim_a, claim_b)
+    debug["plane_match"] = plane_ok
+    if not plane_ok:
+        deciding.append("plane")
+        return ReconciliationResult(
+            outcome=OUTCOME_PLANE_MISMATCH,
+            contradiction_score=0.2,
+            severity="low",
+            severity_score=0.15,
+            reconciliation_attempt=plane_note,
+            rationale="הטענות שייכות למישורים שונים (עובדה/נורמה/הערכה) — אין השוואה ישירה",
+            conflict_predicate="plane",
+            deciding_fields=deciding,
+            debug=debug,
+        )
+
+    # --- All layers passed: attempt final gate for TRUE_CONTRADICTION ---
+    # Delta-fix §1: TRUE_CONTRADICTION requires ALL of:
+    #   1. same entities/event + same time window + same scope
+    #   2. same plane (FACT↔FACT or LAW↔LAW)
+    #   3. negation/quantifier conflict that cannot be reconciled
+    #   4. reconciliation_attempt failed with rationale
+
+    # §1.a: Entity overlap required (with fuzzy matching for Hebrew names)
+    entity_overlap = _fuzzy_entity_overlap(
+        claim_a.entities or [], claim_b.entities or []
+    )
+    has_entity_overlap = bool(entity_overlap)
+
+    # §1.b: Negation opposition
+    has_hard_negation = (claim_a.negation != claim_b.negation)
+
+    # §1.c: Same plane (FACT↔FACT or LAW↔LAW)
+    same_plane = (claim_a.plane and claim_b.plane and claim_a.plane == claim_b.plane)
+    factual_plane = same_plane and claim_a.plane in (PLANE_FACT, PLANE_LAW)
+
+    # §3: OPINION/PROCEDURAL never qualify for TRUE_CONTRADICTION
+    if claim_a.plane in (PLANE_OPINION, PLANE_PROCEDURAL) or claim_b.plane in (PLANE_OPINION, PLANE_PROCEDURAL):
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=min(detector_confidence, 0.4),
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt="מישור הערכה/פרוצדורלי לא מאפשר סתירה אמיתית",
+            rationale="טענות במישור הערכה או פרוצדורלי אינן סותרות עובדתית",
+            conflict_predicate="plane_opinion_or_procedural",
+            deciding_fields=["plane"],
+            debug=debug,
+        )
+
+    # §3/§4: Claim completeness — if either claim is missing critical fields
+    # and no hard evidence overrides, return INSUFFICIENT_CONTEXT
+    # Check early so that missing plane/speaker_mode gets caught before
+    # downstream gates that depend on these fields.
+    if (incomplete_a or incomplete_b) and not (has_hard_negation and has_entity_overlap and factual_plane):
+        missing = incomplete_a or incomplete_b
+        return ReconciliationResult(
+            outcome=OUTCOME_INSUFFICIENT_CONTEXT,
+            contradiction_score=min(detector_confidence, 0.4),
+            severity="low",
+            severity_score=0.2,
+            reconciliation_attempt=f"שדות חסרים בטענה: {', '.join(missing)}",
+            rationale="לא ניתן לקבוע סתירה אמיתית ללא כל השדות הנדרשים (§3)",
+            conflict_predicate="incomplete_claim",
+            deciding_fields=missing,
+            debug=debug,
+        )
+
+    # §7: Apply confidence threshold ("quiet is better")
+    if detector_confidence < TRUE_CONTRADICTION_THRESHOLD:
+        # Below threshold → AMBIGUITY unless hard logical conflict
+        if has_hard_negation and has_entity_overlap and factual_plane:
+            # Hard logical conflict with full evidence — override threshold
+            pass
+        else:
+            return ReconciliationResult(
+                outcome=OUTCOME_AMBIGUITY,
+                contradiction_score=detector_confidence,
+                severity="low",
+                severity_score=0.3,
+                reconciliation_attempt="ביטחון מתחת לסף — לא ניתן לקבוע סתירה אמיתית",
+                rationale="עוצמת הביטחון אינה מספיקה לקביעת סתירה אמיתית",
+                conflict_predicate="confidence",
+                deciding_fields=["confidence"],
+                debug=debug,
+            )
+
+    # §1 final gate: require entity overlap + negation/predicate conflict
+    if not has_entity_overlap:
+        return ReconciliationResult(
+            outcome=OUTCOME_APPARENT_TENSION,
+            contradiction_score=min(detector_confidence, 0.5),
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt="אין חפיפת ישויות — לא ניתן לקבוע סתירה אמיתית",
+            rationale="הטענות אינן מתייחסות לאותן ישויות/אירועים — מתח לכאורה",
+            conflict_predicate="missing_entity_overlap",
+            deciding_fields=["entities"],
+            debug=debug,
+        )
+
+    if not has_hard_negation and not factual_plane:
+        return ReconciliationResult(
+            outcome=OUTCOME_AMBIGUITY,
+            contradiction_score=min(detector_confidence, 0.5),
+            severity="low",
+            severity_score=0.3,
+            reconciliation_attempt="אין התנגשות לוגית ברורה (שלילה/חיוב) ולא אותו מישור",
+            rationale="לא זוהה ניגוד ברור בין הטענות — עמימות",
+            conflict_predicate="no_hard_conflict",
+            deciding_fields=["negation", "plane"],
+            debug=debug,
+        )
+
+    # §4: If neither claim has context_before/after, block TRUE_CONTRADICTION
+    has_context_a = bool(claim_a.context_before or claim_a.context_after)
+    has_context_b = bool(claim_b.context_before or claim_b.context_after)
+    if not has_context_a and not has_context_b:
+        # No context available → cannot confirm TRUE_CONTRADICTION (§4 rule)
+        if not (has_hard_negation and has_entity_overlap):
+            return ReconciliationResult(
+                outcome=OUTCOME_INSUFFICIENT_CONTEXT,
+                contradiction_score=min(detector_confidence, 0.5),
+                severity="low",
+                severity_score=0.3,
+                reconciliation_attempt="אין הקשר מלא (context) — לא ניתן לאשר סתירה אמיתית",
+                rationale="ללא הקשר מלא לטענות לא ניתן לאשר סתירה",
+                conflict_predicate="missing_context",
+                deciding_fields=["context_before", "context_after"],
+                debug=debug,
+            )
+
+    # Compute severity
+    severity, severity_score = _compute_severity(claim_a, claim_b, detector_confidence, metadata)
+
+    return ReconciliationResult(
+        outcome=OUTCOME_TRUE_CONTRADICTION,
+        contradiction_score=detector_confidence,
+        severity=severity,
+        severity_score=severity_score,
+        reconciliation_attempt="נוסו כל דרכי היישוב — לא נמצא יישוב סביר",
+        rationale=_build_true_contradiction_rationale(claim_a, claim_b, metadata),
+        conflict_predicate=_describe_conflict(claim_a, claim_b, metadata),
+        deciding_fields=["entities", "negation", "plane", "time_reference"],
+        debug=debug,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layer implementations
+# ---------------------------------------------------------------------------
+
+def _check_claim_completeness(claim: Claim) -> Optional[List[str]]:
+    """
+    Cursor 5.2 §3: Check if a claim has all mandatory fields populated.
+
+    Returns None if complete, or a list of missing field names if incomplete.
+    Fields required for TRUE_CONTRADICTION eligibility:
+    - speaker_mode
+    - plane
+    """
+    missing: List[str] = []
+    if not claim.speaker_mode:
+        missing.append("speaker_mode")
+    if not claim.plane:
+        missing.append("plane")
+    return missing if missing else None
+
+
+def _is_duplicate(a: Claim, b: Claim) -> bool:
+    na = a.normalized_claim or a.text.lower()
+    nb = b.normalized_claim or b.text.lower()
+    if na == nb:
+        return True
+    # Jaccard similarity > 0.85 → restatement
+    wa = set(na.split())
+    wb = set(nb.split())
+    if not wa or not wb:
+        return False
+    jaccard = len(wa & wb) / len(wa | wb)
+    return jaccard > 0.85
+
+
+def _check_time_alignment(a: Claim, b: Claim):
+    """If both have time references and they clearly differ → TIME_SHIFT."""
+    ta = a.time_reference
+    tb = b.time_reference
+    if not ta or not tb:
+        return True, ""  # Cannot determine → pass
+    if ta == tb:
+        return True, ""
+    # Different time markers → reconcilable by time
+    return False, f"הטענות מתייחסות לזמנים שונים: «{ta}» לעומת «{tb}»"
+
+
+def _check_scope_alignment(a: Claim, b: Claim):
+    sa = a.scope_quantifiers
+    sb = b.scope_quantifiers
+    if not sa or not sb:
+        return True, ""
+    if sa == sb:
+        return True, ""
+    # "conditional" vs anything → resolvable
+    if "conditional" in (sa, sb):
+        return False, "אחת הטענות מותנית — ההיקף שונה"
+    return False, f"הטענות שונות בהיקף: «{sa}» לעומת «{sb}»"
+
+
+def _check_quantifier(a: Claim, b: Claim):
+    sa = a.scope_quantifiers
+    sb = b.scope_quantifiers
+    if not sa or not sb:
+        return True, ""
+    if (sa == "all" and sb == "part") or (sa == "part" and sb == "all"):
+        return False, "אחת הטענות מתייחסת ל'כולם' ואחרת ל'חלק' — פער כימותי ניתן ליישוב"
+    return True, ""
+
+
+def _check_modality(a: Claim, b: Claim):
+    ma = a.modality
+    mb = b.modality
+    if not ma or not mb:
+        return True, ""
+    if ma == mb:
+        return True, ""
+    # Different modalities → reconcilable
+    return False, f"הטענות שונות במודאליות: «{ma}» לעומת «{mb}»"
+
+
+def _check_speaker_mode(a: Claim, b: Claim):
+    """
+    Cursor 5.2 §5/§6: Block TRUE_CONTRADICTION when claims come from
+    different speaker modes.
+
+    Returns 3-tuple: (ok, note, outcome_category).
+    - ok=True  → pass through (modes are compatible)
+    - ok=False → block, use the returned outcome category
+
+    Outcome routing:
+    - Quote/law_citation/opinion → ROLE_OR_ATTRIBUTION_MISMATCH
+    - Cross-party claims → DISAGREEMENT_BETWEEN_PARTIES
+    - party_claim vs non-party_claim → ROLE_OR_ATTRIBUTION_MISMATCH
+    """
+    sa = a.speaker_mode
+    sb = b.speaker_mode
+    ra = a.speaker_role
+    rb = b.speaker_role
+
+    # §2.5: OPINION speaker mode — speculation, not assertive → ROLE_OR_ATTRIBUTION_MISMATCH
+    if sa == SPEAKER_MODE_OPINION or sb == SPEAKER_MODE_OPINION:
+        return False, "אחת הטענות היא הערכה/ספקולציה — לא קביעה עובדתית", OUTCOME_ROLE_MISMATCH
+
+    # One is a quote → not a real assertion → ROLE_OR_ATTRIBUTION_MISMATCH
+    if sa == SPEAKER_MODE_QUOTE or sb == SPEAKER_MODE_QUOTE:
+        return False, "אחת הטענות היא ציטוט — לא קביעה של הדובר", OUTCOME_ROLE_MISMATCH
+
+    # One is a law citation → citing precedent → ROLE_OR_ATTRIBUTION_MISMATCH
+    if sa == SPEAKER_MODE_LAW_CITATION or sb == SPEAKER_MODE_LAW_CITATION:
+        return False, "אחת הטענות היא ציטוט פסיקה/חקיקה — לא עובדה של הדובר", OUTCOME_ROLE_MISMATCH
+
+    # Both are party claims from different parties → DISAGREEMENT
+    if sa == SPEAKER_MODE_PARTY_CLAIM and sb == SPEAKER_MODE_PARTY_CLAIM:
+        if ra and rb and ra != rb:
+            return False, f"מחלוקת בין צדדים: {ra} לעומת {rb}", OUTCOME_DISAGREEMENT
+
+    # party_claim vs non-party_claim → ROLE_OR_ATTRIBUTION_MISMATCH
+    if sa == SPEAKER_MODE_PARTY_CLAIM and sb != SPEAKER_MODE_PARTY_CLAIM:
+        if sb is not None:
+            return False, f"טענת צד ({ra or 'צד'}) מול {sb} — אי-התאמה בייחוס", OUTCOME_ROLE_MISMATCH
+    if sb == SPEAKER_MODE_PARTY_CLAIM and sa != SPEAKER_MODE_PARTY_CLAIM:
+        if sa is not None:
+            return False, f"טענת צד ({rb or 'צד'}) מול {sa} — אי-התאמה בייחוס", OUTCOME_ROLE_MISMATCH
+
+    return True, "", OUTCOME_DISAGREEMENT  # default (unused when ok=True)
+
+
+def _check_plane(a: Claim, b: Claim):
+    pa = a.plane
+    pb = b.plane
+    if not pa or not pb:
+        return True, ""
+    if pa == pb:
+        return True, ""
+    # FACT ↔ FACT or LAW ↔ LAW is fine
+    # Cross-plane: not comparable
+    comparable = {
+        (PLANE_FACT, PLANE_FACT),
+        (PLANE_LAW, PLANE_LAW),
+    }
+    if (pa, pb) not in comparable and (pb, pa) not in comparable:
+        return False, f"הטענות שייכות למישורים שונים: {pa} לעומת {pb}"
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Severity
+# ---------------------------------------------------------------------------
+
+def _compute_severity(
+    a: Claim, b: Claim, confidence: float, metadata: Dict[str, Any]
+) -> tuple:
+    """Compute severity based on claim centrality, irreconcilability, confidence."""
+    score = 0.0
+
+    # Centrality: findings > party claims
+    if a.speaker_mode == SPEAKER_MODE_FINDING or b.speaker_mode == SPEAKER_MODE_FINDING:
+        score += 0.3
+    # Negation opposition
+    if a.negation != b.negation:
+        score += 0.2
+    # High confidence
+    if confidence >= 0.9:
+        score += 0.2
+    elif confidence >= 0.75:
+        score += 0.1
+    # Entity overlap → more specific → more severe (fuzzy match)
+    overlap = _fuzzy_entity_overlap(a.entities or [], b.entities or [])
+    if len(overlap) >= 2:
+        score += 0.2
+    elif len(overlap) >= 1:
+        score += 0.1
+
+    score = min(score, 1.0)
+
+    if score >= 0.7:
+        return "high", score
+    elif score >= 0.4:
+        return "medium", score
+    return "low", score
+
+
+# ---------------------------------------------------------------------------
+# Rationale helpers
+# ---------------------------------------------------------------------------
+
+def _build_true_contradiction_rationale(a: Claim, b: Claim, metadata: Dict[str, Any]) -> str:
+    parts = []
+    if a.negation != b.negation:
+        parts.append("ניגוד ישיר בשלילה/חיוב")
+    overlap = _fuzzy_entity_overlap(a.entities or [], b.entities or [])
+    if overlap:
+        parts.append(f"אותן ישויות: {', '.join(list(overlap)[:3])}")
+    if a.plane and a.plane == b.plane:
+        parts.append(f"אותו מישור ({a.plane})")
+    if a.time_reference and b.time_reference and a.time_reference == b.time_reference:
+        parts.append(f"אותה תקופה ({a.time_reference})")
+
+    if not parts:
+        return "שתי הטענות אינן יכולות להיות נכונות בו-זמנית — לא נמצא יישוב סביר"
+    return "סתירה אמיתית: " + "; ".join(parts)
+
+
+def _describe_conflict(a: Claim, b: Claim, metadata: Dict[str, Any]) -> str:
+    if a.negation != b.negation:
+        return "negation_opposition"
+    return "factual_clash"

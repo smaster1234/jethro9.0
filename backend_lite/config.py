@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # LLM Configuration
     llm_mode: LLMMode = LLMMode.NONE
 
+    # OpenAI (GPT-4o)
+    openai_api_key: Optional[str] = None
+    openai_model: str = "gpt-4o"
+    openai_base_url: str = "https://api.openai.com/v1"
+
     # OpenRouter (for verifier and general use)
     openrouter_api_key: Optional[str] = None
     openrouter_model: str = "anthropic/claude-3-haiku"
@@ -78,7 +83,11 @@ class Settings(BaseSettings):
         """Validate LLM configuration, return list of warnings"""
         warnings = []
 
-        if self.llm_mode == LLMMode.OPENROUTER:
+        if self.llm_mode == LLMMode.OPENAI:
+            if not self.openai_api_key:
+                warnings.append("LLM_MODE=openai but OPENAI_API_KEY not set")
+
+        elif self.llm_mode == LLMMode.OPENROUTER:
             if not self.openrouter_api_key:
                 warnings.append("LLM_MODE=openrouter but OPENROUTER_API_KEY not set")
 

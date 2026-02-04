@@ -127,19 +127,35 @@ class ContradictionCategory(str, Enum):
     """
     Category that distinguishes hard contradictions from narrative ambiguity.
 
-    - HARD_CONTRADICTION: Clear factual contradiction - both claims cannot be true together.
-      Same object, same aspect, same timeframe, no reasonable reconciliation.
-    - LOGICAL_INCONSISTENCY: Logically incompatible statements about the same situation.
-      Not necessarily direct contradiction, but cannot coexist.
-    - NARRATIVE_AMBIGUITY: Apparent discrepancy that may have a reasonable explanation.
-      Different aspects, different timeframes, or possible reconciliation exists.
-    - RHETORICAL_SHIFT: Change in emphasis or framing without factual contradiction.
-      Same facts presented differently, may affect credibility but not factual truth.
+    V1 categories (preserved for backward compat):
+    - HARD_CONTRADICTION, LOGICAL_INCONSISTENCY, NARRATIVE_AMBIGUITY, RHETORICAL_SHIFT
+
+    V2 outcome categories (§5.1 / Cursor 5.2):
+    - TRUE_CONTRADICTION – irreconcilable
+    - APPARENT_TENSION_RESOLVABLE – looks contradictory but resolvable
+    - DISAGREEMENT_BETWEEN_PARTIES – cross-party dispute
+    - ROLE_OR_ATTRIBUTION_MISMATCH – quote/opinion/citation vs finding
+    - PLANE_MISMATCH – fact vs law/opinion
+    - TIME_OR_STAGE_SHIFT – different time periods
+    - AMBIGUITY_OR_VAGUENESS – vague/unclear
+    - INSUFFICIENT_CONTEXT – missing speaker_mode/plane/context
+    - DUPLICATE_OR_RESTATEMENT – same idea rephrased
     """
+    # V1 (backward compat)
     HARD_CONTRADICTION = "hard_contradiction"  # סתירה מוכרחת
     LOGICAL_INCONSISTENCY = "logical_inconsistency"  # אי-עקביות לוגית
     NARRATIVE_AMBIGUITY = "narrative_ambiguity"  # עמימות נרטיבית
     RHETORICAL_SHIFT = "rhetorical_shift"  # שינוי רטורי
+    # V2 (9-category outcomes)
+    TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
+    APPARENT_TENSION_RESOLVABLE = "APPARENT_TENSION_RESOLVABLE"
+    DISAGREEMENT_BETWEEN_PARTIES = "DISAGREEMENT_BETWEEN_PARTIES"
+    ROLE_OR_ATTRIBUTION_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
+    PLANE_MISMATCH = "PLANE_MISMATCH"
+    TIME_OR_STAGE_SHIFT = "TIME_OR_STAGE_SHIFT"
+    AMBIGUITY_OR_VAGUENESS = "AMBIGUITY_OR_VAGUENESS"
+    INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
+    DUPLICATE_OR_RESTATEMENT = "DUPLICATE_OR_RESTATEMENT"
 
 
 class AmbiguityExplanation(BaseModel):
@@ -177,8 +193,48 @@ class LLMMode(str, Enum):
     """LLM usage mode"""
     NONE = "none"           # Rule-based only
     OPENROUTER = "openrouter"
+    OPENAI = "openai"       # OpenAI API (GPT-4o)
     GEMINI = "gemini"
     DEEPSEEK = "deepseek"   # DeepSeek API (primary analyzer)
+
+
+class SpeakerRole(str, Enum):
+    """Role of the speaker in a claim"""
+    COURT = "court"
+    PARTY = "party"
+    ATTORNEY = "attorney"
+    WITNESS = "witness"
+    EXTERNAL = "external"
+
+
+class SpeakerMode(str, Enum):
+    """Speaker attribution mode"""
+    COURT_FINDING = "COURT_FINDING"
+    PARTY_CLAIM = "PARTY_CLAIM"
+    QUOTE = "QUOTE"
+    LAW_CITATION = "LAW_CITATION"
+    OPINION = "OPINION"
+
+
+class ClaimPlane(str, Enum):
+    """Logical plane for a claim"""
+    FACT = "FACT"
+    LAW = "LAW"
+    OPINION = "OPINION"
+    PROCEDURAL = "PROCEDURAL"
+
+
+class OutcomeCategory(str, Enum):
+    """Outcome categories for pair analysis"""
+    TRUE_CONTRADICTION = "TRUE_CONTRADICTION"
+    DISAGREEMENT_BETWEEN_PARTIES = "DISAGREEMENT_BETWEEN_PARTIES"
+    ROLE_OR_ATTRIBUTION_MISMATCH = "ROLE_OR_ATTRIBUTION_MISMATCH"
+    PLANE_MISMATCH = "PLANE_MISMATCH"
+    TIME_OR_STAGE_SHIFT = "TIME_OR_STAGE_SHIFT"
+    APPARENT_TENSION_RESOLVABLE = "APPARENT_TENSION_RESOLVABLE"
+    AMBIGUITY_OR_VAGUENESS = "AMBIGUITY_OR_VAGUENESS"
+    INSUFFICIENT_CONTEXT = "INSUFFICIENT_CONTEXT"
+    DUPLICATE_RESTATEMENT = "DUPLICATE_RESTATEMENT"
 
 
 # =============================================================================
@@ -205,6 +261,22 @@ class AttackAngleType(str, Enum):
 # INPUT SCHEMAS
 # =============================================================================
 
+class EvidenceAnchor(BaseModel):
+    """
+    Evidence anchor with precise location and snippet.
+
+    This is the canonical schema for evidence anchoring across the system.
+    """
+    doc_id: str = Field(..., description="Document ID")
+    page_no: Optional[int] = Field(None, description="Page number (if available)")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index within document")
+    paragraph_index: Optional[int] = Field(None, description="Paragraph index (if available)")
+    char_start: Optional[int] = Field(None, description="Character start offset in normalized text")
+    char_end: Optional[int] = Field(None, description="Character end offset in normalized text")
+    snippet: Optional[str] = Field(None, description="Snippet text around the anchor")
+    bbox: Optional[Dict[str, float]] = Field(None, description="Bounding box (future OCR)")
+
+
 class ClaimInput(BaseModel):
     """Single claim for analysis"""
     id: str = Field(..., description="Unique claim identifier")
@@ -212,10 +284,27 @@ class ClaimInput(BaseModel):
     source: Optional[str] = Field(None, description="Source document name")
     doc_id: Optional[str] = Field(None, description="Document ID for locator")
     page: Optional[int] = Field(None, description="Page number")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index")
     paragraph: Optional[int] = Field(None, description="Paragraph number")
     char_start: Optional[int] = Field(None, description="Character start offset")
     char_end: Optional[int] = Field(None, description="Character end offset")
     speaker: Optional[str] = Field(None, description="Who made this claim")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Optional evidence anchor")
+    # Expert contradiction model fields
+    text_span: Optional[str] = Field(None, description="Exact quote span for the claim")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before the quote")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after the quote")
+    section_path: Optional[str] = Field(None, description="Section path in document")
+    speaker_role: Optional[SpeakerRole] = Field(None, description="court/party/attorney/witness/external")
+    speaker_mode: Optional[SpeakerMode] = Field(None, description="Attribution mode")
+    plane: Optional[ClaimPlane] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    time_reference: Optional[str] = Field(None, description="Time reference string")
+    scope_conditions: Optional[str] = Field(None, description="Scope conditions")
+    quantifiers: Optional[List[str]] = Field(None, description="Quantifiers in claim")
+    modality: Optional[str] = Field(None, description="must/may/possible/uncertain")
+    negation: Optional[bool] = Field(None, description="Negation flag")
+    entities_relations: Optional[List[str]] = Field(None, description="Entities/relations list")
+    extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Extraction confidence")
 
     class Config:
         json_schema_extra = {
@@ -275,6 +364,7 @@ class CreateCaseRequest(BaseModel):
     court: Optional[str] = Field(None, description="Court name")
     case_number: Optional[str] = Field(None, description="Official case number")
     description: Optional[str] = Field(None, description="Case description")
+    organization_id: Optional[str] = Field(None, description="Organization ID")
 
     class Config:
         json_schema_extra = {
@@ -285,7 +375,8 @@ class CreateCaseRequest(BaseModel):
                 "opponent_name": "דוד לוי",
                 "court": "שלום תל אביב",
                 "case_number": "12345-01-24",
-                "description": "תביעה בגין הפרת חוזה"
+                "description": "תביעה בגין הפרת חוזה",
+                "organization_id": "org_123"
             }
         }
 
@@ -333,13 +424,185 @@ class AnalyzeCaseRequest(BaseModel):
 
 
 # =============================================================================
-# OUTPUT SCHEMAS - Locators
+# INPUT/OUTPUT SCHEMAS - Organizations (B1)
 # =============================================================================
 
+class OrganizationCreateRequest(BaseModel):
+    name: str = Field(..., description="Organization name")
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    user_id: str = Field(..., description="Existing user ID")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+
+
+class OrganizationInviteCreateRequest(BaseModel):
+    email: str = Field(..., description="Invitee email")
+    role: str = Field("viewer", description="viewer/intern/lawyer/owner")
+    expires_in_days: int = Field(7, ge=1, le=60, description="Invite expiry in days")
+
+
+class OrganizationResponse(BaseModel):
+    id: str
+    firm_id: str
+    name: str
+    created_at: Optional[datetime] = None
+
+
+class OrganizationMemberResponse(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    role: str
+    added_at: Optional[datetime] = None
+
+
+class OrganizationInviteResponse(BaseModel):
+    id: str
+    organization_id: str
+    email: str
+    role: str
+    status: str
+    expires_at: datetime
+    token: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class OrganizationInviteAcceptResponse(BaseModel):
+    organization_id: str
+    role: str
+    status: str
+
+
+class UserSearchResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+
+
+# =============================================================================
+# INPUT/OUTPUT SCHEMAS - Training (C1)
+# =============================================================================
+
+class TrainingStartRequest(BaseModel):
+    plan_id: str = Field(..., description="Cross-exam plan ID")
+    witness_id: Optional[str] = Field(None, description="Witness ID")
+    persona: Optional[str] = Field("cooperative", description="Persona: cooperative/evasive/hostile")
+
+
+class TrainingSessionResponse(BaseModel):
+    session_id: str
+    case_id: str
+    plan_id: str
+    witness_id: Optional[str] = None
+    persona: Optional[str] = None
+    status: str
+    back_remaining: int
+    created_at: Optional[datetime] = None
+
+
+class TrainingTurnRequest(BaseModel):
+    step_id: str = Field(..., description="Plan step ID")
+    chosen_branch: Optional[str] = Field(None, description="Chosen branch trigger")
+
+
+class TrainingTurnResponse(BaseModel):
+    turn_id: str
+    session_id: str
+    step_id: str
+    stage: Optional[str] = None
+    question: str
+    witness_reply: Optional[str] = None
+    chosen_branch: Optional[str] = None
+    follow_up_questions: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class TrainingBackResponse(BaseModel):
+    session_id: str
+    back_remaining: int
+    removed_turn_id: Optional[str] = None
+
+
+class TrainingFinishResponse(BaseModel):
+    session_id: str
+    summary: Dict[str, Any]
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Entity Usage (C2)
+# =============================================================================
+
+class EntityUsageSummary(BaseModel):
+    entity_type: str
+    entity_id: str
+    usage: Dict[str, str]
+    latest_used_at: Optional[str] = None
+
+
+# =============================================================================
+# INPUT/OUTPUT SCHEMAS - Feedback (C3)
+# =============================================================================
+
+class FeedbackCreateRequest(BaseModel):
+    case_id: str = Field(..., description="Case ID")
+    entity_type: str = Field(..., description="insight/plan_step")
+    entity_id: str = Field(..., description="Entity ID")
+    label: str = Field(..., description="worked/not_worked/too_risky/excellent")
+    note: Optional[str] = Field(None, description="Optional note")
+
+
+class FeedbackItemResponse(BaseModel):
+    id: str
+    org_id: Optional[str]
+    case_id: str
+    entity_type: str
+    entity_id: str
+    label: str
+    note: Optional[str] = None
+    created_at: Optional[datetime] = None
+    created_by: str
+
+
+class FeedbackAggregateResponse(BaseModel):
+    entity_type: str
+    entity_id: str
+    counts: Dict[str, int]
+    latest_at: Optional[datetime] = None
+
+
+class FeedbackListResponse(BaseModel):
+    items: List[FeedbackItemResponse]
+    aggregates: List[FeedbackAggregateResponse]
+
+
+# =============================================================================
+# INPUT SCHEMAS - Witnesses
+# =============================================================================
+
+class WitnessCreateRequest(BaseModel):
+    """Create witness request"""
+    name: str = Field(..., description="Witness name")
+    side: Optional[str] = Field(None, description="ours/theirs/unknown")
+    extra_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class WitnessVersionCreateRequest(BaseModel):
+    """Create witness version request"""
+    document_id: str = Field(..., description="Document ID for this version")
+    version_type: Optional[str] = Field(None, description="statement/affidavit/testimony/etc")
+    version_date: Optional[datetime] = Field(None, description="Date of version")
+    extra_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Locators
+# =============================================================================
 class Locator(BaseModel):
     """Location reference for evidence"""
     doc_id: Optional[str] = Field(None, description="Document ID")
     page: Optional[int] = Field(None, description="Page number")
+    block_index: Optional[int] = Field(None, description="Block/paragraph index within document")
     paragraph: Optional[int] = Field(None, description="Paragraph number")
     char_start: Optional[int] = Field(None, description="Character start offset")
     char_end: Optional[int] = Field(None, description="Character end offset")
@@ -350,8 +613,18 @@ class ClaimEvidence(BaseModel):
     claim_id: str = Field(..., description="Claim ID")
     doc_id: Optional[str] = Field(None, description="Document ID")
     locator: Optional[Locator] = Field(None, description="Location in document")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     quote: str = Field(..., description="Relevant quote")
     normalized: Optional[str] = Field(None, description="Normalized value (date, amount, etc.)")
+    # Enrichment fields (Cursor 5.2 §3 — Expert Notebook)
+    speaker_mode: Optional[str] = Field(None, description="finding/party_claim/quote/law_citation/opinion")
+    speaker_role: Optional[str] = Field(None, description="Speaker role (e.g. plaintiff, defendant, court)")
+    plane: Optional[str] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    modality: Optional[str] = Field(None, description="certain/possible/obligation/permission")
+    negation: Optional[bool] = Field(None, description="Whether claim contains negation")
+    entities: Optional[List[str]] = Field(None, description="Extracted entities")
+    context_before: Optional[str] = Field(None, description="Context before claim")
+    context_after: Optional[str] = Field(None, description="Context after claim")
 
 
 class TextSpan(BaseModel):
@@ -393,8 +666,25 @@ class ClaimOutput(BaseModel):
     party: Optional[str] = Field(None, description="Which party: ours/theirs/court/third_party/unknown")
     role: Optional[str] = Field(None, description="Document role in case")
     author: Optional[str] = Field(None, description="Document author")
+    witness_version_id: Optional[str] = Field(None, description="Linked witness version ID")
     locator: Optional[Locator] = Field(None, description="Location in document")
+    anchor: Optional[EvidenceAnchor] = Field(None, description="Evidence anchor (preferred)")
     features: Optional[ClaimFeatures] = Field(None, description="Extracted features")
+    # Expert contradiction model fields
+    text_span: Optional[str] = Field(None, description="Exact quote span for the claim")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before the quote")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after the quote")
+    section_path: Optional[str] = Field(None, description="Section path in document")
+    speaker_role: Optional[SpeakerRole] = Field(None, description="court/party/attorney/witness/external")
+    speaker_mode: Optional[SpeakerMode] = Field(None, description="Attribution mode")
+    plane: Optional[ClaimPlane] = Field(None, description="FACT/LAW/OPINION/PROCEDURAL")
+    time_reference: Optional[str] = Field(None, description="Time reference string")
+    scope_conditions: Optional[str] = Field(None, description="Scope conditions")
+    quantifiers: Optional[List[str]] = Field(None, description="Quantifiers in claim")
+    modality: Optional[str] = Field(None, description="must/may/possible/uncertain")
+    negation: Optional[bool] = Field(None, description="Negation flag")
+    entities_relations: Optional[List[str]] = Field(None, description="Entities/relations list")
+    extraction_confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Extraction confidence")
 
     class Config:
         json_schema_extra = {
@@ -560,6 +850,19 @@ class ContradictionOutput(BaseModel):
         description="Computed flag: True when status is verified/likely, has locators, and quotes"
     )
 
+    # Verified flag (for frontend AnalyzePage badge display)
+    verified: bool = Field(
+        default=False,
+        description="True when contradiction is verified or likely with high confidence"
+    )
+
+    # Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
+    reconciler_outcome: Optional[str] = Field(None, description="9-category reconciliation outcome")
+    reconciler_rationale: Optional[str] = Field(None, description="Reconciliation rationale (Hebrew)")
+    reconciliation_attempt: Optional[str] = Field(None, description="What was tried to reconcile")
+    deciding_fields: Optional[List[str]] = Field(None, description="Fields that decided the outcome")
+    gate_results: Optional[Dict[str, Any]] = Field(None, description="Gate check results (pass/fail)")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -589,6 +892,35 @@ class ContradictionOutput(BaseModel):
                 "explanation": "סתירה בתאריך חתימת החוזה: 15.3.2020 מול 20.5.2021"
             }
         }
+
+
+class PairEvidence(BaseModel):
+    """Evidence bundle for pair analysis"""
+    quote: str = Field(..., description="Exact quoted text")
+    context_before: str = Field(..., description="Context before")
+    context_after: str = Field(..., description="Context after")
+    doc_id: Optional[str] = Field(None, description="Document ID")
+    section_path: Optional[str] = Field(None, description="Section path")
+
+
+class PairAnalysisRow(BaseModel):
+    """Pair analysis table row"""
+    claimA_id: str = Field(..., description="Claim A ID")
+    claimB_id: str = Field(..., description="Claim B ID")
+    outcome_category: OutcomeCategory = Field(..., description="Outcome category")
+    contradiction_score: float = Field(..., ge=0.0, le=1.0, description="Contradiction score")
+    reconciliation_attempt: Dict[str, Any] = Field(..., description="Reconciliation attempt details")
+    rationale: str = Field(..., description="Pair rationale")
+    evidence_A: PairEvidence = Field(..., description="Evidence for claim A")
+    evidence_B: PairEvidence = Field(..., description="Evidence for claim B")
+
+
+class SummaryReport(BaseModel):
+    """Summary report for expert contradiction analysis"""
+    true_contradictions: int = Field(..., description="Count of true contradictions")
+    distribution: Dict[str, int] = Field(default_factory=dict, description="Outcome distribution")
+    top_findings: List[Dict[str, Any]] = Field(default_factory=list, description="Top findings")
+    noise_to_signal_ratio: float = Field(..., description="Noise-to-signal ratio")
 
 
 # =============================================================================
@@ -774,6 +1106,69 @@ class AttributionSummary(BaseModel):
     has_party_attribution: bool = Field(False, description="Whether any documents have party set")
 
 
+# =============================================================================
+# OUTPUT SCHEMAS — Expert Notebook Payload (Cursor 5.2 §10)
+# =============================================================================
+
+class EvidenceModel(BaseModel):
+    """Evidence with full context for expert notebook."""
+    quote: str = Field(..., description="Exact text span")
+    context_before: Optional[str] = Field(None, description="1-3 sentences before")
+    context_after: Optional[str] = Field(None, description="1-3 sentences after")
+    doc_id: Optional[str] = Field(None, description="Source document ID")
+    section_path: Optional[str] = Field(None, description="Section heading path")
+    locator: Optional[Locator] = Field(None, description="Location in document")
+    speaker_mode: Optional[str] = Field(None)
+    speaker_role: Optional[str] = Field(None)
+    plane: Optional[str] = Field(None)
+    modality: Optional[str] = Field(None)
+    negation: Optional[bool] = Field(None)
+    entities: Optional[List[str]] = Field(None)
+    time_reference: Optional[str] = Field(None)
+
+
+class PairGateResults(BaseModel):
+    """Pass/fail results for each gate check."""
+    context_present: Optional[bool] = Field(None, description="Both claims have context")
+    speaker_mode_ok: Optional[bool] = Field(None, description="No PARTY_CLAIM → TRUE_CONTRADICTION")
+    plane_match: Optional[bool] = Field(None, description="Same plane (FACT↔FACT or LAW↔LAW)")
+    time_match: Optional[bool] = Field(None, description="Same time/period")
+    scope_match: Optional[bool] = Field(None, description="Same scope/conditions")
+    reconciliation_failed: Optional[bool] = Field(None, description="Reconciliation attempt failed")
+
+
+class PairAnalysisRowModel(BaseModel):
+    """Per-pair analysis row for expert notebook."""
+    pair_id: str = Field(..., description="Unique pair ID")
+    claim_a: EvidenceModel = Field(..., description="Claim A with evidence")
+    claim_b: EvidenceModel = Field(..., description="Claim B with evidence")
+    outcome_category: str = Field(..., description="9-category outcome")
+    contradiction_score: float = Field(0.0, description="0-1, 1 = maximally irreconcilable")
+    severity: str = Field("low", description="low/medium/high/critical")
+    gates: PairGateResults = Field(default_factory=PairGateResults, description="Gate check results")
+    reconciliation_attempt: Optional[str] = Field(None, description="What was tried")
+    rationale: Optional[str] = Field(None, description="Detailed explanation (Hebrew)")
+    deciding_fields: List[str] = Field(default_factory=list, description="Fields that decided outcome")
+    is_true_contradiction: bool = Field(False, description="Whether outcome = TRUE_CONTRADICTION")
+    blocked_reasons: List[str] = Field(default_factory=list, description="Why it cannot be marked as contradiction")
+
+
+class ExpertSummaryReportModel(BaseModel):
+    """Expert analysis summary for notebook header."""
+    total_pairs_analyzed: int = Field(0)
+    distribution: Dict[str, int] = Field(default_factory=dict, description="Count per outcome_category")
+    true_contradiction_count: int = Field(0)
+    noise_to_signal_ratio: float = Field(0.0, description="non-true / total pairs")
+    top_findings: List[str] = Field(default_factory=list, description="Top true contradictions (summaries)")
+    validation_flags: List[str] = Field(default_factory=list)
+
+
+class ExpertNotebookPayload(BaseModel):
+    """Complete expert notebook data returned by API."""
+    pair_analysis: List[PairAnalysisRowModel] = Field(default_factory=list)
+    summary_report: ExpertSummaryReportModel = Field(default_factory=ExpertSummaryReportModel)
+
+
 class AnalysisResponse(BaseModel):
     """
     Full analysis response with claims table support and attribution layer.
@@ -800,6 +1195,14 @@ class AnalysisResponse(BaseModel):
     contradictions: List[ContradictionOutput] = Field(..., description="Detected contradictions")
     cross_exam_questions: List[CrossExamQuestionsOutput] = Field(..., description="Cross-exam questions")
     metadata: AnalysisMetadata = Field(..., description="Analysis metadata")
+    pair_analysis: List[PairAnalysisRow] = Field(
+        default_factory=list,
+        description="Pair analysis table"
+    )
+    summary_report: Optional[SummaryReport] = Field(
+        None,
+        description="Expert summary report"
+    )
 
     # Attribution Layer additions
     disputes: List[DisputeIssue] = Field(
@@ -809,6 +1212,12 @@ class AnalysisResponse(BaseModel):
     attribution_summary: Optional[AttributionSummary] = Field(
         None,
         description="Summary of attribution layer buckets"
+    )
+
+    # Expert Notebook payload (Cursor 5.2 §10)
+    expert_notebook: Optional[ExpertNotebookPayload] = Field(
+        None,
+        description="Expert notebook: per-pair analysis, gates, summary report"
     )
 
     class Config:
@@ -862,6 +1271,135 @@ class SnippetResponse(BaseModel):
     char_end: Optional[int] = Field(None, description="Character end position")
 
 
+# =============================================================================
+# OUTPUT SCHEMAS - Witnesses
+# =============================================================================
+
+class WitnessVersionResponse(BaseModel):
+    """Witness version response"""
+    id: str
+    witness_id: str
+    document_id: str
+    document_name: Optional[str] = None
+    version_type: Optional[str] = None
+    version_date: Optional[datetime] = None
+    extra_data: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+
+
+class WitnessResponse(BaseModel):
+    """Witness response"""
+    id: str
+    case_id: str
+    name: str
+    side: Optional[str] = None
+    extra_data: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    versions: List[WitnessVersionResponse] = Field(default_factory=list)
+
+
+class VersionShift(BaseModel):
+    """Narrative shift between witness versions"""
+    shift_type: str
+    description: str
+    similarity: Optional[float] = None
+    details: Optional[Dict[str, Any]] = None
+    anchor_a: Optional[EvidenceAnchor] = None
+    anchor_b: Optional[EvidenceAnchor] = None
+
+
+class WitnessVersionDiffResponse(BaseModel):
+    """Diff response for two witness versions"""
+    witness_id: str
+    version_a_id: str
+    version_b_id: str
+    similarity: float
+    shifts: List[VersionShift] = Field(default_factory=list)
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Contradiction Insights
+# =============================================================================
+
+class ContradictionInsightResponse(BaseModel):
+    """Contradiction insight response"""
+    contradiction_id: str
+    impact_score: float
+    risk_score: float
+    verifiability_score: float
+    stage_recommendation: Optional[str] = None
+    prerequisites: List[str] = Field(default_factory=list)
+    expected_evasions: List[str] = Field(default_factory=list)
+    best_counter_questions: List[str] = Field(default_factory=list)
+    do_not_ask_flag: bool = False
+    do_not_ask_reason: Optional[str] = None
+    composite_score: Optional[float] = None
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Cross-Examination Plan
+# =============================================================================
+
+class CrossExamPlanBranch(BaseModel):
+    """Branching follow-up for an evasion or trap"""
+    trigger: str
+    follow_up_questions: List[str] = Field(default_factory=list)
+
+
+class CrossExamPlanStep(BaseModel):
+    """Single step in a cross-exam plan"""
+    id: str
+    contradiction_id: Optional[str] = None
+    stage: str
+    step_type: str
+    title: str
+    question: str
+    purpose: Optional[str] = None
+    anchors: List[EvidenceAnchor] = Field(default_factory=list)
+    branches: List[CrossExamPlanBranch] = Field(default_factory=list)
+    do_not_ask_flag: bool = False
+    do_not_ask_reason: Optional[str] = None
+
+
+class CrossExamPlanStage(BaseModel):
+    """Stage in a cross-exam plan"""
+    stage: str
+    steps: List[CrossExamPlanStep] = Field(default_factory=list)
+
+
+class CrossExamPlanResponse(BaseModel):
+    """Cross-examination plan response"""
+    plan_id: str
+    case_id: str
+    run_id: str
+    witness_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    stages: List[CrossExamPlanStage] = Field(default_factory=list)
+
+
+# =============================================================================
+# OUTPUT SCHEMAS - Witness Simulation
+# =============================================================================
+
+class WitnessSimulationStep(BaseModel):
+    """Single simulated witness response"""
+    step_id: str
+    stage: str
+    question: str
+    witness_reply: str
+    chosen_branch_trigger: Optional[str] = None
+    follow_up_questions: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class WitnessSimulationResponse(BaseModel):
+    """Witness simulation response"""
+    run_id: str
+    plan_id: str
+    persona: str
+    steps: List[WitnessSimulationStep] = Field(default_factory=list)
+
+
 # OUTPUT SCHEMAS - Health & Errors
 # =============================================================================
 
@@ -873,11 +1411,16 @@ class HealthResponse(BaseModel):
     timestamp: datetime = Field(..., description="Current timestamp")
 
 
+class ErrorDetail(BaseModel):
+    """Structured error detail"""
+    code: str = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[Any] = Field(None, description="Optional error details")
+
+
 class ErrorResponse(BaseModel):
-    """Error response"""
-    error: str = Field(..., description="Error message")
-    detail: Optional[str] = Field(None, description="Detailed error info")
-    validation_flags: List[str] = Field(default_factory=list, description="Validation warnings")
+    """Structured error response"""
+    error: ErrorDetail
 
 
 # =============================================================================

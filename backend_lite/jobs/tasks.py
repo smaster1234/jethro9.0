@@ -9,6 +9,7 @@ import os
 import io
 import zipfile
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -182,8 +183,37 @@ def update_job_progress(progress: int, message: str = None):
             if message:
                 job.meta['message'] = message
             job.save_meta()
-    except:
-        pass
+    except Exception as e:
+        logger.debug("Could not update job progress: %s", e)
+
+
+def _sanitize_error_message(error: Exception, fallback: str = "שגיאה בעיבוד המשימה") -> str:
+    try:
+        from ..ingest.base import ParserError
+    except Exception:
+        ParserError = None  # type: ignore
+
+    if ParserError and isinstance(error, ParserError):
+        message = getattr(error, "user_message", fallback)
+    else:
+        message = str(error) if error else fallback
+    compact = " ".join(message.split())
+    if not compact:
+        compact = fallback
+    if len(compact) > 200:
+        compact = compact[:200] + "..."
+    return compact
+
+
+def _set_job_error_message(message: str) -> None:
+    try:
+        from rq import get_current_job
+        job = get_current_job()
+        if job:
+            job.meta["error_message"] = message
+            job.save_meta()
+    except Exception as e:
+        logger.debug("Could not set job error message: %s", e)
 
 
 def task_parse_document(
@@ -222,6 +252,16 @@ def task_parse_document(
 
         update_job_progress(20, "Parsing document")
 
+        # Mark document as processing
+        try:
+            with get_db_session() as db:
+                doc = db.query(Document).filter(Document.id == document_id).first()
+                if doc:
+                    doc.status = DocumentStatus.PROCESSING
+                    db.commit()
+        except Exception:
+            pass
+
         # Parse document
         result = parse_document(
             data=data,
@@ -246,6 +286,10 @@ def task_parse_document(
             # SQLAlchemy model uses extra_data (metadata is reserved)
             doc.extra_data = {**(doc.extra_data or {}), **(result.metadata or {})}
 
+            # Ensure idempotency: clear existing pages/blocks for this document
+            db.query(DocumentBlock).filter(DocumentBlock.document_id == document_id).delete()
+            db.query(DocumentPage).filter(DocumentPage.document_id == document_id).delete()
+
             # Save pages
             for page in result.pages:
                 db_page = DocumentPage(
@@ -268,7 +312,7 @@ def task_parse_document(
                         char_start=block.char_start,
                         char_end=block.char_end,
                         paragraph_index=block.paragraph_index,
-                        locator_json=block.to_locator_json()
+                        locator_json=block.to_locator_json(doc_id=document_id)
                     )
                     db.add(db_block)
 
@@ -289,6 +333,8 @@ def task_parse_document(
 
     except Exception as e:
         logger.exception(f"Failed to parse document {document_id}")
+        safe_error = _sanitize_error_message(e, fallback="שגיאה בעיבוד המסמך")
+        _set_job_error_message(safe_error)
 
         # Update document status to failed
         try:
@@ -297,10 +343,10 @@ def task_parse_document(
                 if doc:
                     doc.status = DocumentStatus.FAILED
                     doc.extra_data = doc.extra_data or {}
-                    doc.extra_data['error'] = str(e)
+                    doc.extra_data['error'] = safe_error
                     db.commit()
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not update document status to failed: %s", e)
 
         raise
 
@@ -605,7 +651,7 @@ def task_index_document(document_id: str, firm_id: str) -> Dict[str, Any]:
     }
 
 
-def task_analyze_case(
+async def task_analyze_case(
     case_id: str,
     firm_id: str,
     document_ids: Optional[List[str]] = None,
@@ -614,6 +660,12 @@ def task_analyze_case(
 ) -> Dict[str, Any]:
     """
     Analyze a case for contradictions.
+
+    Pipeline:
+      1. Extract claims from documents (rule-based, instant)
+      2. Detect contradiction candidates (rule-based, instant)
+      3. Verify candidates with LLM verifier (Gemini Flash, async)
+      4. Save verified results to DB
 
     Args:
         case_id: Case ID
@@ -625,13 +677,21 @@ def task_analyze_case(
     Returns:
         Dict with analysis results
     """
+    import asyncio
     from ..db.session import get_db_session
     from ..db.models import (
         Document, DocumentStatus, AnalysisRun, Claim, Contradiction,
-        Event, EventType
+        Event, EventType, DocumentBlock, WitnessVersion
     )
     from ..extractor import extract_claims_from_text, Claim as ExtractedClaim
     from ..detector import detect_contradictions
+    from ..anchors import build_anchor_from_claim
+    from ..insights import compute_insights_for_run
+    from ..llm.verifier import get_verifier
+    from ..semantic import SemanticEngine, reset_semantic_engine
+    from ..entity_graph import EntityGraph, reset_entity_graph
+    from ..temporal_graph import TemporalGraph, reset_temporal_graph
+    from ..ensemble import EnsembleScorer, ContradictionSignals, get_ensemble_scorer
 
     start_time = datetime.utcnow()
     update_job_progress(10, "Loading documents")
@@ -697,7 +757,18 @@ def task_analyze_case(
             )
             db.add(event)
 
-            # Extract claims from each document
+            # Preload witness versions by document
+            doc_ids = [d.id for d in documents]
+            witness_version_map: Dict[str, str] = {}
+            if doc_ids:
+                versions = (
+                    db.query(WitnessVersion)
+                    .filter(WitnessVersion.document_id.in_(doc_ids))
+                    .all()
+                )
+                witness_version_map = {v.document_id: v.id for v in versions}
+
+            # Extract claims from each document (prefer block-level for anchors)
             all_claims = []
             claim_pairs = []
             for idx, doc in enumerate(documents):
@@ -707,27 +778,63 @@ def task_analyze_case(
                 if not doc.full_text:
                     continue
 
-                extracted = extract_claims_from_text(
-                    text=doc.full_text,
-                    source_name=doc.doc_name,
-                    doc_id=doc.id
+                extracted = []
+                blocks = (
+                    db.query(DocumentBlock)
+                    .filter(DocumentBlock.document_id == doc.id)
+                    .order_by(DocumentBlock.block_index.asc())
+                    .all()
                 )
+
+                if blocks:
+                    for block in blocks:
+                        block_claims = extract_claims_from_text(
+                            text=block.text,
+                            source_name=doc.doc_name,
+                            doc_id=doc.id,
+                            paragraph_id=block.id,
+                            paragraph_index=block.paragraph_index,
+                            char_offset=block.char_start or 0,
+                            page_no=block.page_no,
+                            block_index=block.block_index,
+                            bbox=block.bbox_json,
+                            sanitize=False,
+                        )
+
+                        # Make claim IDs unique across blocks/documents for detection
+                        for claim in block_claims:
+                            segment_index = None
+                            if getattr(claim, "metadata", None):
+                                segment_index = claim.metadata.get("segment_index")
+                            if segment_index is not None:
+                                claim.id = f"{doc.id}_{block.block_index}_{segment_index}"
+                            else:
+                                claim.id = f"{doc.id}_{block.block_index}_{uuid.uuid4().hex[:6]}"
+
+                        extracted.extend(block_claims)
+                else:
+                    # Fallback: extract from full text (less precise anchors)
+                    extracted = extract_claims_from_text(
+                        text=doc.full_text,
+                        source_name=doc.doc_name,
+                        doc_id=doc.id,
+                        sanitize=True,
+                    )
+                    for claim in extracted:
+                        claim.id = f"{doc.id}_{claim.id}"
 
                 # Track DB claim objects so we can link contradictions -> claims later
                 for claim in extracted:
                     # Save claim to DB
+                    anchor = build_anchor_from_claim(claim)
                     db_claim = Claim(
                         run_id=run.id,
                         document_id=doc.id,
+                        witness_version_id=witness_version_map.get(doc.id),
                         text=claim.text,
                         party=doc.party.value if doc.party else None,
                         role=doc.role.value if doc.role else None,
-                        locator_json={
-                            "doc_id": doc.id,
-                            "paragraph_index": getattr(claim, 'paragraph_index', None),
-                            "char_start": getattr(claim, 'char_start', None),
-                            "char_end": getattr(claim, 'char_end', None)
-                        }
+                        locator_json=anchor,
                     )
                     db.add(db_claim)
                     claim_pairs.append((claim, db_claim))
@@ -740,50 +847,308 @@ def task_analyze_case(
             for claim, db_claim in claim_pairs:
                 try:
                     setattr(claim, "_db_id", db_claim.id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Could not attach DB ID to claim: %s", e)
 
-            update_job_progress(60, "Detecting contradictions")
+            update_job_progress(50, "Building analysis graphs")
 
-            # Detect contradictions
+            # ── Pre-detection: Build semantic, entity, and temporal graphs ──
+            semantic_engine = SemanticEngine()
+            entity_graph = EntityGraph()
+            temporal_graph = TemporalGraph()
+
+            if all_claims:
+                try:
+                    reset_semantic_engine()
+                    semantic_engine.index_claims(all_claims)
+                    logger.info("Semantic index built for %d claims", len(all_claims))
+                except Exception as e:
+                    logger.warning("Semantic indexing failed (non-fatal): %s", e)
+
+                try:
+                    reset_entity_graph()
+                    entity_graph.build(all_claims)
+                    logger.info("Entity graph built for %d claims", len(all_claims))
+                except Exception as e:
+                    logger.warning("Entity graph failed (non-fatal): %s", e)
+
+                try:
+                    reset_temporal_graph()
+                    temporal_graph.build(all_claims)
+                    logger.info("Temporal graph built: %d anomalies", len(temporal_graph.get_anomalies()))
+                except Exception as e:
+                    logger.warning("Temporal graph failed (non-fatal): %s", e)
+
+            update_job_progress(55, "Loading learning context")
+
+            # Load learning context from past feedback
+            learning_ctx = None
+            few_shot_section = ""
+            try:
+                from ..learning import get_learning_context, apply_confidence_adjustment, build_few_shot_prompt
+                learning_ctx = get_learning_context(firm_id, db)
+                few_shot_section = build_few_shot_prompt(learning_ctx)
+            except Exception as e:
+                logger.warning("Failed to load learning context: %s", e)
+
+            update_job_progress(60, "Detecting contradiction candidates")
+
+            # ── Step 1: Rule-based detection ──
+            saved_count = 0
             if all_claims:
                 detection_result = detect_contradictions(all_claims)
+                rule_candidates = detection_result.contradictions
+                logger.info(
+                    "Rule-based detection: %d candidates from %d claims",
+                    len(rule_candidates), len(all_claims),
+                )
 
-                for contr in detection_result.contradictions:
+                # ── Step 1b: LLM Analyzer (parallel detection path) ──
+                llm_candidates = []
+                try:
+                    from ..llm.analyzer import get_analyzer
+                    analyzer = get_analyzer()
+                    if analyzer and analyzer.enabled:
+                        update_job_progress(62, "Running LLM analyzer")
+                        analyzer_result = await analyzer.analyze(
+                            all_claims,
+                            extra_system_context=few_shot_section,
+                        )
+                        if analyzer_result and hasattr(analyzer_result, 'contradictions'):
+                            llm_candidates = analyzer_result.contradictions
+                        elif isinstance(analyzer_result, list):
+                            llm_candidates = analyzer_result
+                        logger.info(
+                            "LLM analyzer: %d candidates from %d claims",
+                            len(llm_candidates), len(all_claims),
+                        )
+                except ImportError:
+                    logger.info("LLM analyzer not available, using rule-based only")
+                except Exception as e:
+                    logger.warning("LLM analyzer failed (non-fatal): %s", e)
+
+                # ── Step 1c: Merge & deduplicate candidates from both engines ──
+                rule_pairs = set()
+                for c in rule_candidates:
+                    pair = tuple(sorted([c.claim1.id, c.claim2.id]))
+                    rule_pairs.add(pair)
+
+                llm_pairs = set()
+                for c in llm_candidates:
+                    pair_key = tuple(sorted([
+                        getattr(c, 'claim1', c).id if hasattr(c, 'claim1') else str(c.get('claim1_id', '')),
+                        getattr(c, 'claim2', c).id if hasattr(c, 'claim2') else str(c.get('claim2_id', '')),
+                    ]))
+                    llm_pairs.add(pair_key)
+
+                # Track which engine found each contradiction
+                both_engine_pairs = rule_pairs & llm_pairs
+                rule_only_pairs = rule_pairs - llm_pairs
+                llm_only_pairs = llm_pairs - rule_pairs
+                engine_agreement = {}  # pair -> 'both'|'rule'|'llm'
+                for p in both_engine_pairs:
+                    engine_agreement[p] = 'both'
+                for p in rule_only_pairs:
+                    engine_agreement[p] = 'rule'
+                for p in llm_only_pairs:
+                    engine_agreement[p] = 'llm'
+
+                # Use rule-based candidates as primary (they have proper DetectedContradiction objects)
+                raw_candidates = rule_candidates
+                logger.info(
+                    "Detection merge: %d rule-only, %d LLM-only, %d both engines",
+                    len(rule_only_pairs), len(llm_only_pairs), len(both_engine_pairs),
+                )
+
+                # ── Step 2: LLM verification (filter false positives) ──
+                verifier = get_verifier()
+                verified_ids = set()   # id(contr) of verified TRUE_CONTRADICTIONs
+                rejected_ids = set()   # id(contr) of confirmed false positives
+                verifier_confidences = {}  # id(contr) -> verifier confidence
+                verifier_explanations = {}  # id(contr) -> verifier reason
+
+                if verifier.enabled and raw_candidates:
+                    update_job_progress(65, "Verifying with LLM")
+                    verifier.reset_stats()
+
+                    # Sort by confidence (highest first) and take top N
+                    sorted_candidates = sorted(
+                        raw_candidates, key=lambda c: c.confidence, reverse=True
+                    )
+                    to_verify = sorted_candidates[:verifier.max_calls]
+
+                    logger.info(
+                        "Verifying %d/%d candidates with %s",
+                        len(to_verify), len(raw_candidates), verifier.model,
+                    )
+
+                    # Run verification concurrently with semaphore
+                    sem = asyncio.Semaphore(10)
+
+                    async def _verify_one(contr):
+                        async with sem:
+                            return contr, await verifier.verify(
+                                claim_a=contr.claim1.text,
+                                claim_b=contr.claim2.text,
+                                suggested_type=contr.type.value,
+                                extra_system_context=few_shot_section,
+                            )
+
+                    results = await asyncio.gather(
+                        *[_verify_one(c) for c in to_verify],
+                        return_exceptions=True,
+                    )
+
+                    for item in results:
+                        if isinstance(item, Exception):
+                            logger.warning("Verifier call exception: %s", item)
+                            continue
+                        contr, vresult = item
+                        cid = id(contr)
+                        if vresult.success:
+                            if vresult.outcome == "TRUE_CONTRADICTION":
+                                verified_ids.add(cid)
+                                verifier_confidences[cid] = vresult.confidence
+                                verifier_explanations[cid] = vresult.reason
+                            else:
+                                rejected_ids.add(cid)
+
+                    stats = verifier.get_stats()
+                    logger.info(
+                        "Verifier done: %d verified, %d rejected, %d unclear "
+                        "(calls=%d, in_tokens=%d, out_tokens=%d)",
+                        stats["promoted"], stats["rejected"], stats["unclear"],
+                        stats["calls"], stats["total_input_tokens"],
+                        stats["total_output_tokens"],
+                    )
+                elif not verifier.enabled:
+                    logger.warning(
+                        "Verifier disabled — saving all %d rule-based candidates as suspicious",
+                        len(raw_candidates),
+                    )
+
+                update_job_progress(80, "Scoring and saving contradictions")
+
+                # ── Step 3: Ensemble scoring + save to DB ──
+                ensemble_scorer = get_ensemble_scorer()
+
+                for contr in raw_candidates:
+                    cid = id(contr)
+
+                    # Skip rejected false positives
+                    if cid in rejected_ids:
+                        continue
+
+                    # Build ensemble signals
+                    pair_key = tuple(sorted([contr.claim1.id, contr.claim2.id]))
+                    agreement = engine_agreement.get(pair_key, 'rule')
+
+                    # Semantic similarity
+                    sem_score = 0.0
+                    try:
+                        sem_score = semantic_engine.relatedness(contr.claim1, contr.claim2)
+                    except Exception:
+                        pass
+
+                    # Entity overlap
+                    ent_overlap = 0.0
+                    subject_score = 0.0
+                    try:
+                        ent_overlap = entity_graph.entity_overlap(contr.claim1, contr.claim2)
+                        subject_score = entity_graph.same_subject_score(contr.claim1, contr.claim2)
+                    except Exception:
+                        pass
+
+                    # Temporal evidence
+                    temporal_boost = 0.0
+                    has_temporal = False
+                    try:
+                        temp_evidence = temporal_graph.temporal_evidence(contr.claim1, contr.claim2)
+                        temporal_boost = temp_evidence.get('anomaly_boost', 0.0)
+                        has_temporal = temp_evidence.get('has_temporal_conflict', False)
+                    except Exception:
+                        pass
+
+                    # Learning adjustment
+                    learning_adj = 0.0
+                    type_prec = None
+                    contr_type = contr.type.value if hasattr(contr.type, 'value') else str(contr.type)
+                    if learning_ctx:
+                        learning_adj = learning_ctx.confidence_adjustments.get(contr_type, 0.0)
+                        type_prec = learning_ctx.type_precision.get(contr_type)
+
+                    signals = ContradictionSignals(
+                        rule_confidence=contr.confidence,
+                        llm_confidence=None,  # analyzer doesn't give per-contradiction confidence
+                        verifier_confidence=verifier_confidences.get(cid),
+                        semantic_similarity=sem_score,
+                        entity_overlap=ent_overlap,
+                        same_subject_score=subject_score,
+                        temporal_boost=temporal_boost,
+                        has_temporal_conflict=has_temporal,
+                        learning_adjustment=learning_adj,
+                        type_precision=type_prec,
+                        both_engines_agree=(agreement == 'both'),
+                        rule_only=(agreement == 'rule'),
+                        llm_only=(agreement == 'llm'),
+                        contradiction_type=contr_type,
+                        severity=contr.severity.value if hasattr(contr.severity, 'value') else str(contr.severity),
+                    )
+
+                    ensemble_result = ensemble_scorer.score(signals)
+
+                    # Use ensemble status if verifier didn't explicitly verify
+                    if cid in verified_ids:
+                        status_val = "verified"
+                        confidence = ensemble_result.final_confidence
+                    elif ensemble_result.final_status == "verified":
+                        status_val = "likely"  # Only verifier can set "verified"
+                        confidence = ensemble_result.final_confidence
+                    elif ensemble_result.final_status == "likely":
+                        status_val = "likely"
+                        confidence = ensemble_result.final_confidence
+                    else:
+                        status_val = "suspicious"
+                        confidence = ensemble_result.final_confidence
+
+                    # Use verifier explanation if available, enriched with ensemble
+                    explanation = contr.explanation
+                    verifier_reason = verifier_explanations.get(cid)
+                    if verifier_reason:
+                        explanation = verifier_reason
+
                     claim1_db_id = getattr(contr.claim1, "_db_id", None)
                     claim2_db_id = getattr(contr.claim2, "_db_id", None)
 
+                    locator1 = build_anchor_from_claim(contr.claim1)
+                    locator2 = build_anchor_from_claim(contr.claim2)
                     db_contr = Contradiction(
                         run_id=run.id,
                         claim1_id=claim1_db_id,
                         claim2_id=claim2_db_id,
                         contradiction_type=contr.type.value,
-                        status=contr.status.value if hasattr(contr, 'status') else 'suspicious',
-                        confidence=contr.confidence,
+                        status=status_val,
+                        confidence=confidence,
                         severity=contr.severity.value,
                         category=contr.category.value if contr.category else None,
-                        explanation=contr.explanation,
+                        explanation=explanation,
                         quote1=contr.quote1,
                         quote2=contr.quote2,
-                        locator1_json={
-                            "doc_id": getattr(contr.claim1, "doc_id", None),
-                            "paragraph_index": getattr(contr.claim1, "paragraph_index", None),
-                            "char_start": getattr(contr.claim1, "char_start", None),
-                            "char_end": getattr(contr.claim1, "char_end", None),
-                        },
-                        locator2_json={
-                            "doc_id": getattr(contr.claim2, "doc_id", None),
-                            "paragraph_index": getattr(contr.claim2, "paragraph_index", None),
-                            "char_start": getattr(contr.claim2, "char_start", None),
-                            "char_end": getattr(contr.claim2, "char_end", None),
-                        },
+                        locator1_json=locator1,
+                        locator2_json=locator2,
                     )
                     db.add(db_contr)
+                    saved_count += 1
+
+            update_job_progress(85, "Generating insights")
+
+            # Generate contradiction insights
+            compute_insights_for_run(db, run.id)
 
             update_job_progress(90, "Saving results")
 
             # Update run status
-            run.status = "done"
+            run.status = "completed"
             run.completed_at = datetime.utcnow()
 
             # Create completion event
@@ -795,7 +1160,9 @@ def task_analyze_case(
                 related_ids_json={
                     "analysis_run_id": run.id,
                     "claims_count": len(all_claims),
-                    "contradictions_count": len(detection_result.contradictions) if all_claims else 0
+                    "contradictions_found": saved_count,
+                    "verified_count": len(verified_ids),
+                    "rejected_count": len(rejected_ids),
                 }
             )
             db.add(event2)
@@ -807,16 +1174,20 @@ def task_analyze_case(
             elapsed_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
             return {
-                "status": "done",
+                "status": "completed",
                 "analysis_run_id": run.id,
                 "documents_analyzed": len(documents),
                 "claims_extracted": len(all_claims),
-                "contradictions_found": len(detection_result.contradictions) if all_claims else 0,
-                "elapsed_ms": elapsed_ms
+                "contradictions_found": saved_count,
+                "verified_count": len(verified_ids),
+                "rejected_count": len(rejected_ids),
+                "elapsed_ms": elapsed_ms,
             }
 
     except Exception as e:
         logger.exception("Analysis failed")
+        safe_error = _sanitize_error_message(e, fallback="שגיאה בניתוח התיק")
+        _set_job_error_message(safe_error)
 
         # Update run status
         try:
@@ -826,9 +1197,10 @@ def task_analyze_case(
                 ).order_by(AnalysisRun.created_at.desc()).first()
                 if run and run.status == "running":
                     run.status = "failed"
-                    run.metadata_json['error'] = str(e)
+                    run.metadata_json = run.metadata_json or {}
+                    run.metadata_json["error"] = safe_error
                     db.commit()
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not update analysis run status to failed: %s", e)
 
         raise

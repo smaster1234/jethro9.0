@@ -8,12 +8,15 @@ Production-grade database layer for legal case management.
 from .models import (
     Base,
     Firm, User, Team, TeamMember, AdminTeamScope,
+    Organization, OrganizationMember, OrganizationInvite,
     Case, CaseParticipant, CaseTeam,
+    Witness, WitnessVersion,
     Folder,
     Document, DocumentPage, DocumentBlock, DocumentVersion,
     Job, Event,
     AnalysisRun, Claim, Issue, IssueLink, Contradiction, Finding,
-    SystemRole, TeamRole, CaseStatus, DocumentParty, DocumentRole,
+    ContradictionInsight, CrossExamPlan, TrainingSession, TrainingTurn, EntityUsage, Feedback,
+    SystemRole, TeamRole, OrganizationRole, InviteStatus, TrainingSessionStatus, FeedbackLabel, CaseStatus, DocumentParty, DocumentRole,
     JobType, JobStatus, EventType, IssueStatus, ContradictionStatus
 )
 from .session import get_db, init_db, get_engine
@@ -23,8 +26,10 @@ __all__ = [
     "Base",
     # Organization
     "Firm", "User", "Team", "TeamMember", "AdminTeamScope",
+    "Organization", "OrganizationMember", "OrganizationInvite",
     # Case Management
     "Case", "CaseParticipant", "CaseTeam",
+    "Witness", "WitnessVersion",
     # Folders
     "Folder",
     # Documents
@@ -32,9 +37,9 @@ __all__ = [
     # Jobs & Events
     "Job", "Event",
     # Analysis
-    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "Finding",
+    "AnalysisRun", "Claim", "Issue", "IssueLink", "Contradiction", "ContradictionInsight", "CrossExamPlan", "TrainingSession", "TrainingTurn", "EntityUsage", "Feedback", "Finding",
     # Enums
-    "SystemRole", "TeamRole", "CaseStatus", "DocumentParty", "DocumentRole",
+    "SystemRole", "TeamRole", "OrganizationRole", "InviteStatus", "TrainingSessionStatus", "FeedbackLabel", "CaseStatus", "DocumentParty", "DocumentRole",
     "JobType", "JobStatus", "EventType", "IssueStatus", "ContradictionStatus",
     # Session
     "get_db", "init_db", "get_engine",

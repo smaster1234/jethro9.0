@@ -106,8 +106,8 @@ def enqueue_job(
     if depends_on:
         try:
             dependency = Job.fetch(depends_on, connection=get_redis_connection())
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not fetch dependency job %s: %s", depends_on, e)
 
     # Enqueue job (fallback to sync if Redis is unreachable)
     try:
@@ -165,8 +165,8 @@ def get_job_status(job_id: str) -> Dict[str, Any]:
         if job.is_finished:
             result["result"] = job.result
         elif job.is_failed:
-            result["error"] = str(job.exc_info) if job.exc_info else "Unknown error"
-            result["error_message"] = job.meta.get("error_message", "")
+            result["error"] = "Job failed"
+            result["error_message"] = job.meta.get("error_message", "") or "התרחשה שגיאה בעיבוד המשימה"
 
         # Get progress from meta
         result["progress"] = job.meta.get("progress", 0)
@@ -198,7 +198,8 @@ def cancel_job(job_id: str) -> bool:
         job = Job.fetch(job_id, connection=get_redis_connection())
         job.cancel()
         return True
-    except:
+    except Exception as e:
+        logger.warning("Could not cancel job %s: %s", job_id, e)
         return False
 
 
@@ -235,8 +236,8 @@ def retry_failed_jobs(queue_name: str = QUEUE_DEFAULT, max_jobs: int = 100) -> i
         try:
             failed_registry.requeue(job_id)
             count += 1
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Could not requeue failed job %s: %s", job_id, e)
 
     return count
 

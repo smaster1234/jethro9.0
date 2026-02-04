@@ -1,17 +1,25 @@
 """
-OpenRouter Base Client
-======================
+LLM Base Client (OpenAI-compatible)
+====================================
 
-Shared async HTTP client for OpenRouter API.
+Shared async HTTP client for OpenAI-compatible APIs.
 Used by both Analyzer and Verifier.
+Supports: OpenAI, OpenRouter, DeepSeek, and any OpenAI-compatible endpoint.
+Includes automatic retry with exponential backoff for transient errors.
 """
 
+import asyncio
 import httpx
 import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = [1, 2, 4]
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -28,24 +36,28 @@ class LLMCallResult:
 
 class OpenRouterBaseClient:
     """
-    Base async client for OpenRouter API.
+    Base async client for OpenAI-compatible APIs.
 
-    Provides common functionality for all OpenRouter-based LLM calls.
+    Provides common functionality for all LLM calls via OpenAI-compatible
+    endpoints (OpenAI, OpenRouter, DeepSeek, etc.).
+    Includes automatic retry with exponential backoff for rate limits and server errors.
     """
 
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
     def __init__(
         self,
         api_key: str,
         model: str,
         timeout: int = 60,
-        app_name: str = "JETHRO Legal Analysis"
+        app_name: str = "JETHRO Legal Analysis",
+        base_url: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
         self.app_name = app_name
+        self.base_url = base_url or self.DEFAULT_BASE_URL
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -68,16 +80,9 @@ class OpenRouterBaseClient:
         max_tokens: int = 2048
     ) -> LLMCallResult:
         """
-        Make an API call to OpenRouter.
+        Make an API call with automatic retry and exponential backoff.
 
-        Args:
-            messages: List of message dicts with role and content
-            response_format: Optional format spec (e.g., {"type": "json_object"})
-            temperature: Sampling temperature (0 = deterministic)
-            max_tokens: Maximum response tokens
-
-        Returns:
-            LLMCallResult with content or error
+        Retries on: 429 (rate limit), 500, 502, 503, 504, and network errors.
         """
         if not self.api_key:
             return LLMCallResult(
@@ -104,56 +109,112 @@ class OpenRouterBaseClient:
             "X-Title": self.app_name
         }
 
-        try:
-            client = await self._get_client()
-            response = await client.post(
-                self.BASE_URL,
-                json=payload,
-                headers=headers
-            )
-            response.raise_for_status()
-            data = response.json()
+        last_error: Optional[str] = None
 
-            # Extract content
+        for attempt in range(MAX_RETRIES + 1):
             try:
-                content = data["choices"][0]["message"]["content"]
-            except (KeyError, IndexError) as e:
-                logger.error(f"OpenRouter response missing content: {e}")
+                client = await self._get_client()
+                response = await client.post(
+                    self.base_url,
+                    json=payload,
+                    headers=headers
+                )
+
+                # Check for retryable HTTP errors before raising
+                if response.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF_SECONDS[attempt] if attempt < len(RETRY_BACKOFF_SECONDS) else 4
+                    logger.warning(
+                        "LLM API returned %d, retrying in %ds (attempt %d/%d)",
+                        response.status_code, wait, attempt + 1, MAX_RETRIES
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+
+                # Extract content
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError) as e:
+                    logger.error(f"OpenRouter response missing content: {e}")
+                    return LLMCallResult(
+                        content="",
+                        model=self.model,
+                        success=False,
+                        error=f"Response missing content: {e}",
+                        raw_response=data
+                    )
+
+                if content is None:
+                    logger.warning(f"OpenRouter returned null content for model {self.model}")
+                    content = ""
+                elif not content.strip():
+                    logger.warning(
+                        f"OpenRouter returned empty content for model {self.model} | "
+                        f"finish_reason={data.get('choices', [{}])[0].get('finish_reason', 'unknown')}"
+                    )
+
+                usage = data.get("usage", {})
+
+                return LLMCallResult(
+                    content=content,
+                    model=self.model,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                    raw_response=data,
+                    success=True
+                )
+
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+                if e.response.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF_SECONDS[attempt] if attempt < len(RETRY_BACKOFF_SECONDS) else 4
+                    logger.warning(
+                        "LLM API HTTP error %d, retrying in %ds (attempt %d/%d)",
+                        e.response.status_code, wait, attempt + 1, MAX_RETRIES
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(f"OpenRouter API error: {e.response.status_code}")
                 return LLMCallResult(
                     content="",
                     model=self.model,
                     success=False,
-                    error=f"Response missing content: {e}",
-                    raw_response=data
+                    error=last_error
                 )
 
-            if content is None:
-                content = ""
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+                last_error = str(e)
+                if attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF_SECONDS[attempt] if attempt < len(RETRY_BACKOFF_SECONDS) else 4
+                    logger.warning(
+                        "LLM API network error: %s, retrying in %ds (attempt %d/%d)",
+                        type(e).__name__, wait, attempt + 1, MAX_RETRIES
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(f"OpenRouter request failed after {MAX_RETRIES} retries: {e}")
+                return LLMCallResult(
+                    content="",
+                    model=self.model,
+                    success=False,
+                    error=last_error
+                )
 
-            usage = data.get("usage", {})
+            except Exception as e:
+                logger.error(f"OpenRouter request failed: {e}")
+                return LLMCallResult(
+                    content="",
+                    model=self.model,
+                    success=False,
+                    error=str(e)
+                )
 
-            return LLMCallResult(
-                content=content,
-                model=self.model,
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                raw_response=data,
-                success=True
-            )
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"OpenRouter API error: {e.response.status_code}")
-            return LLMCallResult(
-                content="",
-                model=self.model,
-                success=False,
-                error=f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            )
-        except Exception as e:
-            logger.error(f"OpenRouter request failed: {e}")
-            return LLMCallResult(
-                content="",
-                model=self.model,
-                success=False,
-                error=str(e)
-            )
+        # Should not reach here, but safety fallback
+        return LLMCallResult(
+            content="",
+            model=self.model,
+            success=False,
+            error=last_error or "Max retries exceeded"
+        )

@@ -9,10 +9,14 @@ import {
   Save,
   CheckCircle,
   AlertTriangle,
+  Search,
+  UserPlus,
+  Mail,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, Button, Badge, Input } from '../components/ui';
-import { authApi, handleApiError } from '../api';
+import { authApi, handleApiError, orgsApi } from '../api';
+import type { Organization, OrganizationMember, UserSearchResult } from '../types';
 
 type SettingsTab = 'profile' | 'firm' | 'notifications' | 'appearance';
 
@@ -30,6 +34,26 @@ export const SettingsPage: React.FC = () => {
     phone: '',
   });
 
+  // Organization state
+  const [orgs, setOrgs] = useState<Organization[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState('');
+  const [members, setMembers] = useState<OrganizationMember[]>([]);
+  const [isLoadingOrg, setIsLoadingOrg] = useState(false);
+  const [orgError, setOrgError] = useState('');
+  const [newOrgName, setNewOrgName] = useState('');
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+
+  // Member search/invite
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [memberRole, setMemberRole] = useState<'viewer' | 'intern' | 'lawyer' | 'owner'>('viewer');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'viewer' | 'intern' | 'lawyer' | 'owner'>('viewer');
+  const [isAddingMember, setIsAddingMember] = useState(false);
+  const [isInviting, setIsInviting] = useState(false);
+  const [memberActionError, setMemberActionError] = useState('');
+
   // Load user data
   useEffect(() => {
     if (user) {
@@ -41,6 +65,60 @@ export const SettingsPage: React.FC = () => {
       });
     }
   }, [user]);
+
+  useEffect(() => {
+    if (activeTab !== 'firm') return;
+    const loadOrgs = async () => {
+      setIsLoadingOrg(true);
+      setOrgError('');
+      try {
+        const orgList = await orgsApi.list();
+        setOrgs(orgList);
+        if (!selectedOrgId && orgList.length > 0) {
+          setSelectedOrgId(orgList[0].id);
+        }
+      } catch (err) {
+        setOrgError(handleApiError(err));
+      } finally {
+        setIsLoadingOrg(false);
+      }
+    };
+    loadOrgs();
+  }, [activeTab, selectedOrgId]);
+
+  useEffect(() => {
+    if (!selectedOrgId || activeTab !== 'firm') return;
+    const loadMembers = async () => {
+      setIsLoadingOrg(true);
+      setOrgError('');
+      try {
+        const list = await orgsApi.listMembers(selectedOrgId);
+        setMembers(list);
+      } catch (err) {
+        setOrgError(handleApiError(err));
+      } finally {
+        setIsLoadingOrg(false);
+      }
+    };
+    loadMembers();
+  }, [selectedOrgId, activeTab]);
+
+  useEffect(() => {
+    if (!selectedOrgId || activeTab !== 'firm') return;
+    if (!searchQuery || searchQuery.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    const handler = setTimeout(async () => {
+      try {
+        const results = await orgsApi.searchUsers(searchQuery.trim());
+        setSearchResults(results);
+      } catch {
+        setSearchResults([]);
+      }
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery, selectedOrgId, activeTab]);
 
   const [saveError, setSaveError] = useState('');
 
@@ -67,6 +145,54 @@ export const SettingsPage: React.FC = () => {
       setSaveError(handleApiError(err));
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleCreateOrg = async () => {
+    if (!newOrgName.trim()) return;
+    setIsCreatingOrg(true);
+    setOrgError('');
+    try {
+      const org = await orgsApi.create({ name: newOrgName.trim() });
+      setOrgs((prev) => [...prev, org]);
+      setSelectedOrgId(org.id);
+      setNewOrgName('');
+    } catch (err) {
+      setOrgError(handleApiError(err));
+    } finally {
+      setIsCreatingOrg(false);
+    }
+  };
+
+  const handleAddMember = async () => {
+    if (!selectedOrgId || !selectedUserId) return;
+    setIsAddingMember(true);
+    setMemberActionError('');
+    try {
+      await orgsApi.addMember(selectedOrgId, { user_id: selectedUserId, role: memberRole });
+      const list = await orgsApi.listMembers(selectedOrgId);
+      setMembers(list);
+      setSelectedUserId('');
+      setSearchQuery('');
+      setSearchResults([]);
+    } catch (err) {
+      setMemberActionError(handleApiError(err));
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
+
+  const handleInvite = async () => {
+    if (!selectedOrgId || !inviteEmail.trim()) return;
+    setIsInviting(true);
+    setMemberActionError('');
+    try {
+      await orgsApi.invite(selectedOrgId, { email: inviteEmail.trim(), role: inviteRole });
+      setInviteEmail('');
+    } catch (err) {
+      setMemberActionError(handleApiError(err));
+    } finally {
+      setIsInviting(false);
     }
   };
 
@@ -248,6 +374,155 @@ export const SettingsPage: React.FC = () => {
                       </p>
                     </div>
                   )}
+
+                  <div className="border-t border-slate-100 pt-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-slate-900">חברי משרד</h3>
+                      {isLoadingOrg && <span className="text-xs text-slate-500">טוען...</span>}
+                    </div>
+
+                    {orgError && (
+                      <div className="p-3 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+                        {orgError}
+                      </div>
+                    )}
+                    {memberActionError && (
+                      <div className="p-3 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+                        {memberActionError}
+                      </div>
+                    )}
+
+                    {orgs.length === 0 ? (
+                      <div className="space-y-3">
+                        <Input
+                          label="שם משרד"
+                          value={newOrgName}
+                          onChange={(e) => setNewOrgName(e.target.value)}
+                          placeholder="משרד ראשי"
+                        />
+                        <Button onClick={handleCreateOrg} isLoading={isCreatingOrg}>
+                          צור משרד
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="text-sm text-slate-600">בחירת משרד</label>
+                            <select
+                              value={selectedOrgId}
+                              onChange={(e) => setSelectedOrgId(e.target.value)}
+                              className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                            >
+                              {orgs.map((org) => (
+                                <option key={org.id} value={org.id}>
+                                  {org.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          {members.length === 0 ? (
+                            <div className="text-sm text-slate-500">אין חברי משרד להצגה.</div>
+                          ) : (
+                            <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
+                              {members.map((member) => (
+                                <div key={member.user_id} className="p-3 flex items-center justify-between">
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-900">{member.name}</p>
+                                    <p className="text-xs text-slate-500">{member.email}</p>
+                                  </div>
+                                  <Badge variant="neutral">{member.role}</Badge>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input
+                            label="חפש משתמש"
+                            value={searchQuery}
+                            onChange={(e) => {
+                              setSearchQuery(e.target.value);
+                              setSelectedUserId('');
+                            }}
+                            placeholder="שם או דוא״ל"
+                            leftIcon={<Search className="w-4 h-4" />}
+                          />
+                          <div>
+                            <label className="text-sm text-slate-600">תפקיד</label>
+                            <select
+                              value={memberRole}
+                              onChange={(e) => setMemberRole(e.target.value as typeof memberRole)}
+                              className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                            >
+                              <option value="viewer">viewer</option>
+                              <option value="intern">intern</option>
+                              <option value="lawyer">lawyer</option>
+                              <option value="owner">owner</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {searchResults.length > 0 && (
+                          <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
+                            {searchResults.map((result) => (
+                              <button
+                                key={result.id}
+                                onClick={() => setSelectedUserId(result.id)}
+                                className={`w-full text-right p-3 hover:bg-slate-50 ${
+                                  selectedUserId === result.id ? 'bg-primary-50' : ''
+                                }`}
+                              >
+                                <div className="text-sm font-medium text-slate-900">{result.name}</div>
+                                <div className="text-xs text-slate-500">{result.email}</div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <Button
+                          onClick={handleAddMember}
+                          isLoading={isAddingMember}
+                          disabled={!selectedUserId}
+                          leftIcon={<UserPlus className="w-4 h-4" />}
+                        >
+                          הוסף חבר משרד
+                        </Button>
+
+                        {searchQuery.trim().length >= 2 && searchResults.length === 0 && (
+                          <div className="space-y-3 border-t border-slate-100 pt-4">
+                            <Input
+                              label="הזמנה בדוא״ל"
+                              value={inviteEmail}
+                              onChange={(e) => setInviteEmail(e.target.value)}
+                              placeholder="user@example.com"
+                              leftIcon={<Mail className="w-4 h-4" />}
+                            />
+                            <div>
+                              <label className="text-sm text-slate-600">תפקיד בהזמנה</label>
+                              <select
+                                value={inviteRole}
+                                onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}
+                                className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                              >
+                                <option value="viewer">viewer</option>
+                                <option value="intern">intern</option>
+                                <option value="lawyer">lawyer</option>
+                                <option value="owner">owner</option>
+                              </select>
+                            </div>
+                            <Button onClick={handleInvite} isLoading={isInviting}>
+                              שלח הזמנה
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </Card>
             )}

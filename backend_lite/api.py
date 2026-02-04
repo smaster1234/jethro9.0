@@ -31,7 +31,9 @@ import hashlib
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Body, APIRouter, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect, Response
+from fastapi import FastAPI, HTTPException, Header, Depends, Body, APIRouter, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect, Response, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.responses import StreamingResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +63,7 @@ from .schemas import (
     Severity,
     TextSpan,
     Locator,
+    EvidenceAnchor,
     # Case management request models
     CreateCaseRequest,
     AddDocumentRequest,
@@ -83,6 +86,7 @@ from .schemas import (
     AttributionSummary,
 )
 from .extractor import extract_claims, ClaimExtractor
+from .expert_contradiction import build_expert_claims, analyze_expert_pairs
 from .detector import detect_contradictions, DetectedContradiction
 from .cross_exam import generate_cross_exam_questions, CrossExamSet
 from .llm_client import detect_with_llm, get_llm_client  # Legacy, kept for compatibility
@@ -190,7 +194,7 @@ app.add_middleware(
     allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-User-Id", "X-User-Email", "X-Firm-Id"],
 )
 
 # Security Headers Middleware
@@ -204,10 +208,12 @@ except ImportError:
 # Rate Limiting Middleware
 try:
     from .middleware.rate_limit import RateLimitMiddleware
-    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "false").lower() == "true"
+    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() != "false"
     if RATE_LIMIT_ENABLED:
         app.add_middleware(RateLimitMiddleware)
         logger.info("Rate limiting middleware enabled")
+    else:
+        logger.warning("⚠️  Rate limiting DISABLED — set RATE_LIMIT_ENABLED=true for production")
 except ImportError:
     logger.warning("Rate limiting middleware not available")
 
@@ -241,16 +247,29 @@ if not FRONTEND_BUILD_DIR.exists():
     FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
 FRONTEND_BUILD_AVAILABLE = FRONTEND_BUILD_DIR.exists() and (FRONTEND_BUILD_DIR / "index.html").exists()
 FRONTEND_STATIC_DIR = FRONTEND_BUILD_DIR / "static"
+_log_frontend_build = (not REACT_ENABLED) or (FRONTEND_BUILD_DIR != REACT_BUILD_DIR)
 if FRONTEND_BUILD_AVAILABLE and FRONTEND_STATIC_DIR.exists():
-    # Mount React static assets (JS, CSS, etc.)
-    app.mount("/react-static", StaticFiles(directory=str(FRONTEND_STATIC_DIR)), name="react-static")
-    logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR}")
+    # Mount React static assets (JS, CSS, etc.) — only if not already mounted via REACT_ENABLED path
+    if not REACT_ENABLED:
+        app.mount("/react-static", StaticFiles(directory=str(FRONTEND_STATIC_DIR)), name="react-static")
+        logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR}")
 elif FRONTEND_BUILD_AVAILABLE:
     logger.info(f"React frontend build available at {FRONTEND_BUILD_DIR} (no /static dir)")
 
 # Include upload router if available
 if UPLOAD_ENABLED and upload_router:
     app.include_router(upload_router, prefix="/api/v1")
+    
+    @app.get("/api/v1/me/credits")
+    async def api_get_my_credits(
+        db: Session = Depends(get_db_dependency),
+        auth: AuthContext = Depends(get_auth_context),
+    ):
+        """Get current user's credit balance and recent transactions."""
+        from .credits import get_balance_info
+        info = get_balance_info(auth.user_id, auth.firm_id, db)
+        return info
+        
     logger.info("Upload system enabled at /api/v1")
 
 
@@ -344,6 +363,98 @@ def _case_status_for_ui(db: Session, case_id: str) -> str:
     return "active"
 
 
+def _accessible_org_ids(db: Session, auth: Optional[AuthContext]) -> Optional[List[str]]:
+    if not auth:
+        return []
+    if auth.system_role in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+        return None
+
+    from .orgs import ensure_default_org, list_user_org_ids
+
+    org_ids = list_user_org_ids(db, auth.firm_id, auth.user_id)
+    if not org_ids:
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        db.flush()
+        org_ids = [org.id]
+    return org_ids
+
+
+def _require_case_access(db: Session, auth: AuthContext, case_id: str) -> Case:
+    case = db.query(Case).filter(
+        Case.id == case_id,
+        Case.firm_id == auth.firm_id
+    ).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    org_ids = _accessible_org_ids(db, auth)
+    if case.organization_id is None:
+        from .orgs import ensure_default_org
+        org = ensure_default_org(db, auth.firm_id, auth.user_id)
+        case.organization_id = org.id
+        db.flush()
+        if org_ids is not None and org.id not in org_ids:
+            org_ids.append(org.id)
+
+    if org_ids is not None and case.organization_id not in org_ids:
+        raise HTTPException(status_code=403, detail="Case not accessible")
+
+    return case
+
+
+# =============================================================================
+# Auth Dependencies (must be defined before routes that use them)
+# =============================================================================
+
+async def get_current_user(
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_email: Optional[str] = Header(None, alias="X-User-Email"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db_dependency)
+) -> Optional[AuthContext]:
+    """
+    Get current user from either:
+    - `Authorization: Bearer <jwt>` (preferred when present)
+    - `X-User-Id` header (legacy/backwards compatibility)
+    - `X-User-Email` header (fallback for demo tooling)
+
+    For MVP, this is a simple header-based auth.
+    Returns None if no header provided (anonymous access for backwards compat).
+    """
+    token_user_id: Optional[str] = None
+    token_email: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        payload = decode_token(token)
+        if payload:
+            token_user_id = payload.get("sub")
+            token_email = payload.get("email") or payload.get("preferred_username")
+
+    effective_user_id = token_user_id or x_user_id
+    effective_email = token_email or x_user_email
+
+    if not effective_user_id and not effective_email:
+        return None
+
+    auth_service = get_auth_service(db)
+    # Flexible auth: allow email fallback + optional dev/demo auto-provisioning
+    auth = auth_service.get_auth_context_flexible(effective_user_id, email=effective_email)
+
+    if not auth:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    return auth
+
+
+async def require_auth(
+    auth: Optional[AuthContext] = Depends(get_current_user)
+) -> AuthContext:
+    """Require authenticated user"""
+    if not auth:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return auth
+
+
 @frontend_router.get("/healthz")
 async def api_healthz():
     return {"status": "ok", "service": "backend_lite"}
@@ -354,22 +465,96 @@ async def api_health():
     return await api_healthz()
 
 
+@frontend_router.post("/auth/register")
+async def api_register(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db_dependency)
+):
+    """Register a new user via frontend API"""
+    email = payload.get("email")
+    password = payload.get("password")
+    name = payload.get("name")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+        
+    auth_service = get_auth_service(db)
+    try:
+        user = auth_service.register_user(email, password, name)
+        access_token = create_access_token(data={"sub": user.id, "email": user.email})
+        refresh_token = create_refresh_token(data={"sub": user.id})
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@frontend_router.post("/auth/login")
+async def api_login(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db_dependency)
+):
+    """Login via frontend API"""
+    email = payload.get("email")
+    password = payload.get("password")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+        
+    auth_service = get_auth_service(db)
+    user = auth_service.authenticate_user(email, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+    access_token = create_access_token(data={"sub": user.id, "email": user.email})
+    refresh_token = create_refresh_token(data={"sub": user.id})
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+
 @frontend_router.get("/auth/me")
-async def api_auth_me():
+async def api_auth_me(
+    auth: Optional[AuthContext] = Depends(get_current_user),
+    db: Session = Depends(get_db_dependency)
+):
     """
-    React UI expects `/api/auth/me`. We keep it best-effort:
-    - If JWT auth present: return user info
-    - Else: return a minimal anonymous user (prevents UI hard-fail)
+    React UI expects `/api/auth/me`.
+    Returns current user info including credits if authenticated.
     """
-    return {"user": {"id": None, "email": None, "name": "Guest", "role": "user", "is_admin": False}}
+    if not auth:
+        return {"user": {"id": None, "email": None, "name": "Guest", "role": "user", "is_admin": False}}
+    
+    from .credits import get_balance
+    balance = get_balance(auth.user_id, auth.firm_id, db)
+    
+    return {
+        "user": {
+            "id": auth.user_id,
+            "email": auth.email,
+            "name": auth.name,
+            "role": auth.system_role,
+            "is_admin": auth.system_role in ("admin", "super_admin"),
+            "credits": balance
+        }
+    }
 
 
 @frontend_router.get("/cases/recent")
 async def api_cases_recent(
     limit: int = Query(default=5, ge=1, le=50),
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case)
+    q = db.query(Case).filter(Case.firm_id == auth.firm_id)
+    org_ids = _accessible_org_ids(db, auth)
+    if org_ids is not None:
+        q = q.filter(Case.organization_id.in_(org_ids))
     cases = q.order_by(Case.updated_at.desc()).limit(limit).all()
     return [
         {
@@ -386,8 +571,12 @@ async def api_cases_recent(
 @frontend_router.get("/cases")
 async def api_list_cases(
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case)
+    q = db.query(Case).filter(Case.firm_id == auth.firm_id)
+    org_ids = _accessible_org_ids(db, auth)
+    if org_ids is not None:
+        q = q.filter(Case.organization_id.in_(org_ids))
     cases = q.order_by(Case.updated_at.desc()).all()
     out = []
     for c in cases:
@@ -410,11 +599,9 @@ async def api_list_cases(
 async def api_get_case(
     case_id: str,
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    q = db.query(Case).filter(Case.id == case_id)
-    c = q.first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+    c = _require_case_access(db, auth, case_id)
 
     docs = (
         db.query(Document)
@@ -459,6 +646,7 @@ async def api_get_case(
         "case_type": "case",
         "description": c.description,
         "case_number": c.case_number,
+        "organization_id": c.organization_id,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         "files": files,
@@ -469,11 +657,10 @@ async def api_get_case(
 async def api_list_case_files(
     case_id: str,
     db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
 ):
-    case = db.query(Case).filter(Case.id == case_id).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    return {"files": (await api_get_case(case_id=case_id, db=db)).get("files", [])}
+    _require_case_access(db, auth, case_id)
+    return {"files": (await api_get_case(case_id=case_id, db=db, auth=auth)).get("files", [])}
 
 
 @frontend_router.post("/cases/{case_id}/files")
@@ -485,6 +672,7 @@ async def api_upload_case_files(
     opponent_lawyer_names: str = Form(default="[]"),
     files: List[UploadFile] = File(...),
     auth: AuthContext = Depends(get_auth_context),  # reuse upload auth (X-User-Email / Authorization)
+    db: Session = Depends(get_db_dependency),
 ):
     """
     React FileManager upload contract.
@@ -516,6 +704,8 @@ async def api_upload_case_files(
                 "author": opp or None,
             }
         )
+
+    _require_case_access(db, auth, case_id)
 
     # Call upload router function directly (keeps DB/storage logic centralized)
     from .api_upload import upload_documents as _upload_documents
@@ -565,6 +755,7 @@ async def api_update_file_source(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db_dependency),
 ):
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
@@ -582,6 +773,7 @@ async def api_delete_file(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db_dependency),
 ):
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         return {"ok": True}
@@ -599,6 +791,7 @@ async def api_download_file(
 ):
     from .storage import get_storage
 
+    _require_case_access(db, auth, case_id)
     doc = db.query(Document).filter(Document.id == file_id, Document.case_id == case_id, Document.firm_id == auth.firm_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
@@ -618,6 +811,7 @@ async def api_reanalyze_case(
     case_id: str,
     payload: Dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db_dependency),
 ):
     """
     React calls this after uploads. Map to the real analysis job under `/api/v1`.
@@ -627,13 +821,19 @@ async def api_reanalyze_case(
     mode = payload.get("mode") or "full"
     if AnalyzeCaseRequest is None:
         raise HTTPException(status_code=503, detail="Upload/analysis system is not enabled")
+    _require_case_access(db, auth, case_id)
     req = AnalyzeCaseRequest(document_ids=None, mode=mode)
     return await _analyze_case(case_id=case_id, request=req, auth=auth)
 
 
 @frontend_router.get("/cases/{case_id}/analysis-status")
-async def api_case_analysis_status(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_analysis_status(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     from .db.models import AnalysisRun
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -653,7 +853,11 @@ async def api_case_analysis_status(case_id: str, db: Session = Depends(get_db_de
 
 
 @frontend_router.get("/cases/{case_id}/analysis")
-async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_analysis(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Minimal analysis payload for React UI.
     - `status`: completed/analyzing/ready/failed
@@ -662,6 +866,7 @@ async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependenc
     """
     from .db.models import AnalysisRun, Contradiction
 
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -711,12 +916,17 @@ async def api_case_analysis(case_id: str, db: Session = Depends(get_db_dependenc
 
 
 @frontend_router.get("/cases/{case_id}/claims")
-async def api_case_claims(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_claims(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     """
     Legacy claims endpoint used by LegalNotebookPanel.
     Returns: { claims: [...] }
     """
     from .db.models import AnalysisRun
+    _require_case_access(db, auth, case_id)
     run = (
         db.query(AnalysisRun)
         .filter(AnalysisRun.case_id == case_id)
@@ -824,17 +1034,32 @@ async def api_ui_microcopy():
 
 
 @frontend_router.get("/cases/{case_id}/capabilities")
-async def api_case_capabilities(case_id: str):
+async def api_case_capabilities(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return (await api_capabilities_root()).get("capabilities", [])
 
 
 @frontend_router.get("/cases/{case_id}/state")
-async def api_case_state(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_state(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"case_id": case_id, "status": _case_status_for_ui(db, case_id)}
 
 
 @frontend_router.get("/cases/{case_id}/jobs")
-async def api_case_jobs(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_jobs(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     jobs = db.query(Job).filter(Job.case_id == case_id).order_by(Job.created_at.desc()).all()
     return {
         "jobs": [
@@ -852,10 +1077,15 @@ async def api_case_jobs(case_id: str, db: Session = Depends(get_db_dependency)):
 
 
 @frontend_router.get("/cases/{case_id}/snapshot")
-async def api_case_snapshot(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_snapshot(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Notebook snapshot is a composite; provide minimal structure.
-    case = await api_get_case(case_id=case_id, db=db)
-    analysis = await api_case_analysis(case_id=case_id, db=db)
+    _require_case_access(db, auth, case_id)
+    case = await api_get_case(case_id=case_id, db=db, auth=auth)
+    analysis = await api_case_analysis(case_id=case_id, db=db, auth=auth)
     return {
         "case": case,
         "analysis": analysis,
@@ -864,19 +1094,24 @@ async def api_case_snapshot(case_id: str, db: Session = Depends(get_db_dependenc
 
 
 @frontend_router.get("/cases/{case_id}/memory")
-async def api_case_memory_get(case_id: str, db: Session = Depends(get_db_dependency)):
-    c = db.query(Case).filter(Case.id == case_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+async def api_case_memory_get(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    c = _require_case_access(db, auth, case_id)
     mem = (c.extra_data or {}).get("memory", [])
     return {"memory": mem}
 
 
 @frontend_router.post("/cases/{case_id}/memory")
-async def api_case_memory_post(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict), db: Session = Depends(get_db_dependency)):
-    c = db.query(Case).filter(Case.id == case_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
+async def api_case_memory_post(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    c = _require_case_access(db, auth, case_id)
     ed = c.extra_data or {}
     items = payload.get("memory") or payload.get("items") or payload
     ed["memory"] = items
@@ -886,10 +1121,15 @@ async def api_case_memory_post(case_id: str, payload: Dict[str, Any] = Body(defa
 
 
 @frontend_router.get("/files/{file_id}/info")
-async def api_file_info(file_id: str, db: Session = Depends(get_db_dependency)):
+async def api_file_info(
+    file_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     doc = db.query(Document).filter(Document.id == file_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_case_access(db, auth, doc.case_id)
     return {
         "id": doc.id,
         "filename": doc.doc_name,
@@ -900,10 +1140,15 @@ async def api_file_info(file_id: str, db: Session = Depends(get_db_dependency)):
 
 
 @frontend_router.get("/files/{file_id}/content")
-async def api_file_content(file_id: str, db: Session = Depends(get_db_dependency)):
+async def api_file_content(
+    file_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     doc = db.query(Document).filter(Document.id == file_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="File not found")
+    _require_case_access(db, auth, doc.case_id)
     return {"text": doc.full_text or "", "id": doc.id}
 
 
@@ -926,56 +1171,107 @@ async def api_subscription_me():
 
 
 @frontend_router.get("/cases/{case_id}/ai-summary")
-async def api_case_ai_summary(case_id: str):
+async def api_case_ai_summary(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Optional enhancement endpoint; UI can fall back to deterministic summaries.
+    _require_case_access(db, auth, case_id)
     return {"exists": False, "summary": None}
 
 
 @frontend_router.get("/cases/{case_id}/capabilities-manifest")
-async def api_case_capabilities_manifest(case_id: str):
+async def api_case_capabilities_manifest(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Placeholder manifest for notebook UX
-    return {"case_id": case_id, "capabilities": (await api_case_capabilities(case_id)).copy()}
+    _require_case_access(db, auth, case_id)
+    return {"case_id": case_id, "capabilities": (await api_case_capabilities(case_id, db=db, auth=auth)).copy()}
 
 
 @frontend_router.get("/cases/{case_id}/context")
-async def api_case_context_get(case_id: str):
+async def api_case_context_get(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"has_context": False, "context": None}
 
 
 @frontend_router.post("/cases/{case_id}/context")
-async def api_case_context_post(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict)):
+async def api_case_context_post(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"ok": True, "has_context": True, "context": payload}
 
 
 @frontend_router.patch("/cases/{case_id}/context")
-async def api_case_context_patch(case_id: str, payload: Dict[str, Any] = Body(default_factory=dict)):
+async def api_case_context_patch(
+    case_id: str,
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"ok": True, "has_context": True, "context": payload}
 
 
 @frontend_router.get("/cases/{case_id}/progress")
-async def api_case_progress(case_id: str, db: Session = Depends(get_db_dependency)):
+async def api_case_progress(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     st = _case_status_for_ui(db, case_id)
     return {"case_id": case_id, "status": st, "progress": 0 if st in ("ready", "completed") else 50, "current_stage": st}
 
 
 @frontend_router.get("/cases/{case_id}/progress/refresh")
-async def api_case_progress_refresh(case_id: str, db: Session = Depends(get_db_dependency)):
-    return await api_case_progress(case_id=case_id, db=db)
+async def api_case_progress_refresh(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    return await api_case_progress(case_id=case_id, db=db, auth=auth)
 
 
 @frontend_router.get("/cases/{case_id}/intelligence-status")
-async def api_case_intelligence_status(case_id: str):
+async def api_case_intelligence_status(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"has_intelligence": False, "is_running": False, "can_run_intelligence": False, "progress": None}
 
 
 @frontend_router.post("/cases/{case_id}/run-intelligence")
-async def api_case_run_intelligence(case_id: str):
+async def api_case_run_intelligence(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
     # Not supported in backend_lite; keep contract stable.
+    _require_case_access(db, auth, case_id)
     return {"status": "not_supported"}
 
 
 @frontend_router.get("/cases/{case_id}/intelligence")
-async def api_case_intelligence(case_id: str):
+async def api_case_intelligence(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    _require_case_access(db, auth, case_id)
     return {"intelligence": None}
 
 
@@ -984,10 +1280,12 @@ async def api_case_analyze_on_demand(
     case_id: str,
     payload: Dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db_dependency),
 ):
     # Alias for reanalyze/full analysis
     mode = payload.get("mode") or "full"
-    return await api_reanalyze_case(case_id=case_id, payload={"mode": mode}, auth=auth)
+    _require_case_access(db, auth, case_id)
+    return await api_reanalyze_case(case_id=case_id, payload={"mode": mode}, auth=auth, db=db)
 
 
 # Register routers
@@ -1028,6 +1326,8 @@ def convert_contradiction_to_output(
     if hasattr(contr.claim1, 'doc_id') and contr.claim1.doc_id:
         locator1 = Locator(
             doc_id=contr.claim1.doc_id,
+            page=getattr(contr.claim1, 'page', None),
+            block_index=getattr(contr.claim1, 'block_index', None),
             paragraph=getattr(contr.claim1, 'paragraph_index', None),
             char_start=getattr(contr.claim1, 'char_start', None),
             char_end=getattr(contr.claim1, 'char_end', None)
@@ -1036,30 +1336,69 @@ def convert_contradiction_to_output(
     if hasattr(contr.claim2, 'doc_id') and contr.claim2.doc_id:
         locator2 = Locator(
             doc_id=contr.claim2.doc_id,
+            page=getattr(contr.claim2, 'page', None),
+            block_index=getattr(contr.claim2, 'block_index', None),
             paragraph=getattr(contr.claim2, 'paragraph_index', None),
             char_start=getattr(contr.claim2, 'char_start', None),
             char_end=getattr(contr.claim2, 'char_end', None)
         )
 
-    # Build ClaimEvidence for each side
+    # Build ClaimEvidence for each side (with enrichment fields for Expert Notebook)
     claim1_evidence = ClaimEvidence(
         claim_id=contr.claim1.id,
         doc_id=getattr(contr.claim1, 'doc_id', None),
         locator=locator1,
+        anchor=EvidenceAnchor(
+            doc_id=getattr(contr.claim1, 'doc_id', None) or "",
+            page_no=getattr(contr.claim1, 'page', None),
+            block_index=getattr(contr.claim1, 'block_index', None),
+            paragraph_index=getattr(contr.claim1, 'paragraph_index', None),
+            char_start=getattr(contr.claim1, 'char_start', None),
+            char_end=getattr(contr.claim1, 'char_end', None),
+            snippet=contr.quote1,
+            bbox=getattr(contr.claim1, 'bbox', None),
+        ) if getattr(contr.claim1, 'doc_id', None) else None,
         quote=contr.quote1,
-        normalized=getattr(contr, 'normalized1', None)
+        normalized=getattr(contr, 'normalized1', None),
+        speaker_mode=getattr(contr.claim1, 'speaker_mode', None),
+        speaker_role=getattr(contr.claim1, 'speaker_role', None),
+        plane=getattr(contr.claim1, 'plane', None),
+        modality=getattr(contr.claim1, 'modality', None),
+        negation=getattr(contr.claim1, 'negation', None),
+        entities=getattr(contr.claim1, 'entities', None) or None,
+        context_before=getattr(contr.claim1, 'context_before', None),
+        context_after=getattr(contr.claim1, 'context_after', None),
     )
 
     claim2_evidence = ClaimEvidence(
         claim_id=contr.claim2.id,
         doc_id=getattr(contr.claim2, 'doc_id', None),
         locator=locator2,
+        anchor=EvidenceAnchor(
+            doc_id=getattr(contr.claim2, 'doc_id', None) or "",
+            page_no=getattr(contr.claim2, 'page', None),
+            block_index=getattr(contr.claim2, 'block_index', None),
+            paragraph_index=getattr(contr.claim2, 'paragraph_index', None),
+            char_start=getattr(contr.claim2, 'char_start', None),
+            char_end=getattr(contr.claim2, 'char_end', None),
+            snippet=contr.quote2,
+            bbox=getattr(contr.claim2, 'bbox', None),
+        ) if getattr(contr.claim2, 'doc_id', None) else None,
         quote=contr.quote2,
-        normalized=getattr(contr, 'normalized2', None)
+        normalized=getattr(contr, 'normalized2', None),
+        speaker_mode=getattr(contr.claim2, 'speaker_mode', None),
+        speaker_role=getattr(contr.claim2, 'speaker_role', None),
+        plane=getattr(contr.claim2, 'plane', None),
+        modality=getattr(contr.claim2, 'modality', None),
+        negation=getattr(contr.claim2, 'negation', None),
+        entities=getattr(contr.claim2, 'entities', None) or None,
+        context_before=getattr(contr.claim2, 'context_before', None),
+        context_after=getattr(contr.claim2, 'context_after', None),
     )
 
-    # Get status
+    # Get status and metadata
     status = getattr(contr, 'status', ContradictionStatus.SUSPICIOUS)
+    meta = getattr(contr, 'metadata', {}) or {}
 
     # Compute "usable" flag: Only What I Can Use
     # A contradiction is usable when:
@@ -1070,6 +1409,12 @@ def convert_contradiction_to_output(
     has_locators = (locator1 is not None) or (locator2 is not None)
     has_quotes = bool(contr.quote1) and bool(contr.quote2)
     usable = has_good_status and has_locators and has_quotes
+
+    # Verified flag for frontend badge display
+    verified = (
+        status == ContradictionStatus.VERIFIED
+        or (status == ContradictionStatus.LIKELY and contr.confidence >= 0.7)
+    )
 
     return ContradictionOutput(
         id=contr.id,
@@ -1090,11 +1435,18 @@ def convert_contradiction_to_output(
         span2=None,
         explanation=contr.explanation,
         usable=usable,
+        verified=verified,
         # Category fields (hard contradiction vs narrative ambiguity)
         category=getattr(contr, 'category', None),
         ambiguity_explanation=getattr(contr, 'ambiguity_explanation', None),
         category_badge=getattr(contr, 'category_badge', None),
         category_label_short=getattr(contr, 'category_label_short', None),
+        # Reconciliation details (Cursor 5.2 §10 — Expert Notebook)
+        reconciler_outcome=meta.get("reconciler_outcome"),
+        reconciler_rationale=meta.get("reconciler_rationale"),
+        reconciliation_attempt=meta.get("reconciliation_attempt"),
+        deciding_fields=meta.get("reconciler_deciding"),
+        gate_results=meta.get("reconciler_debug"),
     )
 
 
@@ -1118,6 +1470,118 @@ def convert_cross_exam_to_output(
         target_party=cross_exam.target_party,
         questions=questions,
     )
+
+
+def _build_expert_notebook(
+    all_contradictions: List[DetectedContradiction],
+    validation_flags: List[str],
+) -> "ExpertNotebookPayload":
+    """Build the expert notebook payload from all analyzed pairs (B1.1).
+
+    Includes ALL pairs (not just TRUE_CONTRADICTION) so the notebook shows
+    the full picture: what was analyzed, what was reconciled, and why.
+    """
+    from .schemas import (
+        ExpertNotebookPayload, PairAnalysisRowModel, ExpertSummaryReportModel,
+        EvidenceModel, PairGateResults, Locator,
+    )
+    from .reconciler import OUTCOME_TRUE_CONTRADICTION
+
+    rows: List[PairAnalysisRowModel] = []
+    distribution: dict = {}
+
+    for contr in all_contradictions:
+        meta = getattr(contr, 'metadata', {}) or {}
+        outcome = meta.get("reconciler_outcome", "UNKNOWN")
+        distribution[outcome] = distribution.get(outcome, 0) + 1
+
+        debug = meta.get("reconciler_debug", {}) or {}
+
+        # Build evidence models
+        def _evidence(claim) -> EvidenceModel:
+            loc = None
+            if getattr(claim, 'doc_id', None):
+                loc = Locator(
+                    doc_id=claim.doc_id,
+                    page=getattr(claim, 'page', None),
+                    paragraph=getattr(claim, 'paragraph_index', None),
+                    char_start=getattr(claim, 'char_start', None),
+                    char_end=getattr(claim, 'char_end', None),
+                )
+            return EvidenceModel(
+                quote=claim.text,
+                context_before=getattr(claim, 'context_before', None),
+                context_after=getattr(claim, 'context_after', None),
+                doc_id=getattr(claim, 'doc_id', None),
+                section_path=getattr(claim, 'section_path', None),
+                locator=loc,
+                speaker_mode=getattr(claim, 'speaker_mode', None),
+                speaker_role=getattr(claim, 'speaker_role', None),
+                plane=getattr(claim, 'plane', None),
+                modality=getattr(claim, 'modality', None),
+                negation=getattr(claim, 'negation', None),
+                entities=getattr(claim, 'entities', None) or None,
+                time_reference=getattr(claim, 'time_reference', None),
+            )
+
+        # Build gate results
+        gates = PairGateResults(
+            context_present=debug.get("claim_a_complete") and debug.get("claim_b_complete"),
+            speaker_mode_ok=debug.get("speaker_mode_ok"),
+            plane_match=debug.get("plane_match"),
+            time_match=debug.get("time_match"),
+            scope_match=debug.get("scope_match"),
+            reconciliation_failed=outcome == OUTCOME_TRUE_CONTRADICTION,
+        )
+
+        # Build blocked reasons
+        blocked: List[str] = []
+        if outcome != OUTCOME_TRUE_CONTRADICTION:
+            blocked.append(f"outcome={outcome}")
+        if getattr(contr.claim1, 'speaker_mode', None) == "party_claim":
+            blocked.append("claim_a=PARTY_CLAIM")
+        if getattr(contr.claim2, 'speaker_mode', None) == "party_claim":
+            blocked.append("claim_b=PARTY_CLAIM")
+        if not getattr(contr.claim1, 'context_before', None) and not getattr(contr.claim1, 'context_after', None):
+            blocked.append("claim_a_missing_context")
+        if not getattr(contr.claim2, 'context_before', None) and not getattr(contr.claim2, 'context_after', None):
+            blocked.append("claim_b_missing_context")
+
+        row = PairAnalysisRowModel(
+            pair_id=contr.id,
+            claim_a=_evidence(contr.claim1),
+            claim_b=_evidence(contr.claim2),
+            outcome_category=outcome,
+            contradiction_score=meta.get("reconciler_score", contr.confidence),
+            severity=contr.severity.value if hasattr(contr.severity, 'value') else str(contr.severity),
+            gates=gates,
+            reconciliation_attempt=meta.get("reconciliation_attempt"),
+            rationale=meta.get("reconciler_rationale"),
+            deciding_fields=meta.get("reconciler_deciding") or [],
+            is_true_contradiction=(outcome == OUTCOME_TRUE_CONTRADICTION),
+            blocked_reasons=blocked,
+        )
+        rows.append(row)
+
+    # Build summary report
+    total = len(rows)
+    true_count = distribution.get(OUTCOME_TRUE_CONTRADICTION, 0)
+    top_findings = [
+        row.rationale or row.claim_a.quote[:80]
+        for row in rows
+        if row.is_true_contradiction
+    ][:5]
+
+    summary = ExpertSummaryReportModel(
+        total_pairs_analyzed=total,
+        distribution=distribution,
+        true_contradiction_count=true_count,
+        noise_to_signal_ratio=(total - true_count) / total if total > 0 else 0.0,
+        top_findings=top_findings,
+        validation_flags=validation_flags,
+    )
+
+    return ExpertNotebookPayload(pair_analysis=rows, summary_report=summary)
 
 
 def chunk_text_to_paragraphs(
@@ -1187,7 +1651,8 @@ def chunk_text_to_paragraphs(
 def build_claim_outputs(
     claims: List,
     claims_data: List[dict],
-    doc_lookup: Optional[Dict[str, Any]] = None
+    doc_lookup: Optional[Dict[str, Any]] = None,
+    expert_claims: Optional[Dict[str, Any]] = None,
 ) -> List[ClaimOutput]:
     """
     Build ClaimOutput list from extracted claims.
@@ -1214,9 +1679,23 @@ def build_claim_outputs(
         if claim.doc_id or claim.paragraph_index is not None or claim.char_start is not None:
             locator = Locator(
                 doc_id=claim.doc_id,
+                page=getattr(claim, "page", None),
+                block_index=getattr(claim, "block_index", None),
                 paragraph=claim.paragraph_index,
                 char_start=claim.char_start,
                 char_end=claim.char_end
+            )
+        anchor = None
+        if claim.doc_id:
+            anchor = EvidenceAnchor(
+                doc_id=claim.doc_id,
+                page_no=getattr(claim, "page", None),
+                block_index=getattr(claim, "block_index", None),
+                paragraph_index=claim.paragraph_index,
+                char_start=claim.char_start,
+                char_end=claim.char_end,
+                snippet=claim.text,
+                bbox=getattr(claim, "bbox", None),
             )
 
         # Extract features (dates, amounts) from metadata if available
@@ -1239,6 +1718,8 @@ def build_claim_outputs(
             role = role or getattr(doc, 'role', None)
             author = author or getattr(doc, 'author', None)
 
+        expert = expert_claims.get(claim.id) if expert_claims else None
+
         claim_outputs.append(ClaimOutput(
             id=claim.id,
             text=claim.text,
@@ -1247,8 +1728,24 @@ def build_claim_outputs(
             party=party,
             role=role,
             author=author,
+            witness_version_id=getattr(claim, "witness_version_id", None),
             locator=locator,
-            features=features
+            anchor=anchor,
+            features=features,
+            text_span=(expert.text_span if expert else data.get("text_span") or claim.text),
+            context_before=(expert.context_before if expert else data.get("context_before")),
+            context_after=(expert.context_after if expert else data.get("context_after")),
+            section_path=(expert.section_path if expert else data.get("section_path")),
+            speaker_role=(expert.speaker_role if expert else data.get("speaker_role")),
+            speaker_mode=(expert.speaker_mode if expert else data.get("speaker_mode")),
+            plane=(expert.plane if expert else data.get("plane")),
+            time_reference=(expert.time_reference if expert else data.get("time_reference")),
+            scope_conditions=(expert.scope_conditions if expert else data.get("scope_conditions")),
+            quantifiers=(expert.quantifiers if expert else data.get("quantifiers")),
+            modality=(expert.modality if expert else data.get("modality")),
+            negation=(expert.negation if expert else data.get("negation")),
+            entities_relations=(expert.entities_relations if expert else data.get("entities_relations")),
+            extraction_confidence=(expert.extraction_confidence if expert else data.get("extraction_confidence")),
         ))
 
     return claim_outputs
@@ -1627,7 +2124,7 @@ def build_metadata(
         # Counts
         claims_ok=claims_ok,
         claims_with_issues=claims_with_issues,
-        contradictions_total=sum(1 for cr in (claim_results or []) if cr.contradiction_count > 0),
+        contradictions_total=sum(cr.contradiction_count for cr in (claim_results or [])),
         # LLM status
         mode=llm_mode,  # Legacy field
         model_used=model_used,
@@ -1645,7 +2142,8 @@ def build_metadata(
 
 async def analyze_claims_internal(
     claims_data: List[dict],
-    source_name: str = "document"
+    source_name: str = "document",
+    full_text: str = "",
 ) -> AnalysisResponse:
     """
     Internal analysis function used by both endpoints.
@@ -1654,7 +2152,7 @@ async def analyze_claims_internal(
     Uses fallback to rule-based if LLM fails.
     """
     settings = get_settings()
-    validation_flags = []
+    validation_flags = ["EXPERT_STRICT_MODE"]
 
     # Validate config
     config_warnings = settings.validate_llm_config()
@@ -1684,7 +2182,7 @@ async def analyze_claims_internal(
 
     # 2. Rule-based detection (always runs)
     rule_start = datetime.now()
-    rule_result = detect_contradictions(claims)
+    rule_result = detect_contradictions(claims, full_text=full_text)
     rule_based_time_ms = (datetime.now() - rule_start).total_seconds() * 1000
 
     all_contradictions = list(rule_result.contradictions)
@@ -1822,7 +2320,7 @@ async def analyze_claims_internal(
             validation_flags.append("LLM_FAILED_FALLBACK")
             llm_time_ms = 0.0
 
-    # 4. Deduplicate contradictions
+    # 4. Deduplicate contradictions (candidates)
     deduped_contradictions = []
     for c in all_contradictions:
         deduped_contradictions.append({
@@ -1835,41 +2333,75 @@ async def analyze_claims_internal(
     deduped = deduplicate_contradictions(deduped_contradictions)
     all_contradictions = [d["_obj"] for d in deduped]
 
-    # 5. Generate cross-examination questions
-    cross_exam_sets = generate_cross_exam_questions(all_contradictions)
+    # 5. Expert strict evaluation
+    expert_claims = build_expert_claims(
+        claims=claims,
+        claims_data=claims_data,
+        source_text=full_text,
+    )
+    expert_lookup = {c.claim_id: c for c in expert_claims}
+    expert_result = analyze_expert_pairs(
+        expert_claims=expert_claims,
+        candidate_contradictions=all_contradictions,
+    )
+    validation_flags.extend(expert_result.validation_flags)
+    true_contradictions = expert_result.true_contradictions
+    pair_analysis = expert_result.pair_rows
+    summary_report = expert_result.summary_report
 
-    # 6. Convert to output format
+    # 5b. Build expert notebook payload (B1.1)
+    expert_notebook = _build_expert_notebook(all_contradictions, validation_flags)
+
+    # 6. Generate cross-examination questions (only for true contradictions)
+    cross_exam_sets = generate_cross_exam_questions(true_contradictions)
+
+    # 7. Convert to output format
     contradictions_output = [
-        convert_contradiction_to_output(c) for c in all_contradictions
+        convert_contradiction_to_output(c) for c in true_contradictions
     ]
 
     cross_exam_output = [
         convert_cross_exam_to_output(ce) for ce in cross_exam_sets
     ]
 
-    # 7. Build claims table data
-    claim_outputs = build_claim_outputs(claims, claims_data)
+    # 8. Build claims table data
+    claim_outputs = build_claim_outputs(claims, claims_data, expert_claims=expert_lookup)
     claim_results = compute_claim_results(claims, contradictions_output)
 
-    # 8. Apply Attribution Layer bucketing
+    # 9. Apply Attribution Layer bucketing
     claims_lookup = {c.id: c for c in claim_outputs}
     contradictions_output = apply_attribution_bucketing(contradictions_output, claims_lookup)
 
-    # 9. Group disputes by issue
+    # 10. Group disputes by issue
     disputes = group_disputes_by_issue(contradictions_output, claims_lookup)
 
-    # 10. Compute attribution summary
+    # 11. Compute attribution summary
     attribution_summary = compute_attribution_summary(contradictions_output, claim_outputs)
 
     total_time_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+    rule_stats = RuleStats(
+        temporal_count=rule_result.metadata.get("temporal_count", 0),
+        quantitative_count=rule_result.metadata.get("quantitative_count", 0),
+        attribution_count=rule_result.metadata.get("attribution_count", 0),
+        presence_count=rule_result.metadata.get("presence_count", 0),
+        doc_existence_count=rule_result.metadata.get("doc_existence_count", 0),
+        identity_count=rule_result.metadata.get("identity_count", 0),
+        pairs_total=expert_result.stats.get("pairs_total", 0),
+        pairs_filtered_in=expert_result.stats.get("pairs_filtered_in", 0),
+        pairs_filtered_out=expert_result.stats.get("pairs_filtered_out", 0),
+    )
 
     return AnalysisResponse(
         claims=claim_outputs,
         claim_results=claim_results,
         contradictions=contradictions_output,
         cross_exam_questions=cross_exam_output,
+        pair_analysis=[row.model_dump() if hasattr(row, "model_dump") else row.__dict__ for row in pair_analysis],
+        summary_report=(summary_report.model_dump() if hasattr(summary_report, "model_dump") else summary_report.__dict__),
         disputes=disputes,
         attribution_summary=attribution_summary,
+        expert_notebook=expert_notebook,
         metadata=build_metadata(
             duration_ms=total_time_ms,
             claims_total=len(claims),
@@ -1879,7 +2411,8 @@ async def analyze_claims_internal(
             model_used=model_used,
             validation_flags=validation_flags,
             verifier_stats=verifier_stats_data,
-            claim_results=claim_results
+            claim_results=claim_results,
+            rule_stats=rule_stats,
         )
     )
 
@@ -1926,7 +2459,10 @@ async def litigator_dashboard():
 
 @app.post("/debug/init-demo", tags=["System"], include_in_schema=False)
 async def init_demo_users(db: Session = Depends(get_db)):
-    """Initialize demo users (for debugging)"""
+    """Initialize demo users (for debugging). Blocked in production."""
+    is_production = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+    if is_production:
+        raise HTTPException(status_code=410, detail="Debug endpoints are not available in production")
     try:
         # Check if demo users exist
         existing = db.query(User).filter(User.email == "david@demo.com").first()
@@ -1993,10 +2529,15 @@ async def health_check():
     responses={
         200: {"description": "Successful analysis"},
         400: {"model": ErrorResponse, "description": "Invalid input"},
+        402: {"model": ErrorResponse, "description": "Insufficient credits"},
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
-async def analyze_text(request: AnalyzeTextRequest):
+async def analyze_text(
+    request: AnalyzeTextRequest,
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
+):
     """
     Analyze free Hebrew text for contradictions.
 
@@ -2005,6 +2546,20 @@ async def analyze_text(request: AnalyzeTextRequest):
     """
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    # Enforce text length limit (100KB)
+    MAX_ANALYZE_TEXT_BYTES = 100_000
+    if len(request.text.encode("utf-8")) > MAX_ANALYZE_TEXT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text too large ({len(request.text.encode('utf-8'))} bytes). Max: {MAX_ANALYZE_TEXT_BYTES} bytes"
+        )
+
+    # Deduct credits before analysis
+    from .credits import deduct_analysis
+    success, error = deduct_analysis(db, auth.user_id, auth.firm_id)
+    if not success:
+        raise HTTPException(status_code=402, detail=error or "Insufficient credits for analysis")
 
     try:
         # Extract claims from text
@@ -2019,7 +2574,8 @@ async def analyze_text(request: AnalyzeTextRequest):
         # Run analysis
         return await analyze_claims_internal(
             claims_data=claims_data,
-            source_name=request.source_name or "document"
+            source_name=request.source_name or "document",
+            full_text=request.text,
         )
 
     except Exception as e:
@@ -2047,10 +2603,15 @@ async def analyze_text(request: AnalyzeTextRequest):
     responses={
         200: {"description": "Successful analysis"},
         400: {"model": ErrorResponse, "description": "Invalid input"},
+        402: {"model": ErrorResponse, "description": "Insufficient credits"},
         500: {"model": ErrorResponse, "description": "Internal error"},
     }
 )
-async def analyze_claims(request: AnalyzeClaimsRequest):
+async def analyze_claims(
+    request: AnalyzeClaimsRequest,
+    auth: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db_dependency)
+):
     """
     Analyze pre-extracted claims for contradictions.
 
@@ -2059,6 +2620,16 @@ async def analyze_claims(request: AnalyzeClaimsRequest):
     """
     if not request.claims:
         raise HTTPException(status_code=400, detail="Claims list cannot be empty")
+
+    # Enforce claims count limit
+    if len(request.claims) > 500:
+        raise HTTPException(status_code=413, detail=f"Too many claims ({len(request.claims)}). Max: 500")
+
+    # Deduct credits before analysis
+    from .credits import deduct_analysis
+    success, error = deduct_analysis(db, auth.user_id, auth.firm_id)
+    if not success:
+        raise HTTPException(status_code=402, detail=error or "Insufficient credits for analysis")
 
     try:
         # Convert to dict format
@@ -2278,7 +2849,8 @@ async def analyze_with_tracks(request: AnalyzeTextRequest):
         # Run analysis
         analysis = await analyze_claims_internal(
             claims_data=claims_data,
-            source_name=request.source_name or "document"
+            source_name=request.source_name or "document",
+            full_text=request.text,
         )
 
         # Generate tracks
@@ -2474,7 +3046,7 @@ async def auth_me(
     firm = db.query(Firm).filter(Firm.id == auth.firm_id).first()
 
     return {
-        "user_id": auth.user_id,
+        "id": auth.user_id,
         "email": auth.email,
         "name": auth.name,
         "firm_id": auth.firm_id,
@@ -2718,6 +3290,18 @@ async def create_case(
         if not auth or not auth.firm_id:
             raise HTTPException(status_code=401, detail="Authentication required to create cases")
 
+        from .orgs import ensure_default_org, get_org_member
+
+        org_id = request.organization_id
+        if org_id:
+            if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
+                member = get_org_member(db, org_id, auth.user_id)
+                if not member:
+                    raise HTTPException(status_code=403, detail="No access to organization")
+        else:
+            org = ensure_default_org(db, auth.firm_id, auth.user_id)
+            org_id = org.id
+
         case = Case(
             name=request.name,
             description=request.description,
@@ -2728,6 +3312,7 @@ async def create_case(
             case_number=request.case_number,
             firm_id=auth.firm_id,
             created_by_user_id=auth.user_id,
+            organization_id=org_id,
             status=CaseStatus.ACTIVE
         )
         db.add(case)
@@ -2744,6 +3329,7 @@ async def create_case(
             "case_number": case.case_number,
             "description": case.description,
             "firm_id": case.firm_id,
+            "organization_id": case.organization_id,
             "created_at": case.created_at.isoformat() if case.created_at else None
         }
     except HTTPException:
@@ -2755,14 +3341,15 @@ async def create_case(
 
 @app.get("/cases", tags=["Cases"], summary="List all cases")
 async def list_cases(
-    auth: Optional[AuthContext] = Depends(get_current_user),
+    auth: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db_dependency)
 ):
     """List all legal cases (filtered by firm if authenticated)"""
     try:
-        query = db.query(Case)
-        if auth and auth.firm_id:
-            query = query.filter(Case.firm_id == auth.firm_id)
+        query = db.query(Case).filter(Case.firm_id == auth.firm_id)
+        org_ids = _accessible_org_ids(db, auth)
+        if org_ids is not None:
+            query = query.filter(Case.organization_id.in_(org_ids))
         cases = query.all()
 
         result = []
@@ -2778,6 +3365,7 @@ async def list_cases(
                 "description": c.description,
                 "document_count": doc_count,
                 "firm_id": c.firm_id,
+                "organization_id": c.organization_id,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else None
             })
@@ -2788,12 +3376,14 @@ async def list_cases(
 
 
 @app.get("/cases/{case_id}", tags=["Cases"], summary="Get case details")
-async def get_case(case_id: str, db: Session = Depends(get_db_dependency)):
+async def get_case(
+    case_id: str,
+    db: Session = Depends(get_db_dependency),
+    auth: AuthContext = Depends(require_auth),
+):
     """Get case by ID"""
     try:
-        case = db.query(Case).filter(Case.id == case_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         return {
             "id": case.id,
@@ -2807,7 +3397,8 @@ async def get_case(case_id: str, db: Session = Depends(get_db_dependency)):
             "tags": case.tags or [],
             "created_at": case.created_at.isoformat() if case.created_at else None,
             "updated_at": case.updated_at.isoformat() if case.updated_at else None,
-            "extra_data": case.extra_data or {}
+            "extra_data": case.extra_data or {},
+            "organization_id": case.organization_id,
         }
     except HTTPException:
         raise
@@ -3115,8 +3706,11 @@ async def analyze_case(case_id: str, request: Optional[AnalyzeCaseRequest] = Non
         claim_dict['paragraph_index'] = getattr(c, 'paragraph_index', None)
         claims_data.append(claim_dict)
 
+    # Build full text from paragraphs for context extraction
+    combined_full_text = "\n".join(p.text for p in all_paragraphs if p.text)
+
     # Analyze
-    result = await analyze_claims_internal(claims_data, source_name=case.name)
+    result = await analyze_claims_internal(claims_data, source_name=case.name, full_text=combined_full_text)
 
     duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
@@ -3886,9 +4480,7 @@ async def assign_case_to_team(
     """Assign a case to a team"""
     try:
         # Verify case exists and user has access
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Verify team exists and is in same firm
         team = db.query(Team).filter(Team.id == team_id, Team.firm_id == auth.firm_id).first()
@@ -3949,9 +4541,7 @@ async def list_case_teams(
     """List all teams assigned to a case"""
     try:
         # Verify case exists and user has access
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Get teams assigned to the case
         case_teams = db.query(CaseTeam).filter(CaseTeam.case_id == case_id).all()
@@ -3988,9 +4578,7 @@ async def add_case_participant(
     """Add a user as participant to a case"""
     try:
         # Verify case exists and is in user's firm
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Only team leaders or admins can add participants
         if auth.system_role not in (SystemRole.SUPER_ADMIN, SystemRole.ADMIN):
@@ -4065,9 +4653,7 @@ async def list_case_participants(
     """List all participants in a case"""
     try:
         # Verify case exists and is in user's firm
-        case = db.query(Case).filter(Case.id == case_id, Case.firm_id == auth.firm_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = _require_case_access(db, auth, case_id)
 
         # Get participants with user info
         participants = db.query(CaseParticipant, User).join(
@@ -4123,6 +4709,9 @@ async def list_my_cases(
 
         # Start with cases in the user's firm
         base_query = db.query(Case).filter(Case.firm_id == auth.firm_id)
+        org_ids = _accessible_org_ids(db, auth)
+        if org_ids is not None:
+            base_query = base_query.filter(Case.organization_id.in_(org_ids))
 
         # Apply status filter if provided
         if status_enum:
@@ -4172,6 +4761,7 @@ async def list_my_cases(
                 "court": case.court,
                 "description": case.description,
                 "document_count": doc_count,
+                "organization_id": case.organization_id,
                 "created_at": case.created_at.isoformat() if case.created_at else None,
                 "updated_at": case.updated_at.isoformat() if case.updated_at else None
             })
@@ -4247,17 +4837,105 @@ async def catch_all(path: str):
 # Error Handlers
 # =============================================================================
 
+def _is_api_v1_request(request: Request) -> bool:
+    return request.url.path.startswith("/api/v1")
+
+
+def _sanitize_error_detail(detail: Any) -> Any:
+    if detail is None:
+        return None
+    if isinstance(detail, str):
+        compact = " ".join(detail.split())
+        return compact[:300]
+    return detail
+
+
+def _error_code_for_status(status_code: int) -> str:
+    return {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        409: "conflict",
+        413: "payload_too_large",
+        422: "validation_error",
+        500: "internal_error",
+    }.get(status_code, "error")
+
+
+def _build_error_payload(code: str, message: str, details: Any = None) -> Dict[str, Any]:
+    return {
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details,
+        }
+    }
+
+
+@app.exception_handler(HTTPException)
+async def api_http_exception_handler(request: Request, exc: HTTPException):
+    """Structured errors for /api/v1 endpoints."""
+    if not _is_api_v1_request(request):
+        return await http_exception_handler(request, exc)
+
+    detail = _sanitize_error_detail(exc.detail)
+    if isinstance(detail, dict):
+        message = detail.get("message") or "שגיאה בבקשה"
+        details = detail.get("details")
+        code = detail.get("code") or _error_code_for_status(exc.status_code)
+    elif isinstance(detail, str) and detail:
+        message = detail
+        details = None
+        code = _error_code_for_status(exc.status_code)
+    else:
+        message = "שגיאה בבקשה"
+        details = detail
+        code = _error_code_for_status(exc.status_code)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_build_error_payload(code, message, details),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def api_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return structured validation errors without leaking inputs."""
+    if not _is_api_v1_request(request):
+        return await request_validation_exception_handler(request, exc)
+
+    sanitized_errors = [
+        {"loc": err.get("loc"), "msg": err.get("msg"), "type": err.get("type")}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content=_build_error_payload(
+            "validation_error",
+            "שגיאת אימות קלט",
+            {"errors": sanitized_errors},
+        ),
+    )
+
+
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler - always return valid JSON"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error("Unhandled exception on %s: %s", request.url.path, exc.__class__.__name__)
+    if _is_api_v1_request(request):
+        return JSONResponse(
+            status_code=500,
+            content=_build_error_payload("internal_error", "שגיאה פנימית", {"exception": exc.__class__.__name__}),
+        )
+
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "detail": str(exc)[:200],
-            "validation_flags": ["UNHANDLED_ERROR"]
-        }
+            "detail": _sanitize_error_detail(str(exc)),
+            "validation_flags": ["UNHANDLED_ERROR"],
+        },
     )
 
 

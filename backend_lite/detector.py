@@ -36,7 +36,8 @@ from .schemas import (
     ContradictionCategory,
     AmbiguityExplanation,
     ClaimEvidence,
-    Locator
+    Locator,
+    EvidenceAnchor,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,13 +78,26 @@ class DetectedContradiction:
             locator = Locator(
                 doc_id=claim.doc_id,
                 page=getattr(claim, 'page', None),
-                paragraph=getattr(claim, 'paragraph', None)
+                block_index=getattr(claim, 'block_index', None),
+                paragraph=getattr(claim, 'paragraph_index', None),
+                char_start=getattr(claim, 'char_start', None),
+                char_end=getattr(claim, 'char_end', None),
             )
 
         return ClaimEvidence(
             claim_id=claim.id,
             doc_id=getattr(claim, 'doc_id', None),
             locator=locator,
+            anchor=EvidenceAnchor(
+                doc_id=getattr(claim, 'doc_id', None) or "",
+                page_no=getattr(claim, 'page', None),
+                block_index=getattr(claim, 'block_index', None),
+                paragraph_index=getattr(claim, 'paragraph_index', None),
+                char_start=getattr(claim, 'char_start', None),
+                char_end=getattr(claim, 'char_end', None),
+                snippet=quote,
+                bbox=getattr(claim, 'bbox', None),
+            ) if getattr(claim, 'doc_id', None) else None,
             quote=quote,
             normalized=normalized
         )
@@ -130,6 +144,16 @@ class RuleBasedDetector:
             'תיק', 'רמ"ש', 'ת"א', 'תמ"ש', 'רע"א', 'ע"א', 'ה"פ',
             'בש"א', 'ע"ע', 'ת"ע', 'ע"מ', 'הליך', 'תביעה', 'ערעור'
         }
+
+        # Time/hour patterns for detecting time contradictions
+        self.time_patterns = [
+            # HH:MM format (10:00, 14:30)
+            (r'(?:בשעה\s*)?([0-2]?\d):([0-5]\d)(?:\s*(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה))?', 'time_hhmm'),
+            # Hebrew time expressions
+            (r'בשעה\s+([0-2]?\d)(?:\s*(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה))?', 'time_hour'),
+            # Morning/afternoon/evening
+            (r'(?:בבוקר|בצהריים|אחה\"צ|בערב|בלילה)\s+(?:בשעה\s+)?([0-2]?\d):?([0-5]\d)?', 'time_period'),
+        ]
 
         # Hebrew date patterns
         self.date_patterns = [
@@ -241,6 +265,15 @@ class RuleBasedDetector:
             (r'מספר חברה\s*[:\-]?\s*(\d{9})', 'company_id'),
         ]
 
+        # Time period modifiers (for normalization)
+        self.time_period_map = {
+            'בבוקר': 0,      # morning: no change
+            'בצהריים': 12,   # noon: add 12 if hour < 12
+            'אחה"צ': 12,     # afternoon: add 12 if hour < 12
+            'בערב': 12,      # evening: add 12 if hour < 12
+            'בלילה': 0,      # night: context dependent
+        }
+
         # Hebrew stopwords
         self.stopwords = {
             'את', 'של', 'על', 'עם', 'אל', 'מן', 'כי', 'לא', 'גם', 'או', 'אם',
@@ -249,12 +282,23 @@ class RuleBasedDetector:
             'ה', 'ו', 'ב', 'ל', 'מ', 'ש', 'כ', 'התובע', 'הנתבע'
         }
 
-    def detect(self, claims: List[Claim]) -> DetectionResult:
+    def detect(
+        self,
+        claims: List[Claim],
+        full_text: str = "",
+        enrich: bool = True,
+    ) -> DetectionResult:
         """
         Detect contradictions in claims using rule-based methods.
 
+        V2: optionally enriches claims first (speaker, plane, time, entities,
+        negation, context) and applies the 6-layer reconciliation engine
+        to reduce false positives.
+
         Args:
             claims: List of claims to analyze
+            full_text: Full document text for context extraction
+            enrich: If True, run claim enrichment before detection
 
         Returns:
             DetectionResult with contradictions
@@ -264,9 +308,23 @@ class RuleBasedDetector:
 
         logger.info(f"Rule-based detection: analyzing {len(claims)} claims")
 
+        # --- V2: Enrich claims ---
+        if enrich:
+            try:
+                from .claim_enricher import enrich_claims, resolve_entities
+                enrich_claims(claims, full_text)
+                resolve_entities(claims)
+                logger.info("Claims enriched with v2 fields (speaker, plane, time, entities, negation)")
+            except Exception as e:
+                logger.warning(f"Claim enrichment failed (non-fatal): {e}")
+
         # Tier 1 detection
         temporal = self._detect_temporal(claims)
         contradictions.extend(temporal)
+
+        # Time/hour detection (new)
+        time_conflicts = self._detect_time(claims)
+        contradictions.extend(time_conflicts)
 
         quantitative = self._detect_quantitative(claims)
         contradictions.extend(quantitative)
@@ -286,6 +344,13 @@ class RuleBasedDetector:
         # Deduplicate
         contradictions = self._deduplicate(contradictions)
 
+        # --- V2: Run reconciler to filter false positives ---
+        if enrich:
+            pre_reconcile = len(contradictions)
+            contradictions = self._apply_reconciliation(contradictions)
+            filtered = pre_reconcile - len(contradictions)
+            logger.info(f"Reconciliation filtered {filtered}/{pre_reconcile} candidates")
+
         # Apply categorization (hard contradiction vs narrative ambiguity)
         contradictions = self._apply_categorization(contradictions)
 
@@ -296,9 +361,15 @@ class RuleBasedDetector:
         for c in contradictions:
             status_counts[c.status.value] = status_counts.get(c.status.value, 0) + 1
 
+        # V2: count by outcome category
+        outcome_counts: dict = {}
+        for c in contradictions:
+            cat = getattr(c, '_reconciler_outcome', None) or (c.category.value if c.category else 'unknown')
+            outcome_counts[cat] = outcome_counts.get(cat, 0) + 1
+
         logger.info(
             f"Rule-based detection complete: {len(contradictions)} contradictions "
-            f"(temporal={len(temporal)}, quant={len(quantitative)}, "
+            f"(temporal={len(temporal)}, time={len(time_conflicts)}, quant={len(quantitative)}, "
             f"attr={len(attribution)}, presence={len(presence)}, "
             f"doc={len(doc_existence)}, identity={len(identity)}) "
             f"in {elapsed_ms:.1f}ms"
@@ -307,9 +378,10 @@ class RuleBasedDetector:
         return DetectionResult(
             contradictions=contradictions,
             detection_time_ms=elapsed_ms,
-            method="rule_based",
+            method="rule_based_v2" if enrich else "rule_based",
             metadata={
                 "temporal_count": len(temporal),
+                "time_count": len(time_conflicts),
                 "quantitative_count": len(quantitative),
                 "attribution_count": len(attribution),
                 "presence_count": len(presence),
@@ -317,7 +389,8 @@ class RuleBasedDetector:
                 "identity_count": len(identity),
                 "claims_analyzed": len(claims),
                 "status_counts": status_counts,
-                "tier1_count": len(contradictions)
+                "outcome_counts": outcome_counts,
+                "tier1_count": len(contradictions),
             }
         )
 
@@ -505,6 +578,143 @@ class RuleBasedDetector:
         return f"{y}-{m:02d}-{d:02d}"
 
     # =========================================================================
+    # T1.1b TIME_CONFLICT (hours)
+    # =========================================================================
+
+    def _detect_time(self, claims: List[Claim]) -> List[DetectedContradiction]:
+        """Detect time/hour contradictions - VERIFIED status possible"""
+        contradictions = []
+
+        # Extract times from each claim
+        claims_with_times = []
+        for claim in claims:
+            times = self._extract_times(claim.text)
+            if times:
+                claims_with_times.append((claim, times))
+
+        # Compare pairs
+        for i, (claim1, times1) in enumerate(claims_with_times):
+            for claim2, times2 in claims_with_times[i + 1:]:
+                # Check if claims are related
+                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                if relatedness < 0.15:
+                    continue
+
+                # Check for conflicting times
+                conflict = self._times_conflict(times1, times2)
+                if conflict:
+                    orig1, norm1, orig2, norm2 = conflict
+
+                    # VERIFIED if normalized times are deterministically different
+                    status = ContradictionStatus.VERIFIED if norm1 != norm2 else ContradictionStatus.LIKELY
+
+                    # Calculate time difference for severity
+                    diff_hours = abs(norm1[0] - norm2[0]) + abs(norm1[1] - norm2[1]) / 60
+                    if diff_hours >= 4:
+                        severity = Severity.HIGH
+                    elif diff_hours >= 2:
+                        severity = Severity.MEDIUM
+                    else:
+                        severity = Severity.LOW
+
+                    contradictions.append(DetectedContradiction(
+                        id=f"contr_{uuid.uuid4().hex[:8]}",
+                        claim1=claim1,
+                        claim2=claim2,
+                        type=ContradictionType.TEMPORAL_DATE,
+                        subtype=ContradictionSubtype.EXACT_DATE,  # Using EXACT_DATE for time conflicts
+                        status=status,
+                        severity=severity,
+                        confidence=0.95 if status == ContradictionStatus.VERIFIED else 0.80,
+                        same_event_confidence=relatedness,
+                        explanation=f"סתירה בשעות: {orig1} לעומת {orig2}",
+                        quote1=self._extract_quote_around(claim1.text, orig1),
+                        quote2=self._extract_quote_around(claim2.text, orig2),
+                        normalized1=self._format_time(norm1),
+                        normalized2=self._format_time(norm2),
+                        metadata={"time1": orig1, "time2": orig2, "norm1": norm1, "norm2": norm2}
+                    ))
+
+        return contradictions
+
+    def _extract_times(self, text: str) -> List[Tuple[str, Tuple[int, int]]]:
+        """Extract times from text with normalized values (hour, minute)"""
+        times = []
+
+        for pattern, time_type in self.time_patterns:
+            for match in re.finditer(pattern, text):
+                try:
+                    match_text = match.group()
+                    groups = match.groups()
+                    normalized = self._normalize_time(groups, time_type, text)
+                    if normalized:
+                        times.append((match_text, normalized))
+                except Exception:
+                    pass
+
+        return times
+
+    def _normalize_time(self, match: Any, time_type: str, full_text: str = "") -> Optional[Tuple[int, int]]:
+        """Normalize time to (hour, minute) tuple in 24-hour format"""
+        try:
+            if time_type == 'time_hhmm':
+                hour = int(match[0])
+                minute = int(match[1]) if match[1] else 0
+                # Check for period modifier in context
+                for period, offset in self.time_period_map.items():
+                    if period in full_text and hour < 12 and offset > 0:
+                        hour += offset
+                        break
+                return (hour, minute)
+
+            elif time_type == 'time_hour':
+                hour = int(match[0])
+                minute = 0
+                # Check for period modifier
+                for period, offset in self.time_period_map.items():
+                    if period in full_text and hour < 12 and offset > 0:
+                        hour += offset
+                        break
+                return (hour, minute)
+
+            elif time_type == 'time_period':
+                hour = int(match[0]) if match[0] else 12
+                minute = int(match[1]) if len(match) > 1 and match[1] else 0
+                return (hour, minute)
+
+        except (ValueError, IndexError):
+            pass
+
+        return None
+
+    def _times_conflict(
+        self,
+        times1: List[Tuple[str, Tuple[int, int]]],
+        times2: List[Tuple[str, Tuple[int, int]]]
+    ) -> Optional[Tuple[str, Tuple[int, int], str, Tuple[int, int]]]:
+        """Check if two time sets have conflicting times"""
+        for orig1, norm1 in times1:
+            for orig2, norm2 in times2:
+                if norm1 and norm2 and norm1 != norm2:
+                    h1, m1 = norm1
+                    h2, m2 = norm2
+
+                    # Different hours = conflict (allow 1 hour tolerance for rounding)
+                    if abs(h1 - h2) > 1 or (abs(h1 - h2) == 1 and abs(m1 - m2) > 30):
+                        return (orig1, norm1, orig2, norm2)
+
+                    # Same hour but different minutes (> 15 min difference)
+                    if h1 == h2 and abs(m1 - m2) > 15:
+                        return (orig1, norm1, orig2, norm2)
+
+        return None
+
+    def _format_time(self, time_tuple: Tuple[int, int]) -> str:
+        """Format time tuple as HH:MM string"""
+        h, m = time_tuple
+        return f"{h:02d}:{m:02d}"
+
+    # =========================================================================
     # T1.2 QUANT_AMOUNT_CONFLICT
     # =========================================================================
 
@@ -595,16 +805,43 @@ class RuleBasedDetector:
         amounts1: List[Tuple[float, str, ContradictionSubtype]],
         amounts2: List[Tuple[float, str, ContradictionSubtype]]
     ) -> Optional[Tuple[float, float, str, ContradictionSubtype]]:
-        """Check if two amount sets conflict"""
+        """Check if two amount sets conflict (adaptive threshold)."""
         for val1, type1, sub1 in amounts1:
             for val2, type2, sub2 in amounts2:
-                # Same type but different value (>10% difference)
                 if type1 == type2 and val1 != val2:
                     diff = abs(val1 - val2) / max(val1, val2, 1)
-                    if diff > 0.1:
+                    abs_diff = abs(val1 - val2)
+                    threshold = self._adaptive_amount_threshold(
+                        max(val1, val2), type1
+                    )
+                    # Minimum absolute difference to avoid rounding noise
+                    min_abs = (
+                        10 if type1 in ('shekel', 'dollar', 'thousands', 'millions')
+                        else 1
+                    )
+                    if diff > threshold and abs_diff > min_abs:
                         return (val1, val2, type1, sub1)
 
         return None
+
+    @staticmethod
+    def _adaptive_amount_threshold(magnitude: float, amt_type: str) -> float:
+        """
+        Adaptive threshold based on amount magnitude.
+
+        Small amounts need larger % difference (rounding errors common).
+        Large amounts need smaller % difference (5% of ₪1M = ₪50K).
+        """
+        if amt_type == 'percent':
+            return 0.10  # 10% relative for percentages
+        if magnitude < 100:
+            return 0.20  # 20% for small amounts (< 100)
+        elif magnitude < 10_000:
+            return 0.10  # 10% for medium amounts (100 – 10K)
+        elif magnitude < 1_000_000:
+            return 0.05  # 5% for large amounts (10K – 1M)
+        else:
+            return 0.03  # 3% for very large amounts (> 1M)
 
     def _format_amount(self, value: float, amt_type: str) -> str:
         """Format amount for display"""
@@ -977,20 +1214,50 @@ class RuleBasedDetector:
         words1 = self._get_meaningful_words(text1)
         words2 = self._get_meaningful_words(text2)
 
-        if not words1 or not words2:
-            return 0.5  # Uncertain
-
-        common = words1 & words2
-        min_len = min(len(words1), len(words2))
-
-        if min_len == 0:
+        if not words1 and not words2:
             return 0.5
 
-        return len(common) / min_len
+        word_score = 0.0
+        min_len = min(len(words1), len(words2)) if words1 and words2 else 1
+        if min_len > 0 and words1 and words2:
+            common = words1 & words2
+            word_score = len(common) / min_len
+
+        # Semantic similarity (TF-IDF with character n-grams)
+        semantic_score = 0.0
+        try:
+            from .semantic import get_semantic_engine
+            engine = get_semantic_engine()
+            # Use ad-hoc similarity if index exists (claim objects) or text-based
+            semantic_score = engine._compute_adhoc_similarity(text1, text2)
+        except Exception:
+            semantic_score = word_score  # Fallback to word overlap
+
+        # Entity overlap (if graph is built)
+        entity_score = 0.0
+        try:
+            from .entity_graph import get_entity_graph
+            graph = get_entity_graph()
+            if graph._built:
+                # Extract entities from both texts and check overlap
+                ents1 = set(e[0] for e in graph._extract_entities(text1))
+                ents2 = set(e[0] for e in graph._extract_entities(text2))
+                if ents1 and ents2:
+                    intersection = ents1 & ents2
+                    union = ents1 | ents2
+                    entity_score = len(intersection) / len(union) if union else 0.0
+                elif not ents1 and not ents2:
+                    entity_score = 0.3  # Unknown
+        except Exception:
+            pass
+
+        # Combined score
+        combined = (0.60 * semantic_score) + (0.25 * word_score) + (0.15 * entity_score)
+        return combined
 
     def _claims_related(self, text1: str, text2: str) -> bool:
         """Check if two claims are related (legacy method)"""
-        return self._claims_relatedness(text1, text2) > 0.15
+        return self._claims_relatedness(text1, text2) > 0.12
 
     def _get_meaningful_words(self, text: str) -> set:
         """Extract meaningful words from text"""
@@ -1038,6 +1305,118 @@ class RuleBasedDetector:
                 unique.append(contr)
 
         return unique
+
+    def _apply_reconciliation(
+        self,
+        contradictions: List[DetectedContradiction],
+    ) -> List[DetectedContradiction]:
+        """
+        V2: Run the 6-layer reconciliation engine on each candidate.
+
+        Pairs that reconcile to non-TRUE_CONTRADICTION outcomes are
+        either downgraded or removed depending on the outcome:
+        - DUPLICATE_OR_RESTATEMENT → removed
+        - DISAGREEMENT / PLANE_MISMATCH / TIME_SHIFT → kept but flagged
+        - APPARENT_TENSION / AMBIGUITY → kept with adjusted severity
+        - TRUE_CONTRADICTION → kept as-is
+
+        Delta-fix §9: Rule-based override for attribution patterns.
+        """
+        from .reconciler import reconcile_pair, OUTCOME_TRUE_CONTRADICTION, OUTCOME_DUPLICATE
+
+        kept: List[DetectedContradiction] = []
+        for contr in contradictions:
+            # Delta-fix §9: Rule-based attribution override BEFORE reconciler
+            # If explanation or quotes contain attribution markers → never TRUE_CONTRADICTION
+            attribution_override = self._check_attribution_override(contr)
+
+            result = reconcile_pair(
+                claim_a=contr.claim1,
+                claim_b=contr.claim2,
+                detector_type=contr.type.value if hasattr(contr.type, 'value') else str(contr.type),
+                detector_confidence=contr.confidence,
+                normalized_a=contr.normalized1,
+                normalized_b=contr.normalized2,
+                metadata=contr.metadata,
+            )
+
+            # Apply attribution override if triggered
+            if attribution_override and result.outcome == OUTCOME_TRUE_CONTRADICTION:
+                result.outcome = attribution_override
+                result.reconciliation_attempt = "זוהה ייחוס/טענת צד — סיווג מחדש"
+                result.rationale = "הטענות מכילות דפוסי ייחוס (לטענת/עשויים לטעון/נטען) — לא סתירה אמיתית"
+                result.contradiction_score = min(result.contradiction_score, 0.4)
+                logger.debug(f"Attribution override: {contr.id} → {attribution_override}")
+
+            # Store outcome on the contradiction for later use
+            contr._reconciler_outcome = result.outcome  # type: ignore[attr-defined]
+            contr.metadata["reconciler_outcome"] = result.outcome
+            contr.metadata["reconciler_rationale"] = result.rationale
+            contr.metadata["reconciler_score"] = result.contradiction_score
+            contr.metadata["reconciler_deciding"] = result.deciding_fields
+            contr.metadata["reconciliation_attempt"] = result.reconciliation_attempt
+            contr.metadata["reconciler_debug"] = result.debug
+
+            if result.outcome == OUTCOME_DUPLICATE:
+                # Remove duplicates / restatements entirely
+                logger.debug(f"Removed {contr.id}: DUPLICATE_OR_RESTATEMENT")
+                continue
+
+            if result.outcome == OUTCOME_TRUE_CONTRADICTION:
+                # True contradiction — update severity from reconciler
+                contr.severity = Severity(result.severity) if result.severity in ('low', 'medium', 'high', 'critical') else contr.severity
+            else:
+                # Non-true outcomes: adjust severity downward
+                contr.severity = Severity.LOW if result.severity == "low" else Severity.MEDIUM
+
+            kept.append(contr)
+
+        return kept
+
+    # Delta-fix §9: Attribution pattern detection
+    _ATTRIBUTION_TEXT_PATTERNS = [
+        re.compile(r'ייחוס', re.UNICODE),
+        re.compile(r'עשויים\s+לטעון', re.UNICODE),
+        re.compile(r'עשוי\s+לטעון', re.UNICODE),
+        re.compile(r'עשויה\s+לטעון', re.UNICODE),
+        re.compile(r'לטענת\s', re.UNICODE),
+        re.compile(r'נטען\s+כי', re.UNICODE),
+        re.compile(r'טען\s+כי', re.UNICODE),
+        re.compile(r'לכאורה', re.UNICODE),
+        re.compile(r'דומה\s+כי', re.UNICODE),
+        re.compile(r'לדברי\s', re.UNICODE),
+        re.compile(r'לגרסת\s', re.UNICODE),
+        re.compile(r'לגישת\s', re.UNICODE),
+        re.compile(r'לשיטת\s', re.UNICODE),
+        re.compile(r'לעמדת\s', re.UNICODE),
+        re.compile(r'(?:המשיב|המערער|התובע|הנתבע)\s+טען', re.UNICODE),
+    ]
+
+    def _check_attribution_override(self, contr: DetectedContradiction) -> Optional[str]:
+        """
+        Delta-fix §9: Check if explanation or claim text contains attribution
+        patterns that should prevent TRUE_CONTRADICTION classification.
+
+        Returns the override outcome category string, or None if no override.
+        """
+        texts_to_check = [
+            contr.explanation or "",
+            contr.quote1 or "",
+            contr.quote2 or "",
+            contr.claim1.text,
+            contr.claim2.text,
+        ]
+
+        for text in texts_to_check:
+            for pat in self._ATTRIBUTION_TEXT_PATTERNS:
+                if pat.search(text):
+                    # Cursor 5.2 §5: Attribution patterns → ROLE_OR_ATTRIBUTION_MISMATCH
+                    if 'ייחוס' in text:
+                        return "ROLE_OR_ATTRIBUTION_MISMATCH"
+                    if any(p.search(text) for p in self._ATTRIBUTION_TEXT_PATTERNS[:9]):
+                        return "ROLE_OR_ATTRIBUTION_MISMATCH"
+                    return "AMBIGUITY_OR_VAGUENESS"
+        return None
 
     def _apply_categorization(
         self,
@@ -1121,14 +1500,15 @@ def get_rule_detector() -> RuleBasedDetector:
     return _detector
 
 
-def detect_contradictions(claims: List[Claim]) -> DetectionResult:
+def detect_contradictions(claims: List[Claim], full_text: str = "") -> DetectionResult:
     """
     Convenience function to detect contradictions.
 
     Args:
         claims: List of claims
+        full_text: Full document text for context extraction
 
     Returns:
         DetectionResult
     """
-    return get_rule_detector().detect(claims)
+    return get_rule_detector().detect(claims, full_text=full_text)

@@ -12,7 +12,36 @@ from dataclasses import dataclass, field
 
 class ParserError(Exception):
     """Base exception for parser errors"""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "parser_error",
+        user_message: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.user_message = user_message or "שגיאה בעיבוד המסמך"
+        self.details = details or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.user_message,
+            "details": self.details,
+        }
+
+
+class DocxTrackChangesError(ParserError):
+    """DOCX contains track changes (not supported)"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            message="DOCX contains track changes",
+            code="docx_track_changes",
+            user_message="המסמך כולל מעקב שינויים. נא לקבל/לדחות שינויים ולשמור מחדש.",
+        )
 
 
 class UnsupportedFormatError(ParserError):
@@ -36,9 +65,9 @@ class BlockContent:
     bbox: Optional[Dict[str, float]] = None  # {x, y, width, height}
     confidence: Optional[float] = None  # OCR confidence
 
-    def to_locator_json(self) -> Dict[str, Any]:
+    def to_locator_json(self, doc_id: Optional[str] = None) -> Dict[str, Any]:
         """Convert to locator JSON for storage"""
-        return {
+        locator = {
             "page_no": self.page_no,
             "block_index": self.block_index,
             "paragraph_index": self.paragraph_index,
@@ -46,6 +75,9 @@ class BlockContent:
             "char_end": self.char_end,
             "bbox": self.bbox
         }
+        if doc_id:
+            locator["doc_id"] = doc_id
+        return locator
 
 
 @dataclass

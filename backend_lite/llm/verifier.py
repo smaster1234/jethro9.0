@@ -40,7 +40,7 @@ VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות משפטי
 VERIFIER_USER_TEMPLATE = """סכמה (מחייבת):
 {{
   "same_fact": "yes|no|unclear",
-  "contradiction": "yes|no|unclear",
+  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
   "reason": "בעברית, עד 20 מילים"
@@ -70,10 +70,12 @@ class VerifierStats:
 class VerifierResult:
     """Result from verifier"""
     same_fact: str = "unclear"      # yes|no|unclear
-    contradiction: str = "unclear"  # yes|no|unclear
+    contradiction: str = "unclear"  # yes|no|unclear  (legacy compat)
+    outcome: str = ""               # 7-category outcome (v2)
     type: str = "none"              # temporal|quant|presence|actor|document|identity|none
     confidence: float = 0.5
     reason: str = ""
+    reconciliation_tried: str = ""  # v2: reconciliation attempt summary
     success: bool = True
     error: Optional[str] = None
     raw_response: Optional[Dict] = None
@@ -106,9 +108,13 @@ class VerifierLLM:
     """
     Verifier LLM - supports Gemini (primary) and Qwen via OpenRouter (fallback).
 
+    Supports OpenAI (GPT-4o), OpenRouter (Qwen), or any OpenAI-compatible API.
     Provides second opinion on contradiction candidates.
     Optimized for precision - filters false positives.
     """
+
+    # Gemini OpenAI-compatible endpoint (direct, no proxy)
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
     def __init__(self):
         backend = _detect_verifier_backend()
@@ -147,7 +153,8 @@ class VerifierLLM:
                 api_key=api_key,
                 model=model,
                 timeout=30,
-                app_name="JETHRO Verifier"
+                app_name="JETHRO Verifier",
+                base_url=base_url,
             )
             logger.info(f"Verifier initialized with OpenRouter: {model}")
 
@@ -166,11 +173,30 @@ class VerifierLLM:
         """Check if verifier can make more calls"""
         return self.enabled and self.stats.calls < self.max_calls
 
+    def _parse_verifier_response(self, content: str) -> Optional[Dict]:
+        """Parse verifier response using robust JSON parser with logging."""
+        if not content or not content.strip():
+            logger.warning("Verifier response content is empty")
+            return None
+
+        data, ok, error = parse_json_robust(content)
+        if ok and data is not None:
+            return data
+
+        # Log the raw content for debugging (truncated)
+        raw_preview = content[:200].replace('\n', '\\n')
+        logger.error(
+            f"Verifier JSON parse failed: {error} | "
+            f"raw_len={len(content)} raw_preview='{raw_preview}'"
+        )
+        return None
+
     async def verify(
         self,
         claim_a: str,
         claim_b: str,
-        suggested_type: str = "unknown"
+        suggested_type: str = "unknown",
+        extra_system_context: str = "",
     ) -> VerifierResult:
         """
         Verify if two claims contradict each other.
@@ -179,6 +205,8 @@ class VerifierLLM:
             claim_a: First claim text
             claim_b: Second claim text
             suggested_type: Suggested contradiction type from analyzer
+            extra_system_context: Optional extra context (e.g. few-shot examples)
+                                  appended to the system prompt
 
         Returns:
             VerifierResult with decision
@@ -205,8 +233,13 @@ class VerifierLLM:
             suggested_type=suggested_type
         )
 
+        # Build system prompt with optional few-shot examples
+        system_prompt = VERIFIER_SYSTEM_PROMPT
+        if extra_system_context:
+            system_prompt = system_prompt + "\n\n" + extra_system_context
+
         messages = [
-            {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
 
@@ -227,37 +260,65 @@ class VerifierLLM:
                 error=result.error
             )
 
-        # Parse JSON response
-        try:
-            data = json.loads(result.content) if result.content else {}
+        # Parse JSON response using robust parser
+        data = self._parse_verifier_response(result.content)
 
-            verdict = VerifierResult(
-                same_fact=data.get("same_fact", "unclear"),
-                contradiction=data.get("contradiction", "unclear"),
-                type=data.get("type", "none"),
-                confidence=float(data.get("confidence", 0.5)),
-                reason=data.get("reason", ""),
-                success=True,
-                raw_response=data
+        # If robust parse failed and content was empty/whitespace, retry once
+        if data is None and (not result.content or not result.content.strip()):
+            logger.warning(
+                f"Verifier got empty content from {self.model}, retrying once"
             )
+            retry_result = await self.client.call(
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.1,  # Slight temperature nudge on retry
+                max_tokens=256
+            )
+            self.stats.total_input_tokens += retry_result.input_tokens
+            self.stats.total_output_tokens += retry_result.output_tokens
 
-            # Update stats
-            if verdict.contradiction == "yes" and verdict.confidence >= 0.7:
-                self.stats.promoted += 1
-            elif verdict.contradiction == "no":
-                self.stats.rejected += 1
-            else:
-                self.stats.unclear += 1
+            if retry_result.success and retry_result.content:
+                data = self._parse_verifier_response(retry_result.content)
 
-            return verdict
-
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Verifier JSON parse error: {e}")
+        if data is None:
             self.stats.unclear += 1
             return VerifierResult(
                 success=False,
-                error=f"JSON parse error: {e}"
+                error="Failed to parse verifier response"
             )
+
+        # v2: parse outcome field; fall back to legacy contradiction field
+        outcome = data.get("outcome", "")
+        legacy_contradiction = data.get("contradiction", "unclear")
+        # Derive legacy field from outcome for backward compat
+        if outcome == "TRUE_CONTRADICTION":
+            legacy_contradiction = "yes"
+        elif outcome and outcome != "TRUE_CONTRADICTION":
+            legacy_contradiction = "no"
+
+        verdict = VerifierResult(
+            same_fact=data.get("same_fact", "unclear"),
+            contradiction=legacy_contradiction,
+            outcome=outcome,
+            type=data.get("type", "none"),
+            confidence=float(data.get("confidence", 0.5)),
+            reason=data.get("reason", ""),
+            reconciliation_tried=data.get("reconciliation_tried", ""),
+            success=True,
+            raw_response=data,
+        )
+
+        # Update stats
+        if verdict.outcome == "TRUE_CONTRADICTION" or (
+            verdict.contradiction == "yes" and verdict.confidence >= 0.7
+        ):
+            self.stats.promoted += 1
+        elif verdict.contradiction == "no":
+            self.stats.rejected += 1
+        else:
+            self.stats.unclear += 1
+
+        return verdict
 
     def get_stats(self) -> Dict[str, Any]:
         """Get verifier statistics"""

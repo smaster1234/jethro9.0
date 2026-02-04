@@ -23,31 +23,35 @@ from .gemini_client import GeminiBaseClient
 logger = logging.getLogger(__name__)
 
 
-# System prompt for contradiction analysis
-ANALYZER_SYSTEM_PROMPT = """אתה מומחה בזיהוי סתירות במסמכים משפטיים בעברית.
+# System prompt for contradiction analysis (v2 – precision-oriented)
+ANALYZER_SYSTEM_PROMPT = """אתה מומחה בזיהוי סתירות **אמיתיות** במסמכים משפטיים בעברית.
 
-המשימה שלך: למצוא את כל הסתירות האפשריות בין הטענות.
+## הגדרת סתירה אמיתית
+זוג טענות A ו-B הוא סתירה אמיתית **רק** אם מתקיימים **כל** התנאים:
+1. **אותו מושא** — אותן ישויות/אירוע/סעיף/תקופה/פעולה (לא דמיון מילולי בלבד).
+2. **אותו מישור** — עובדה מול עובדה, או נורמה מול נורמה. אל תערבב עובדה עם הערכה/טיעון משפטי.
+3. **אי-יכולת יישוב** — תחת כל פרשנות סבירה, לא ייתכן ששתיהן נכונות יחד.
 
-סתירה מתרחשת כאשר:
-1. שתי טענות מתייחסות לאותו אירוע/עניין
-2. הן מכילות מידע שלא יכול להיות נכון בו-זמנית
-3. זה כולל גם סתירות פנימיות (אותו צד) וגם מחלוקות בין צדדים שונים
+## מה **אינו** סתירה (אל תדווח כסתירה!):
+- **מחלוקת בין צדדים** — "התובע טען X" מול "הנתבע טען Y" היא מחלוקת, לא סתירה פנימית.
+- **שינוי נסיבות/זמן** — טענה מתקופה א' מול טענה מתקופה ב' אינה סתירה.
+- **הבדל בין עובדה לנורמה** — קביעה עובדתית מול פרשנות/הלכה/דעה.
+- **פערי ניסוח/עמימות** — "כ-100" מול "כמאה" אינם סתירה.
+- **ציטוט** — "לטענת הנתבע, X" אינו ממצא של הכותב.
 
-חוקים קריטיים:
-1. מספרי תיקים (כמו 17682-06-25 או ת.א. 12345/20) הם לא תאריכים!
-2. אל תמציא עובדות שלא כתובות בטענות
-3. חפש תאריכים, סכומים, מספרים, שמות, מיקומים שונים
+## חוקים קריטיים:
+1. מספרי תיקים (17682-06-25, ת.א. 12345/20) הם **לא** תאריכים!
+2. אל תמציא עובדות — ציטוט מדויק בלבד.
+3. בדוק: זמן, כימות, תחולה, מודאליות (חובה/רשות/ייתכן), שלילה.
 
-סוגי סתירות למצוא:
-- temporal_conflict: תאריכים/זמנים/מועדים שונים לאותו אירוע
-- quantitative_conflict: סכומים/כמויות/אחוזים שונים
-- presence_conflict: היה/לא היה נוכח במקום או אירוע
-- attribution_conflict: מי עשה/אמר/חתם על מה
+## סוגי סתירות:
+- temporal_conflict: תאריכים/מועדים סותרים **לאותו אירוע**
+- quantitative_conflict: סכומים/כמויות סותרים **לאותו עניין**
+- presence_conflict: היה/לא היה נוכח **באותו אירוע**
+- attribution_conflict: ייחוס פעולה סותר **לאותה פעולה**
 - factual_conflict: עובדות סותרות אחרות
 
-היה אגרסיבי - עדיף לזהות יותר מדי מאשר לפספס. הverifier יסנן.
-
-החזר JSON בלבד:
+## החזר JSON בלבד:
 {
   "contradictions": [
     {
@@ -56,14 +60,18 @@ ANALYZER_SYSTEM_PROMPT = """אתה מומחה בזיהוי סתירות במסמ
       "type": "temporal_conflict|quantitative_conflict|presence_conflict|attribution_conflict|factual_conflict",
       "severity": "critical|high|medium|low",
       "confidence": 0.5-1.0,
-      "explanation": "הסבר קצר בעברית מה בדיוק סותר",
-      "quote1": "הציטוט הרלוונטי מטענה 1",
-      "quote2": "הציטוט הרלוונטי מטענה 2"
+      "explanation": "הסבר קצר: מה מתנגש, למה לא ניתן ליישוב",
+      "quote1": "ציטוט מדויק מטענה 1",
+      "quote2": "ציטוט מדויק מטענה 2",
+      "same_subject": true,
+      "same_plane": true,
+      "reconciliation_tried": "תיאור קצר של ניסיון היישוב שנכשל"
     }
   ]
 }
 
-אם באמת אין שום סתירה, החזר: {"contradictions": []}"""
+**אם אין סתירה אמיתית, החזר: {"contradictions": []}**
+**עדיף לפספס מאשר לדווח שגוי. דיוק חשוב מזכרון.**"""
 
 
 @dataclass
@@ -114,9 +122,13 @@ class AnalyzerLLM:
     """
     Analyzer LLM - supports Gemini (primary) and DeepSeek via OpenRouter (fallback).
 
+    Supports OpenAI (GPT-4o), OpenRouter (DeepSeek), or any OpenAI-compatible API.
     Proposes contradiction candidates with broad detection.
     Optimized for recall - may over-detect, verifier filters.
     """
+
+    # Gemini OpenAI-compatible endpoint (direct, no proxy)
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
     def __init__(self):
         backend = _detect_llm_backend()
@@ -144,8 +156,9 @@ class AnalyzerLLM:
             self.client = OpenRouterBaseClient(
                 api_key=api_key,
                 model=model,
-                timeout=60,
-                app_name="JETHRO Analyzer"
+                timeout=120,
+                app_name="JETHRO Analyzer",
+                base_url=base_url,
             )
             logger.info(f"Analyzer initialized with OpenRouter: {model}")
 
@@ -220,30 +233,38 @@ class AnalyzerLLM:
         content_preview = result.content[:500] if result.content else 'None'
         logger.info(f"Analyzer response ({self.backend}, {result.output_tokens} tokens): {content_preview}...")
 
-        # Parse JSON response
-        try:
-            data = json.loads(result.content) if result.content else {}
-            contradictions = data.get("contradictions", [])
-            self.stats.contradictions_found += len(contradictions)
+        # Parse JSON response using robust parser
+        if not result.content or not result.content.strip():
+            logger.warning("Analyzer response content is empty")
+            data = {}
+        else:
+            data, ok, error = parse_json_robust(result.content)
+            if not ok or data is None:
+                raw_preview = result.content[:200].replace('\n', '\\n')
+                logger.error(
+                    f"Analyzer JSON parse failed: {error} | "
+                    f"raw_len={len(result.content)} raw_preview='{raw_preview}'"
+                )
+                return AnalyzerResult(
+                    success=False,
+                    error=f"JSON parse error: {error}",
+                    raw_content=result.content
+                )
 
-            logger.info(f"Analyzer found {len(contradictions)} contradictions")
-            for c in contradictions[:3]:  # Log first 3
-                logger.info(f"  - {c.get('claim1_id')} vs {c.get('claim2_id')}: {c.get('type')} (conf={c.get('confidence', 0):.2f})")
+        contradictions = data.get("contradictions", [])
+        self.stats.contradictions_found += len(contradictions)
 
-            return AnalyzerResult(
-                contradictions=contradictions,
-                success=True,
-                raw_content=result.content,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens
-            )
-        except json.JSONDecodeError as e:
-            logger.error(f"Analyzer JSON parse error: {e}")
-            return AnalyzerResult(
-                success=False,
-                error=f"JSON parse error: {e}",
-                raw_content=result.content
-            )
+        logger.info(f"Analyzer found {len(contradictions)} contradictions")
+        for c in contradictions[:3]:  # Log first 3
+            logger.info(f"  - {c.get('claim1_id')} vs {c.get('claim2_id')}: {c.get('type')} (conf={c.get('confidence', 0):.2f})")
+
+        return AnalyzerResult(
+            contradictions=contradictions,
+            success=True,
+            raw_content=result.content,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """Get analyzer statistics"""

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -27,11 +27,18 @@ import {
   Save,
   Users,
   UserPlus,
-  Mail,
   Download,
+  ListOrdered,
+  ThumbsUp,
+  ThumbsDown,
+  Shield,
+  ShieldCheck,
+  ShieldX,
+  Lock,
+  ChevronUp,
+  Crosshair,
 } from 'lucide-react';
-import { casesApi, documentsApi, handleApiError } from '../api';
-import { usersApi } from '../api/users';
+import { casesApi, documentsApi, handleApiError, witnessesApi, insightsApi, crossExamPlanApi, orgsApi, trainingApi, usageApi, feedbackApi } from '../api';
 import type { MemoryItem, CaseParticipant } from '../api/cases';
 import type { CaseJob } from '../api/documents';
 import {
@@ -44,7 +51,29 @@ import {
   Progress,
   Input,
 } from '../components/ui';
-import type { Case, Document as DocumentType, AnalysisRun, Folder as FolderType, Contradiction, CrossExamQuestion, CrossExamQuestionsOutput } from '../types';
+import type {
+  Case,
+  Document as DocumentType,
+  AnalysisRun,
+  Folder as FolderType,
+  Contradiction,
+  CrossExamQuestion,
+  CrossExamQuestionsOutput,
+  EvidenceAnchor,
+  Witness,
+  WitnessVersionDiffResponse,
+  ContradictionInsight,
+  CrossExamPlanResponse,
+  CrossExamPlanStep,
+  WitnessSimulationResponse,
+  OrganizationMember,
+  TrainingSession,
+  TrainingTurn,
+  TrainingSummary,
+  EntityUsageSummary,
+  FeedbackAggregate,
+} from '../types';
+import EvidenceViewerModal from '../components/EvidenceViewerModal';
 
 // Helper to flatten cross-exam questions from nested structure
 const flattenCrossExamQuestions = (
@@ -60,7 +89,99 @@ const flattenCrossExamQuestions = (
   );
 };
 
-type Tab = 'documents' | 'analysis' | 'notes' | 'team';
+const formatUsageDate = (value?: string) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('he-IL');
+};
+
+const buildUsageBadge = (summary?: EntityUsageSummary) => {
+  if (!summary) return null;
+  const usage = summary.usage || {};
+  const order = ['export', 'training', 'plan'] as const;
+  const labels: Record<string, string> = {
+    export: 'נכלל בייצוא',
+    training: 'שומש באימון',
+    plan: 'נכלל בתכנית',
+  };
+  const variants: Record<string, string> = {
+    export: 'primary',
+    training: 'warning',
+    plan: 'neutral',
+  };
+
+  const tooltip = [
+    usage.export ? `ייצוא: ${formatUsageDate(usage.export)}` : null,
+    usage.training ? `אימון: ${formatUsageDate(usage.training)}` : null,
+    usage.plan ? `תכנית: ${formatUsageDate(usage.plan)}` : null,
+  ].filter(Boolean).join('\n');
+
+  for (const key of order) {
+    if (usage[key]) {
+      return (
+        <span title={tooltip}>
+          <Badge variant={variants[key] as any}>
+            {labels[key]}
+          </Badge>
+        </span>
+      );
+    }
+  }
+  return null;
+};
+
+const feedbackRank = (counts?: Record<string, number>) => {
+  if (!counts) return 0;
+  if ((counts.excellent || 0) >= 2) return 1;
+  if ((counts.too_risky || 0) >= 2) return -1;
+  return 0;
+};
+
+const buildFeedbackTag = (summary?: FeedbackAggregate) => {
+  if (!summary) return null;
+  const counts = summary.counts || {};
+  if ((counts.excellent || 0) >= 2) {
+    return <Badge variant="primary">מעולה במשרד</Badge>;
+  }
+  if ((counts.too_risky || 0) >= 2) {
+    return <Badge variant="danger">מסוכן מדי</Badge>;
+  }
+  return null;
+};
+
+const toEvidenceAnchor = (
+  raw?: EvidenceAnchor | Record<string, unknown> | null
+): EvidenceAnchor | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const data = raw as Record<string, unknown>;
+  const docId = data.doc_id as string | undefined;
+  if (!docId) return null;
+
+  return {
+    doc_id: docId,
+    page_no: (data.page_no as number | undefined) ?? (data.page as number | undefined),
+    block_index: data.block_index as number | undefined,
+    paragraph_index: (data.paragraph_index as number | undefined) ?? (data.paragraph as number | undefined),
+    char_start: data.char_start as number | undefined,
+    char_end: data.char_end as number | undefined,
+    snippet: data.snippet as string | undefined,
+    bbox: data.bbox as EvidenceAnchor['bbox'],
+  };
+};
+
+const anchorFromClaim = (
+  claim?: { source_doc_id?: string; page_no?: number; block_index?: number }
+): EvidenceAnchor | null => {
+  if (!claim?.source_doc_id) return null;
+  return {
+    doc_id: claim.source_doc_id,
+    page_no: claim.page_no,
+    block_index: claim.block_index,
+  };
+};
+
+type Tab = 'documents' | 'analysis' | 'witnesses' | 'notes' | 'team' | 'training';
 
 export const CaseDetailPage: React.FC = () => {
   const { caseId } = useParams<{ caseId: string }>();
@@ -104,7 +225,32 @@ export const CaseDetailPage: React.FC = () => {
   // Analysis results view state
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
-  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions'>('contradictions');
+  const [analysisResultsTab, setAnalysisResultsTab] = useState<'contradictions' | 'questions' | 'plan' | 'battle'>('contradictions');
+  const [insightsByContradiction, setInsightsByContradiction] = useState<Record<string, ContradictionInsight>>({});
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [crossExamPlan, setCrossExamPlan] = useState<CrossExamPlanResponse | null>(null);
+  const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+  const [planError, setPlanError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf' | null>(null);
+  const [exportError, setExportError] = useState('');
+  const [simulationPersona, setSimulationPersona] = useState<'cooperative' | 'evasive' | 'hostile'>('cooperative');
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simulationResult, setSimulationResult] = useState<WitnessSimulationResponse | null>(null);
+  const [isSimulationModalOpen, setIsSimulationModalOpen] = useState(false);
+
+  // Witnesses state
+  const [witnesses, setWitnesses] = useState<Witness[]>([]);
+  const [isLoadingWitnesses, setIsLoadingWitnesses] = useState(false);
+  const [newWitnessName, setNewWitnessName] = useState('');
+  const [newWitnessSide, setNewWitnessSide] = useState('unknown');
+  const [isCreatingWitness, setIsCreatingWitness] = useState(false);
+  const [witnessError, setWitnessError] = useState('');
+
+  // Evidence viewer state
+  const [isEvidenceViewerOpen, setIsEvidenceViewerOpen] = useState(false);
+  const [evidenceLeftAnchor, setEvidenceLeftAnchor] = useState<EvidenceAnchor | null>(null);
+  const [evidenceRightAnchor, setEvidenceRightAnchor] = useState<EvidenceAnchor | null>(null);
 
   // Analysis options modal state
   const [showAnalysisModal, setShowAnalysisModal] = useState(false);
@@ -122,6 +268,8 @@ export const CaseDetailPage: React.FC = () => {
   const [newNoteText, setNewNoteText] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState('');
+  const [newNoteType, setNewNoteType] = useState<'note' | 'finding' | 'todo'>('note');
+  const [notesFilter, setNotesFilter] = useState<'all' | 'note' | 'finding' | 'todo'>('all');
 
   // Document filters
   const [docSearchQuery, setDocSearchQuery] = useState('');
@@ -142,10 +290,99 @@ export const CaseDetailPage: React.FC = () => {
   const [participants, setParticipants] = useState<CaseParticipant[]>([]);
   const [isLoadingParticipants, setIsLoadingParticipants] = useState(false);
   const [showAddParticipantModal, setShowAddParticipantModal] = useState(false);
-  const [newParticipantEmail, setNewParticipantEmail] = useState('');
+  const [orgMembers, setOrgMembers] = useState<OrganizationMember[]>([]);
+  const [isLoadingOrgMembers, setIsLoadingOrgMembers] = useState(false);
+  const [selectedParticipantId, setSelectedParticipantId] = useState('');
   const [newParticipantRole, setNewParticipantRole] = useState('');
   const [isAddingParticipant, setIsAddingParticipant] = useState(false);
   const [addParticipantError, setAddParticipantError] = useState('');
+
+  // Training state
+  const [trainingSession, setTrainingSession] = useState<TrainingSession | null>(null);
+  const [trainingTurns, setTrainingTurns] = useState<TrainingTurn[]>([]);
+  const [trainingSummary, setTrainingSummary] = useState<TrainingSummary | null>(null);
+  const [trainingError, setTrainingError] = useState('');
+  const [isStartingTraining, setIsStartingTraining] = useState(false);
+  const [isSendingTrainingTurn, setIsSendingTrainingTurn] = useState(false);
+  const [trainingPersona, setTrainingPersona] = useState('cooperative');
+  const [selectedBranchTrigger, setSelectedBranchTrigger] = useState('');
+
+  // Usage tracking
+  const [usageMap, setUsageMap] = useState<Record<string, EntityUsageSummary>>({});
+
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, FeedbackAggregate>>({});
+
+  const trainingSteps = useMemo(() => {
+    if (!crossExamPlan?.stages) return [];
+    return crossExamPlan.stages.flatMap((stage) =>
+      stage.steps.map((step) => ({ ...step, _stage: stage.stage }))
+    );
+  }, [crossExamPlan]);
+
+  const nextTrainingStep = trainingSteps[trainingTurns.length];
+
+  const usageKey = useCallback((entityType: string, entityId: string) => {
+    return `${entityType}:${entityId}`;
+  }, []);
+
+  const getUsageSummary = useCallback((entityType: string, entityId?: string | null) => {
+    if (!entityId) return undefined;
+    return usageMap[usageKey(entityType, entityId)];
+  }, [usageMap, usageKey]);
+
+  const fetchUsage = useCallback(async () => {
+    if (!caseId) return;
+    try {
+      const list = await usageApi.list(caseId);
+      const map: Record<string, EntityUsageSummary> = {};
+      list.forEach((item) => {
+        map[usageKey(item.entity_type, item.entity_id)] = item;
+      });
+      setUsageMap(map);
+    } catch (error) {
+      console.error('Failed to fetch usage:', error);
+    }
+  }, [caseId, usageKey]);
+
+  const getFeedbackSummary = useCallback((entityType: string, entityId?: string | null) => {
+    if (!entityId) return undefined;
+    return feedbackMap[usageKey(entityType, entityId)];
+  }, [feedbackMap, usageKey]);
+
+  const fetchFeedback = useCallback(async () => {
+    if (!caseId) return;
+    try {
+      const result = await feedbackApi.list(caseId);
+      const map: Record<string, FeedbackAggregate> = {};
+      result.aggregates.forEach((item) => {
+        map[usageKey(item.entity_type, item.entity_id)] = item;
+      });
+      setFeedbackMap(map);
+    } catch (error) {
+      console.error('Failed to fetch feedback:', error);
+    }
+  }, [caseId, usageKey]);
+
+  const handleSubmitFeedback = useCallback(async (
+    entityType: 'insight' | 'plan_step',
+    entityId: string,
+    label: 'worked' | 'not_worked' | 'too_risky' | 'excellent',
+    note?: string,
+  ) => {
+    if (!caseId || !entityId) return;
+    try {
+      await feedbackApi.create({
+        case_id: caseId,
+        entity_type: entityType,
+        entity_id: entityId,
+        label,
+        note,
+      });
+      await fetchFeedback();
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+    }
+  }, [caseId, fetchFeedback]);
 
   // Document preview state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -157,6 +394,10 @@ export const CaseDetailPage: React.FC = () => {
     if (caseId) {
       fetchCaseData();
       fetchJobs();
+      setTrainingSession(null);
+      setTrainingTurns([]);
+      setTrainingSummary(null);
+      setTrainingError('');
     }
   }, [caseId]);
 
@@ -180,12 +421,39 @@ export const CaseDetailPage: React.FC = () => {
     }
   }, [activeTab, caseId]);
 
+  // Fetch witnesses when witnesses tab is selected
+  useEffect(() => {
+    if (activeTab === 'witnesses' && caseId) {
+      fetchWitnesses();
+    }
+  }, [activeTab, caseId]);
+
   // Fetch participants when team tab is selected
   useEffect(() => {
     if (activeTab === 'team' && caseId && participants.length === 0) {
       fetchParticipants();
     }
   }, [activeTab, caseId]);
+
+  useEffect(() => {
+    if (!showAddParticipantModal || !caseData?.organization_id) {
+      return;
+    }
+    const orgId = caseData.organization_id;
+    const loadMembers = async () => {
+      setIsLoadingOrgMembers(true);
+      setAddParticipantError('');
+      try {
+        const list = await orgsApi.listMembers(orgId);
+        setOrgMembers(list);
+      } catch (error) {
+        setAddParticipantError(handleApiError(error));
+      } finally {
+        setIsLoadingOrgMembers(false);
+      }
+    };
+    loadMembers();
+  }, [showAddParticipantModal, caseData?.organization_id]);
 
   // Poll for job status
   useEffect(() => {
@@ -300,36 +568,128 @@ export const CaseDetailPage: React.FC = () => {
     }
   };
 
+  const fetchWitnesses = async () => {
+    if (!caseId) return;
+    setIsLoadingWitnesses(true);
+    try {
+      const witnessRes = await witnessesApi.list(caseId);
+      setWitnesses(witnessRes || []);
+    } catch (error) {
+      console.error('Failed to fetch witnesses:', error);
+      setWitnessError(handleApiError(error));
+    } finally {
+      setIsLoadingWitnesses(false);
+    }
+  };
+
+  const handleCreateWitness = async () => {
+    if (!caseId || !newWitnessName.trim()) return;
+    setIsCreatingWitness(true);
+    setWitnessError('');
+    try {
+      await witnessesApi.create(caseId, {
+        name: newWitnessName.trim(),
+        side: newWitnessSide,
+      });
+      setNewWitnessName('');
+      setNewWitnessSide('unknown');
+      await fetchWitnesses();
+    } catch (error) {
+      setWitnessError(handleApiError(error));
+    } finally {
+      setIsCreatingWitness(false);
+    }
+  };
+
   const handleAddParticipant = async () => {
-    if (!caseId || !newParticipantEmail.trim()) return;
+    if (!caseId || !selectedParticipantId) return;
 
     setIsAddingParticipant(true);
     setAddParticipantError('');
 
     try {
-      // First lookup user by email
-      const user = await usersApi.lookupByEmail(newParticipantEmail.trim());
+      await casesApi.addParticipant(caseId, selectedParticipantId, newParticipantRole || undefined);
 
-      // Then add as participant
-      await casesApi.addParticipant(caseId, user.id, newParticipantRole || undefined);
-
-      // Refresh participants list
       await fetchParticipants();
 
-      // Close modal and reset
       setShowAddParticipantModal(false);
-      setNewParticipantEmail('');
+      setSelectedParticipantId('');
       setNewParticipantRole('');
     } catch (error) {
       console.error('Failed to add participant:', error);
-      const errorMessage = handleApiError(error);
-      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
-        setAddParticipantError('משתמש עם כתובת דוא״ל זו לא נמצא במערכת');
-      } else {
-        setAddParticipantError(errorMessage);
-      }
+      setAddParticipantError(handleApiError(error));
     } finally {
       setIsAddingParticipant(false);
+    }
+  };
+
+  const handleStartTraining = async () => {
+    if (!caseId || !crossExamPlan) return;
+    if (!crossExamPlan.witness_id) {
+      setTrainingError('לא נמצא עד משויך לתכנית החקירה');
+      return;
+    }
+    setIsStartingTraining(true);
+    setTrainingError('');
+    setTrainingSummary(null);
+    setTrainingTurns([]);
+    try {
+      const session = await trainingApi.start(caseId, {
+        plan_id: crossExamPlan.plan_id,
+        witness_id: crossExamPlan.witness_id,
+        persona: trainingPersona,
+      });
+      setTrainingSession(session);
+      await fetchUsage();
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    } finally {
+      setIsStartingTraining(false);
+    }
+  };
+
+  const handleTrainingTurn = async () => {
+    if (!trainingSession || !nextTrainingStep) return;
+    setIsSendingTrainingTurn(true);
+    setTrainingError('');
+    try {
+      const turn = await trainingApi.turn(trainingSession.session_id, {
+        step_id: nextTrainingStep.id,
+        chosen_branch: selectedBranchTrigger || undefined,
+      });
+      setTrainingTurns((prev) => [...prev, turn]);
+      setSelectedBranchTrigger('');
+      await fetchUsage();
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    } finally {
+      setIsSendingTrainingTurn(false);
+    }
+  };
+
+  const handleTrainingBack = async () => {
+    if (!trainingSession || trainingTurns.length === 0) return;
+    setTrainingError('');
+    try {
+      const resp = await trainingApi.back(trainingSession.session_id);
+      setTrainingTurns((prev) => prev.slice(0, -1));
+      setTrainingSession((prev) =>
+        prev ? { ...prev, back_remaining: resp.back_remaining } : prev
+      );
+    } catch (error) {
+      setTrainingError(handleApiError(error));
+    }
+  };
+
+  const handleTrainingFinish = async () => {
+    if (!trainingSession) return;
+    setTrainingError('');
+    try {
+      const resp = await trainingApi.finish(trainingSession.session_id);
+      setTrainingSummary(resp.summary);
+      setTrainingSession((prev) => (prev ? { ...prev, status: 'finished' } : prev));
+    } catch (error) {
+      setTrainingError(handleApiError(error));
     }
   };
 
@@ -340,7 +700,8 @@ export const CaseDetailPage: React.FC = () => {
       id: crypto.randomUUID(),
       text: newNoteText.trim(),
       created_at: new Date().toISOString(),
-      type: 'note',
+      type: newNoteType,
+      done: newNoteType === 'todo' ? false : undefined,
     };
 
     const updatedNotes = [newNote, ...notes];
@@ -402,6 +763,7 @@ export const CaseDetailPage: React.FC = () => {
     if (selectedRun?.id === run.id) {
       // Toggle off if same run clicked
       setSelectedRun(null);
+      setInsightsByContradiction({});
       return;
     }
 
@@ -409,6 +771,8 @@ export const CaseDetailPage: React.FC = () => {
     try {
       const fullRun = await casesApi.getRun(run.id);
       setSelectedRun(fullRun);
+      setCrossExamPlan(null);
+      setPlanError('');
     } catch (error) {
       console.error('Failed to fetch run details:', error);
       // Still show basic run info
@@ -417,6 +781,77 @@ export const CaseDetailPage: React.FC = () => {
       setIsLoadingRun(false);
     }
   };
+
+  useEffect(() => {
+    if (!selectedRun?.id) {
+      setInsightsByContradiction({});
+      return;
+    }
+    const fetchInsights = async () => {
+      setIsLoadingInsights(true);
+      try {
+        const insights = await insightsApi.listByRun(selectedRun.id);
+        const map: Record<string, ContradictionInsight> = {};
+        insights.forEach((insight) => {
+          map[insight.contradiction_id] = insight;
+        });
+        setInsightsByContradiction(map);
+      } catch (error) {
+        console.error('Failed to fetch insights:', error);
+      } finally {
+        setIsLoadingInsights(false);
+      }
+    };
+    fetchInsights();
+  }, [selectedRun?.id]);
+
+  useEffect(() => {
+    if (!selectedRun?.id || analysisResultsTab !== 'plan') {
+      return;
+    }
+    const loadPlan = async () => {
+      setIsLoadingPlan(true);
+      setPlanError('');
+      try {
+        const plan = await crossExamPlanApi.getLatest(selectedRun.id);
+        setCrossExamPlan(plan);
+      } catch (error) {
+        setCrossExamPlan(null);
+        setPlanError(handleApiError(error));
+      } finally {
+        setIsLoadingPlan(false);
+      }
+    };
+    loadPlan();
+  }, [selectedRun?.id, analysisResultsTab]);
+
+  useEffect(() => {
+    if (!selectedRun?.id || activeTab !== 'training') {
+      return;
+    }
+    const loadPlan = async () => {
+      setIsLoadingPlan(true);
+      setPlanError('');
+      try {
+        const plan = await crossExamPlanApi.getLatest(selectedRun.id);
+        setCrossExamPlan(plan);
+      } catch (error) {
+        setCrossExamPlan(null);
+        setPlanError(handleApiError(error));
+      } finally {
+        setIsLoadingPlan(false);
+      }
+    };
+    loadPlan();
+  }, [selectedRun?.id, activeTab]);
+
+  useEffect(() => {
+    if (!caseId) return;
+    if (activeTab === 'analysis' || activeTab === 'training') {
+      fetchUsage();
+      fetchFeedback();
+    }
+  }, [caseId, activeTab, fetchUsage, fetchFeedback]);
 
   const handleCreateFolder = async () => {
     if (!caseId || !newFolderName.trim()) return;
@@ -466,6 +901,8 @@ export const CaseDetailPage: React.FC = () => {
       setIsDeletingFolder(false);
     }
   };
+
+
 
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -534,16 +971,50 @@ export const CaseDetailPage: React.FC = () => {
     const date = new Date().toISOString().split('T')[0];
 
     if (format === 'csv') {
-      // CSV export
-      const headers = ['מספר', 'חומרה', 'סטטוס', 'קטגוריה', 'הסבר', 'ציטוט 1', 'ציטוט 2'];
+      // CSV export — enriched schema (delta-fix §6)
+      const esc = (s: string) => `"${(s || '').replace(/"/g, '""')}"`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = (c: Contradiction, key: string) => {
+        const v = (c as any)?.[key] ?? (c as any)?.metadata?.[key] ?? '';
+        return typeof v === 'object' ? JSON.stringify(v) : String(v);
+      };
+      const headers = [
+        'מספר', 'חומרה', 'סטטוס', 'קטגוריה', 'outcome_category', 'contradiction_score',
+        'ציטוט 1', 'ציטוט 2', 'הסבר',
+        'claimA_speaker_mode', 'claimB_speaker_mode',
+        'claimA_plane', 'claimB_plane',
+        'claimA_time_ref', 'claimB_time_ref',
+        'claimA_scope', 'claimB_scope',
+        'claimA_context_before', 'claimA_context_after',
+        'claimB_context_before', 'claimB_context_after',
+        'reconciliation_attempt', 'rationale', 'bucket', 'confidence',
+      ];
       const rows = contradictions.map((c, i) => [
         i + 1,
         c.severity || '',
         c.status || '',
-        c.category || '',
-        `"${(c.explanation || '').replace(/"/g, '""')}"`,
-        `"${(c.quote1 || '').replace(/"/g, '""')}"`,
-        `"${(c.quote2 || '').replace(/"/g, '""')}"`,
+        c.reconciler_outcome || c.category || '',
+        md(c, 'reconciler_outcome'),
+        md(c, 'reconciler_score'),
+        esc(c.quote1 || ''),
+        esc(c.quote2 || ''),
+        esc(c.explanation || ''),
+        c.claim_a?.speaker_mode || '',
+        c.claim_b?.speaker_mode || '',
+        c.claim_a?.plane || '',
+        c.claim_b?.plane || '',
+        c.claim_a?.time_reference || '',
+        c.claim_b?.time_reference || '',
+        c.claim_a?.scope_quantifiers || '',
+        c.claim_b?.scope_quantifiers || '',
+        esc(c.claim_a?.context_before || ''),
+        esc(c.claim_a?.context_after || ''),
+        esc(c.claim_b?.context_before || ''),
+        esc(c.claim_b?.context_after || ''),
+        esc(md(c, 'reconciliation_attempt')),
+        esc(md(c, 'reconciler_rationale')),
+        c.bucket || '',
+        c.confidence != null ? String(c.confidence) : '',
       ]);
 
       const csvContent = '\uFEFF' + headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
@@ -557,7 +1028,7 @@ export const CaseDetailPage: React.FC = () => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } else {
-      // Text report export
+      // Text report export — enriched (delta-fix §6)
       let report = `דוח סתירות - ${caseName}\n`;
       report += `תאריך: ${new Date().toLocaleDateString('he-IL')}\n`;
       report += `סה"כ סתירות: ${contradictions.length}\n`;
@@ -568,10 +1039,17 @@ export const CaseDetailPage: React.FC = () => {
         report += `-`.repeat(30) + '\n';
         report += `חומרה: ${c.severity || 'לא מוגדר'}\n`;
         report += `סטטוס: ${c.status || 'לא מוגדר'}\n`;
-        report += `קטגוריה: ${c.category || 'לא מוגדר'}\n\n`;
+        report += `קטגוריה: ${c.reconciler_outcome || c.category || 'לא מוגדר'}\n`;
+        report += `bucket: ${c.bucket || 'לא מוגדר'}\n`;
+        report += `ביטחון: ${c.confidence != null ? Math.round(c.confidence * 100) + '%' : 'לא מוגדר'}\n\n`;
         report += `הסבר:\n${c.explanation || 'אין הסבר'}\n\n`;
-        if (c.quote1) report += `ציטוט 1:\n"${c.quote1}"\n\n`;
-        if (c.quote2) report += `ציטוט 2:\n"${c.quote2}"\n\n`;
+        if (c.quote1) report += `ציטוט 1:\n"${c.quote1}"\n`;
+        if (c.claim_a?.speaker_mode) report += `  דובר: ${c.claim_a.speaker_mode} | מישור: ${c.claim_a.plane || '-'}\n`;
+        if (c.claim_a?.context_before) report += `  הקשר לפני: ${c.claim_a.context_before.slice(0, 120)}\n`;
+        report += '\n';
+        if (c.quote2) report += `ציטוט 2:\n"${c.quote2}"\n`;
+        if (c.claim_b?.speaker_mode) report += `  דובר: ${c.claim_b.speaker_mode} | מישור: ${c.claim_b.plane || '-'}\n`;
+        if (c.claim_b?.context_before) report += `  הקשר לפני: ${c.claim_b.context_before.slice(0, 120)}\n`;
         report += '\n';
       });
 
@@ -584,6 +1062,78 @@ export const CaseDetailPage: React.FC = () => {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    }
+  };
+
+  const handleShowEvidence = useCallback((contradiction: Contradiction) => {
+    const left = toEvidenceAnchor(contradiction.claim1_locator) || anchorFromClaim(contradiction.claim_a);
+    const right = toEvidenceAnchor(contradiction.claim2_locator) || anchorFromClaim(contradiction.claim_b);
+
+    setEvidenceLeftAnchor(left);
+    setEvidenceRightAnchor(right);
+    setIsEvidenceViewerOpen(true);
+  }, []);
+
+  const handleShowEvidenceAnchors = useCallback((left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => {
+    setEvidenceLeftAnchor(left || null);
+    setEvidenceRightAnchor(right || null);
+    setIsEvidenceViewerOpen(true);
+  }, []);
+
+  const handleGeneratePlan = async () => {
+    if (!selectedRun?.id) return;
+    setIsLoadingPlan(true);
+    setPlanError('');
+    try {
+      const plan = await crossExamPlanApi.generate(selectedRun.id, {});
+      setCrossExamPlan(plan);
+      await fetchUsage();
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsLoadingPlan(false);
+    }
+  };
+
+  const handleSimulateWitness = async () => {
+    if (!selectedRun?.id) return;
+    setIsSimulating(true);
+    try {
+      const result = await crossExamPlanApi.simulateWitness(selectedRun.id, {
+        persona: simulationPersona,
+        plan_id: crossExamPlan?.plan_id,
+      });
+      setSimulationResult(result);
+      setIsSimulationModalOpen(true);
+    } catch (error) {
+      setPlanError(handleApiError(error));
+    } finally {
+      setIsSimulating(false);
+    }
+  };
+
+  const handleExportPlan = async (format: 'docx' | 'pdf') => {
+    if (!selectedRun?.id) return;
+    setIsExporting(true);
+    setExportFormat(format);
+    setExportError('');
+    try {
+      const blob = await crossExamPlanApi.exportPlan(selectedRun.id, format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cross_exam_plan_${selectedRun.id}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      await fetchUsage();
+    } catch (error) {
+      setExportError(handleApiError(error));
+    }
+    finally {
+      setIsExporting(false);
+      setExportFormat(null);
     }
   };
 
@@ -832,6 +1382,8 @@ export const CaseDetailPage: React.FC = () => {
           {[
             { id: 'documents', label: 'מסמכים', icon: FileText, count: documents.length },
             { id: 'analysis', label: 'ניתוח', icon: Search, count: analysisRuns.length },
+            { id: 'training', label: 'אימון', icon: Play },
+            { id: 'witnesses', label: 'עדים', icon: Users, count: witnesses.length || undefined },
             { id: 'notes', label: 'הערות', icon: StickyNote, count: notes.length || undefined },
             { id: 'team', label: 'צוות', icon: Users, count: participants.length || undefined },
           ].map((tab) => (
@@ -1221,7 +1773,7 @@ export const CaseDetailPage: React.FC = () => {
                             </div>
                             <div>
                               <div className="text-2xl font-bold text-warning-600">
-                                {run.contradictions_count || 0}
+                                {run.contradictions_total || run.contradictions_count || 0}
                               </div>
                               <div className="text-xs text-slate-500">סתירות</div>
                             </div>
@@ -1277,7 +1829,7 @@ export const CaseDetailPage: React.FC = () => {
                           </div>
                           <div>
                             <div className="text-2xl font-bold text-warning-600">
-                              {selectedRun.contradictions?.length || selectedRun.contradictions_count || 0}
+                              {selectedRun.contradictions?.length || selectedRun.contradictions_total || selectedRun.contradictions_count || 0}
                             </div>
                             <div className="text-xs text-slate-500">סתירות</div>
                           </div>
@@ -1303,6 +1855,22 @@ export const CaseDetailPage: React.FC = () => {
                           leftIcon={<MessageSquare className="w-4 h-4" />}
                         >
                           שאלות לחקירה
+                        </Button>
+                        <Button
+                          variant={analysisResultsTab === 'plan' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('plan')}
+                          leftIcon={<ListOrdered className="w-4 h-4" />}
+                        >
+                          תכנית חקירה
+                        </Button>
+                        <Button
+                          variant={analysisResultsTab === 'battle' ? 'primary' : 'secondary'}
+                          size="sm"
+                          onClick={() => setAnalysisResultsTab('battle')}
+                          leftIcon={<Crosshair className="w-4 h-4" />}
+                        >
+                          מפת קרב
                         </Button>
                       </div>
                       {selectedRun.contradictions && selectedRun.contradictions.length > 0 && (
@@ -1367,10 +1935,10 @@ export const CaseDetailPage: React.FC = () => {
                                   className="px-3 py-2 text-sm rounded-lg border border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 outline-none"
                                 >
                                   <option value="">כל הסטטוסים</option>
-                                  <option value="new">חדש</option>
-                                  <option value="reviewed">נבדק</option>
-                                  <option value="confirmed">מאושר</option>
-                                  <option value="dismissed">נדחה</option>
+                                  <option value="verified">מאומת</option>
+                                  <option value="likely">סביר</option>
+                                  <option value="suspicious">חשוד</option>
+                                  <option value="rejected">נדחה</option>
                                 </select>
                                 {(contradictionSearchQuery || contradictionSeverityFilter || contradictionStatusFilter) && (
                                   <button
@@ -1408,7 +1976,7 @@ export const CaseDetailPage: React.FC = () => {
                                   c.quote2,
                                   c.claim1_text,
                                   c.claim2_text,
-                                  c.category,
+                                  c.reconciler_outcome || c.category,
                                   c.type,
                                 ].filter(Boolean).join(' ').toLowerCase();
                                 if (!matchText.includes(query)) {
@@ -1417,6 +1985,20 @@ export const CaseDetailPage: React.FC = () => {
                               }
                               return true;
                             });
+
+                            const sorted = filtered
+                              .map((item, idx) => ({
+                                item,
+                                idx,
+                                rank: feedbackRank(getFeedbackSummary('insight', item.id)?.counts),
+                              }))
+                              .sort((a, b) => {
+                                if (a.rank !== b.rank) {
+                                  return b.rank - a.rank;
+                                }
+                                return a.idx - b.idx;
+                              })
+                              .map((row) => row.item);
 
                             if (!selectedRun.contradictions || selectedRun.contradictions.length === 0) {
                               return (
@@ -1452,14 +2034,188 @@ export const CaseDetailPage: React.FC = () => {
 
                             return (
                               <>
+                                {/* --- Analytics Summary Panel --- */}
+                                {(() => {
+                                  const allC = selectedRun.contradictions || [];
+                                  const severityCounts: Record<string, number> = {};
+                                  const typeCounts: Record<string, number> = {};
+                                  const categoryCounts: Record<string, number> = {};
+                                  allC.forEach((c) => {
+                                    const s = c.severity || 'unknown';
+                                    const t = c.contradiction_type || c.type || 'unknown';
+                                    const cat = c.reconciler_outcome || c.category || 'unclassified';
+                                    severityCounts[s] = (severityCounts[s] || 0) + 1;
+                                    typeCounts[t] = (typeCounts[t] || 0) + 1;
+                                    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+                                  });
+                                  const severityOrder = ['critical', 'high', 'medium', 'low'];
+                                  const severityColors: Record<string, string> = { critical: 'bg-red-600', high: 'bg-red-400', medium: 'bg-orange-400', low: 'bg-yellow-400' };
+                                  const severityLabels: Record<string, string> = { critical: 'קריטי', high: 'גבוה', medium: 'בינוני', low: 'נמוך' };
+                                  const typeLabels: Record<string, string> = {
+                                    'TEMPORAL_DATE': 'תאריכים',
+                                    'QUANTITATIVE_AMOUNT': 'סכומים',
+                                    'ACTOR_ATTRIBUTION': 'ייחוס',
+                                    'PRESENCE_PARTICIPATION': 'נוכחות',
+                                    'DOCUMENT_EXISTENCE': 'מסמכים',
+                                    'IDENTITY_BASIC': 'זהות',
+                                  };
+                                  const categoryLabels: Record<string, string> = {
+                                    'HARD_CONTRADICTION': 'סתירה מוכרחת',
+                                    'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+                                    'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
+                                    'RHETORICAL_SHIFT': 'שינוי רטורי',
+                                    'TRUE_CONTRADICTION': 'סתירה אמיתית',
+                                    'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה',
+                                    'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
+                                    'PLANE_MISMATCH': 'חוסר התאמה במישור',
+                                    'TIME_OR_STAGE_SHIFT': 'שינוי זמן/שלב',
+                                    'AMBIGUITY_OR_VAGUENESS': 'עמימות',
+                                    'INSUFFICIENT_CONTEXT': 'הקשר חסר',
+                                    'DUPLICATE_OR_RESTATEMENT': 'כפילות',
+                                    'unclassified': 'לא מסווג',
+                                  };
+                                  const categoryColors: Record<string, string> = {
+                                    'HARD_CONTRADICTION': 'bg-red-500',
+                                    'NARRATIVE_AMBIGUITY': 'bg-orange-400',
+                                    'LOGICAL_INCONSISTENCY': 'bg-blue-400',
+                                    'RHETORICAL_SHIFT': 'bg-slate-400',
+                                    'TRUE_CONTRADICTION': 'bg-red-600',
+                                    'APPARENT_TENSION_RESOLVABLE': 'bg-amber-400',
+                                    'DISAGREEMENT_BETWEEN_PARTIES': 'bg-indigo-400',
+                                    'ROLE_OR_ATTRIBUTION_MISMATCH': 'bg-violet-400',
+                                    'PLANE_MISMATCH': 'bg-purple-400',
+                                    'TIME_OR_STAGE_SHIFT': 'bg-cyan-400',
+                                    'AMBIGUITY_OR_VAGUENESS': 'bg-yellow-400',
+                                    'INSUFFICIENT_CONTEXT': 'bg-orange-300',
+                                    'DUPLICATE_OR_RESTATEMENT': 'bg-slate-300',
+                                    'unclassified': 'bg-slate-300',
+                                  };
+                                  const verified = allC.filter((c) => c.verified || c.status === 'confirmed').length;
+                                  const maxTotal = allC.length || 1;
+
+                                  return (
+                                    <Card className="bg-gradient-to-br from-slate-50 to-slate-100 border-slate-200">
+                                      <div className="space-y-4">
+                                        {/* Top KPI row */}
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-slate-900">{allC.length}</div>
+                                            <div className="text-xs text-slate-500">סתירות זוהו</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-red-600">{severityCounts['critical'] || 0}</div>
+                                            <div className="text-xs text-slate-500">קריטיות</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-green-600">{verified}</div>
+                                            <div className="text-xs text-slate-500">מאומתות</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-3xl font-bold text-primary-600">{Object.keys(typeCounts).length}</div>
+                                            <div className="text-xs text-slate-500">סוגים שונים</div>
+                                          </div>
+                                        </div>
+
+                                        {/* Severity Distribution Bar */}
+                                        <div className="space-y-1">
+                                          <div className="text-xs text-slate-500 font-medium">התפלגות לפי חומרה</div>
+                                          <div className="flex h-4 rounded-full overflow-hidden bg-slate-200">
+                                            {severityOrder.map((s) => {
+                                              const count = severityCounts[s] || 0;
+                                              if (count === 0) return null;
+                                              return (
+                                                <div
+                                                  key={s}
+                                                  className={`${severityColors[s]} transition-all`}
+                                                  style={{ width: `${(count / maxTotal) * 100}%` }}
+                                                  title={`${severityLabels[s]}: ${count}`}
+                                                />
+                                              );
+                                            })}
+                                          </div>
+                                          <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                            {severityOrder.map((s) => {
+                                              const count = severityCounts[s] || 0;
+                                              if (count === 0) return null;
+                                              return (
+                                                <div key={s} className="flex items-center gap-1">
+                                                  <div className={`w-2.5 h-2.5 rounded-full ${severityColors[s]}`} />
+                                                  <span>{severityLabels[s]}: {count}</span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+
+                                        {/* Type Distribution */}
+                                        <div className="space-y-2">
+                                          <div className="text-xs text-slate-500 font-medium">התפלגות לפי סוג</div>
+                                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                            {Object.entries(typeCounts)
+                                              .sort((a, b) => b[1] - a[1])
+                                              .map(([type, count]) => (
+                                                <div key={type} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-slate-100">
+                                                  <span className="text-xs text-slate-700 truncate">{typeLabels[type] || type}</span>
+                                                  <span className="text-sm font-bold text-slate-900 mr-2">{count}</span>
+                                                </div>
+                                              ))}
+                                          </div>
+                                        </div>
+
+                                        {/* Category Distribution */}
+                                        {Object.keys(categoryCounts).length > 1 && (
+                                          <div className="space-y-1">
+                                            <div className="text-xs text-slate-500 font-medium">התפלגות לפי קטגוריה</div>
+                                            <div className="flex h-4 rounded-full overflow-hidden bg-slate-200">
+                                              {Object.entries(categoryCounts)
+                                                .sort((a, b) => b[1] - a[1])
+                                                .map(([cat, count]) => (
+                                                  <div
+                                                    key={cat}
+                                                    className={`${categoryColors[cat] || 'bg-slate-400'} transition-all`}
+                                                    style={{ width: `${(count / maxTotal) * 100}%` }}
+                                                    title={`${categoryLabels[cat] || cat}: ${count}`}
+                                                  />
+                                                ))}
+                                            </div>
+                                            <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+                                              {Object.entries(categoryCounts)
+                                                .sort((a, b) => b[1] - a[1])
+                                                .map(([cat, count]) => (
+                                                  <div key={cat} className="flex items-center gap-1">
+                                                    <div className={`w-2.5 h-2.5 rounded-full ${categoryColors[cat] || 'bg-slate-400'}`} />
+                                                    <span>{categoryLabels[cat] || cat}: {count}</span>
+                                                  </div>
+                                                ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </Card>
+                                  );
+                                })()}
+
                                 <p className="text-sm text-slate-500">
-                                  מציג {filtered.length} מתוך {selectedRun.contradictions.length} סתירות
+                                  מציג {sorted.length} מתוך {selectedRun.contradictions.length} סתירות
                                 </p>
-                                {filtered.map((contradiction, index) => (
+                                {isLoadingInsights && (
+                                  <div className="text-xs text-slate-400">טוען דירוג תובנות...</div>
+                                )}
+                                {sorted.map((contradiction, index) => (
                                   <ContradictionCard
                                     key={contradiction.id || index}
                                     contradiction={contradiction}
                                     index={index}
+                                    onShowEvidence={handleShowEvidence}
+                                    insight={insightsByContradiction[contradiction.id || '']}
+                                    usageSummary={
+                                      contradiction.id ? getUsageSummary('insight', contradiction.id) : undefined
+                                    }
+                                    feedbackSummary={
+                                      contradiction.id ? getFeedbackSummary('insight', contradiction.id) : undefined
+                                    }
+                                    onFeedback={handleSubmitFeedback}
                                   />
                                 ))}
                               </>
@@ -1520,9 +2276,523 @@ export const CaseDetailPage: React.FC = () => {
                           })()}
                         </motion.div>
                       )}
+
+                      {analysisResultsTab === 'plan' && (
+                        <motion.div
+                          key="plan"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Button
+                              onClick={handleGeneratePlan}
+                              isLoading={isLoadingPlan}
+                              variant="primary"
+                            >
+                              צור תכנית חקירה
+                            </Button>
+                            <select
+                              value={simulationPersona}
+                              onChange={(e) => setSimulationPersona(e.target.value as typeof simulationPersona)}
+                              className="px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                            >
+                              <option value="cooperative">עד משתף פעולה</option>
+                              <option value="evasive">עד מתחמק</option>
+                              <option value="hostile">עד עוין</option>
+                            </select>
+                            <Button
+                              onClick={handleSimulateWitness}
+                              isLoading={isSimulating}
+                              variant="secondary"
+                              disabled={!crossExamPlan}
+                            >
+                              סימולציית עד
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('docx')}
+                              variant="ghost"
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'docx'}
+                            >
+                              {isExporting && exportFormat === 'docx' ? 'מייצא DOCX...' : 'ייצוא DOCX'}
+                            </Button>
+                            <Button
+                              onClick={() => handleExportPlan('pdf')}
+                              variant="ghost"
+                              disabled={!crossExamPlan || isExporting}
+                              isLoading={isExporting && exportFormat === 'pdf'}
+                            >
+                              {isExporting && exportFormat === 'pdf' ? 'מייצא PDF...' : 'ייצוא PDF'}
+                            </Button>
+                            {planError && (
+                              <span className="text-sm text-danger-600">{planError}</span>
+                            )}
+                            {exportError && (
+                              <span className="text-sm text-danger-600">{exportError}</span>
+                            )}
+                          </div>
+
+                          {isLoadingPlan && (
+                            <div className="flex items-center gap-2 text-sm text-slate-500">
+                              <Spinner size="sm" />
+                              טוען תכנית...
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && crossExamPlan && (
+                            <div className="space-y-4">
+                              {crossExamPlan.stages.map((stage) => (
+                                <Card key={stage.stage}>
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="font-semibold text-slate-900">
+                                        שלב {stage.stage}
+                                      </h4>
+                                      <Badge variant="neutral">
+                                        {stage.steps.length} צעדים
+                                      </Badge>
+                                    </div>
+                                  <div className="space-y-3">
+                                      {stage.steps
+                                        .map((step, idx) => ({
+                                          step,
+                                          idx,
+                                          rank: feedbackRank(getFeedbackSummary('plan_step', step.id)?.counts),
+                                        }))
+                                        .sort((a, b) => {
+                                          if (a.rank !== b.rank) {
+                                            return b.rank - a.rank;
+                                          }
+                                          return a.idx - b.idx;
+                                        })
+                                        .map(({ step }) => (
+                                          <PlanStepCard
+                                            key={step.id}
+                                            step={step}
+                                            onShowEvidence={handleShowEvidenceAnchors}
+                                            usageSummary={getUsageSummary('plan_step', step.id)}
+                                            feedbackSummary={getFeedbackSummary('plan_step', step.id)}
+                                            onFeedback={handleSubmitFeedback}
+                                          />
+                                        ))}
+                                    </div>
+                                  </div>
+                                </Card>
+                              ))}
+                            </div>
+                          )}
+
+                          {!isLoadingPlan && !crossExamPlan && !planError && (
+                            <EmptyState
+                              icon={<ListOrdered className="w-12 h-12" />}
+                              title="אין תכנית חקירה"
+                              description="לחץ על יצירת תכנית כדי לבנות תכנית מדורגת"
+                            />
+                          )}
+                        </motion.div>
+                      )}
+
+                      {analysisResultsTab === 'battle' && (
+                        <motion.div
+                          key="battle"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className="space-y-4"
+                        >
+                          {(() => {
+                            const allC = selectedRun?.contradictions || [];
+                            if (allC.length === 0) {
+                              return (
+                                <EmptyState
+                                  icon={<Crosshair className="w-12 h-12" />}
+                                  title="אין נתונים למפת קרב"
+                                  description="הריצו ניתוח כדי לראות את התמונה האסטרטגית"
+                                />
+                              );
+                            }
+
+                            // Classify contradictions by bucket field
+                            const oursWeaknesses: Contradiction[] = [];
+                            const theirsWeaknesses: Contradiction[] = [];
+                            const disputed: Contradiction[] = [];
+
+                            allC.forEach((c) => {
+                              const bucket = (c.bucket || '').toLowerCase();
+                              if (bucket === 'internal_ours') {
+                                oursWeaknesses.push(c);
+                              } else if (bucket === 'internal_theirs') {
+                                theirsWeaknesses.push(c);
+                              } else if (bucket === 'dispute') {
+                                disputed.push(c);
+                              } else {
+                                // Fallback: unclassified → disputed
+                                disputed.push(c);
+                              }
+                            });
+
+                            const severityWeight = (s?: string) => {
+                              switch (s) { case 'critical': return 4; case 'high': return 3; case 'medium': return 2; case 'low': return 1; default: return 1; }
+                            };
+                            const calcScore = (arr: Contradiction[]) => arr.reduce((sum, c) => sum + severityWeight(c.severity), 0);
+                            const oursScore = calcScore(oursWeaknesses);
+                            const theirsScore = calcScore(theirsWeaknesses);
+                            const disputeScore = calcScore(disputed);
+                            const totalScore = oursScore + theirsScore + disputeScore || 1;
+
+                            return (
+                              <div className="space-y-6">
+                                {/* Strategic Overview */}
+                                <Card className="bg-gradient-to-br from-slate-900 to-slate-800 text-white border-0">
+                                  <div className="space-y-4">
+                                    <h3 className="text-lg font-bold flex items-center gap-2">
+                                      <Crosshair className="w-5 h-5" />
+                                      מפת קרב — תמונה אסטרטגית
+                                    </h3>
+
+                                    {/* Score Bar */}
+                                    <div className="space-y-2">
+                                      <div className="flex justify-between text-sm">
+                                        <span className="text-green-400">חולשות שלהם ({theirsWeaknesses.length})</span>
+                                        <span className="text-slate-400">שנוי במחלוקת ({disputed.length})</span>
+                                        <span className="text-red-400">חולשות שלנו ({oursWeaknesses.length})</span>
+                                      </div>
+                                      <div className="flex h-6 rounded-full overflow-hidden bg-slate-700">
+                                        {theirsScore > 0 && (
+                                          <div className="bg-gradient-to-r from-green-500 to-green-400 flex items-center justify-center text-xs font-bold" style={{ width: `${(theirsScore / totalScore) * 100}%` }}>
+                                            {theirsScore > 2 ? theirsScore : ''}
+                                          </div>
+                                        )}
+                                        {disputeScore > 0 && (
+                                          <div className="bg-gradient-to-r from-yellow-500 to-orange-400 flex items-center justify-center text-xs font-bold" style={{ width: `${(disputeScore / totalScore) * 100}%` }}>
+                                            {disputeScore > 2 ? disputeScore : ''}
+                                          </div>
+                                        )}
+                                        {oursScore > 0 && (
+                                          <div className="bg-gradient-to-r from-red-400 to-red-500 flex items-center justify-center text-xs font-bold" style={{ width: `${(oursScore / totalScore) * 100}%` }}>
+                                            {oursScore > 2 ? oursScore : ''}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Summary */}
+                                    <div className="grid grid-cols-3 gap-4 text-center">
+                                      <div className="bg-green-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-green-400">{theirsWeaknesses.length}</div>
+                                        <div className="text-xs text-green-300">נקודות תורפה שלהם</div>
+                                      </div>
+                                      <div className="bg-yellow-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-yellow-400">{disputed.length}</div>
+                                        <div className="text-xs text-yellow-300">שנוי במחלוקת</div>
+                                      </div>
+                                      <div className="bg-red-500/20 rounded-xl p-3">
+                                        <div className="text-2xl font-bold text-red-400">{oursWeaknesses.length}</div>
+                                        <div className="text-xs text-red-300">נקודות תורפה שלנו</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </Card>
+
+                                {/* Their Weaknesses - Opportunities */}
+                                {theirsWeaknesses.length > 0 && (
+                                  <Card className="border-r-4 border-green-500">
+                                    <h4 className="font-bold text-green-700 mb-3 flex items-center gap-2">
+                                      <Shield className="w-5 h-5" />
+                                      נקודות תורפה של הצד השני — הזדמנויות תקיפה
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {theirsWeaknesses.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-green-50 rounded-lg border border-green-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="success">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בטענות הצד השני'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Our Weaknesses - Risks */}
+                                {oursWeaknesses.length > 0 && (
+                                  <Card className="border-r-4 border-red-500">
+                                    <h4 className="font-bold text-red-700 mb-3 flex items-center gap-2">
+                                      <AlertTriangle className="w-5 h-5" />
+                                      נקודות תורפה שלנו — סיכונים להיערכות
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {oursWeaknesses.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-red-50 rounded-lg border border-red-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="danger">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בטענות שלנו'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Cross-Party Disputes */}
+                                {disputed.length > 0 && (
+                                  <Card className="border-r-4 border-yellow-500">
+                                    <h4 className="font-bold text-yellow-700 mb-3 flex items-center gap-2">
+                                      <Crosshair className="w-5 h-5" />
+                                      סתירות בין הצדדים — נקודות עימות
+                                    </h4>
+                                    <div className="space-y-2">
+                                      {disputed.map((c, i) => (
+                                        <div key={c.id || i} className="p-3 bg-yellow-50 rounded-lg border border-yellow-100">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <Badge variant="warning">{c.severity}</Badge>
+                                            <span className="text-xs text-slate-500">{c.contradiction_type || c.type}</span>
+                                          </div>
+                                          <p className="text-sm text-slate-700">{c.explanation || c.explanation_he || 'סתירה בין הצדדים'}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+
+                                {/* Strategic Recommendation */}
+                                <Card className="bg-primary-50 border-primary-200">
+                                  <div className="space-y-2">
+                                    <h4 className="font-bold text-primary-900">המלצה אסטרטגית</h4>
+                                    <p className="text-sm text-primary-800">
+                                      {theirsScore > oursScore
+                                        ? `יש לכם יתרון — נמצאו ${theirsWeaknesses.length} סתירות פנימיות בטענות הצד השני. מומלץ להתמקד בנקודות אלו בחקירה הנגדית.`
+                                        : oursScore > theirsScore
+                                        ? `שימו לב — נמצאו ${oursWeaknesses.length} סתירות פנימיות בטענות שלכם. מומלץ להכין הסברים ופתרונות לנקודות אלו לפני הדיון.`
+                                        : `מצב מאוזן — סתירות נמצאו בשני הצדדים. מומלץ לתת עדיפות לתיקון הנקודות הפגיעות שלכם תוך תכנון תקיפה על נקודות התורפה של הצד השני.`
+                                      }
+                                    </p>
+                                  </div>
+                                </Card>
+                              </div>
+                            );
+                          })()}
+                        </motion.div>
+                      )}
                     </AnimatePresence>
                   </motion.div>
                 )}
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {activeTab === 'training' && (
+          <motion.div
+            key="training"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
+          >
+            <Card>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-slate-900">אימון חקירה נגדית</h3>
+                  {trainingSession && (
+                    <Badge variant={trainingSession.status === 'active' ? 'primary' : 'neutral'}>
+                      {trainingSession.status === 'active' ? 'פעיל' : 'הסתיים'}
+                    </Badge>
+                  )}
+                </div>
+
+                {trainingError && (
+                  <div className="p-3 rounded-xl bg-danger-50 border border-danger-200 text-danger-700 text-sm">
+                    {trainingError}
+                  </div>
+                )}
+
+                {!crossExamPlan && (
+                  <EmptyState
+                    icon={<ListOrdered className="w-10 h-10" />}
+                    title="אין תכנית חקירה זמינה"
+                    description="צרו תכנית חקירה בלשונית הניתוח לפני תחילת אימון."
+                  />
+                )}
+
+                {crossExamPlan && (
+                  <div className="space-y-4">
+                    {!trainingSession && (
+                      <div className="grid grid-cols-2 gap-4 items-end">
+                        <div>
+                          <label className="text-sm text-slate-600">Persona</label>
+                          <select
+                            value={trainingPersona}
+                            onChange={(e) => setTrainingPersona(e.target.value)}
+                            className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                          >
+                            <option value="cooperative">cooperative</option>
+                            <option value="evasive">evasive</option>
+                            <option value="hostile">hostile</option>
+                          </select>
+                        </div>
+                        <Button
+                          onClick={handleStartTraining}
+                          isLoading={isStartingTraining}
+                          leftIcon={<Play className="w-4 h-4" />}
+                          disabled={!crossExamPlan.witness_id}
+                        >
+                          התחל אימון
+                        </Button>
+                      </div>
+                    )}
+
+                    {trainingSession && (
+                      <div className="space-y-4">
+                        <div className="text-sm text-slate-600">
+                          Back remaining: {trainingSession.back_remaining}
+                        </div>
+
+                        {trainingTurns.length > 0 && (
+                          <div className="space-y-3">
+                            {trainingTurns.map((turn, idx) => (
+                              <div key={turn.turn_id} className="p-3 rounded-xl border border-slate-200">
+                                <div className="text-xs text-slate-500 mb-1">Turn {idx + 1}</div>
+                                <div className="text-sm font-medium text-slate-900">{turn.question}</div>
+                                <div className="text-sm text-slate-600 mt-1">{turn.witness_reply}</div>
+                                {turn.chosen_branch && (
+                                  <div className="text-xs text-slate-500 mt-1">Branch: {turn.chosen_branch}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {trainingSession.status === 'active' && (
+                          <div className="space-y-3">
+                            {nextTrainingStep ? (
+                              <div className="p-4 rounded-xl bg-slate-50">
+                                <div className="text-xs text-slate-500 mb-1">שאלה הבאה</div>
+                                <div className="text-sm font-medium text-slate-900">{nextTrainingStep.question}</div>
+                                {nextTrainingStep.branches && nextTrainingStep.branches.length > 0 && (
+                                  <div className="mt-3">
+                                    <label className="text-sm text-slate-600">בחר/י הסתעפות</label>
+                                    <select
+                                      value={selectedBranchTrigger}
+                                      onChange={(e) => setSelectedBranchTrigger(e.target.value)}
+                                      className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                                    >
+                                      <option value="">ברירת מחדל</option>
+                                      {nextTrainingStep.branches.map((branch, idx) => (
+                                        <option key={`${branch.trigger}-${idx}`} value={branch.trigger}>
+                                          {branch.trigger}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                                <div className="mt-3 flex gap-2">
+                                  <Button
+                                    onClick={handleTrainingTurn}
+                                    isLoading={isSendingTrainingTurn}
+                                  >
+                                    שלח שאלה
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    onClick={handleTrainingBack}
+                                    disabled={trainingSession.back_remaining <= 0 || trainingTurns.length === 0}
+                                    leftIcon={<RefreshCw className="w-4 h-4" />}
+                                  >
+                                    חזור צעד
+                                  </Button>
+                                  <Button variant="secondary" onClick={handleTrainingFinish}>
+                                    סיים אימון
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-sm text-slate-600">הגעת לסוף התכנית.</div>
+                            )}
+                          </div>
+                        )}
+
+                        {trainingSummary && (
+                          <div className="p-4 rounded-xl border border-slate-200 bg-white">
+                            <div className="text-sm font-medium text-slate-900 mb-2">סיכום אימון</div>
+                            <div className="text-sm text-slate-600">סה״כ תורות: {trainingSummary.total_turns}</div>
+                            <div className="text-sm text-slate-600">אזהרות: {trainingSummary.warnings}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
+        {activeTab === 'witnesses' && (
+          <motion.div
+            key="witnesses"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="space-y-4"
+          >
+            <Card>
+              <div className="space-y-4">
+                <h3 className="font-semibold text-slate-900">הוספת עד</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Input
+                    placeholder="שם העד"
+                    value={newWitnessName}
+                    onChange={(e) => setNewWitnessName(e.target.value)}
+                  />
+                  <select
+                    value={newWitnessSide}
+                    onChange={(e) => setNewWitnessSide(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                  >
+                    <option value="unknown">לא ידוע</option>
+                    <option value="ours">שלנו</option>
+                    <option value="theirs">של הצד שכנגד</option>
+                  </select>
+                  <Button
+                    onClick={handleCreateWitness}
+                    isLoading={isCreatingWitness}
+                    disabled={!newWitnessName.trim()}
+                  >
+                    הוסף עד
+                  </Button>
+                </div>
+                {witnessError && (
+                  <div className="text-sm text-danger-600">{witnessError}</div>
+                )}
+              </div>
+            </Card>
+
+            {isLoadingWitnesses ? (
+              <div className="flex items-center justify-center py-10">
+                <Spinner size="lg" />
+              </div>
+            ) : witnesses.length === 0 ? (
+              <EmptyState
+                icon={<Users className="w-16 h-16" />}
+                title="אין עדים עדיין"
+                description="הוסף עד ראשון כדי להתחיל לעבוד על גרסאות"
+              />
+            ) : (
+              <div className="space-y-4">
+                {witnesses.map((witness) => (
+                  <WitnessCard
+                    key={witness.id}
+                    witness={witness}
+                    documents={documents}
+                    onRefresh={fetchWitnesses}
+                    onShowEvidence={handleShowEvidenceAnchors}
+                  />
+                ))}
               </div>
             )}
           </motion.div>
@@ -1539,11 +2809,26 @@ export const CaseDetailPage: React.FC = () => {
             {/* Add New Note */}
             <Card>
               <div className="space-y-3">
-                <h3 className="font-semibold text-slate-900">הוסף הערה חדשה</h3>
+                <h3 className="font-semibold text-slate-900">הוסף פריט חדש</h3>
+                <div className="flex gap-2 items-center">
+                  <select
+                    value={newNoteType}
+                    onChange={(e) => setNewNoteType(e.target.value as typeof newNoteType)}
+                    className="px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+                  >
+                    <option value="note">הערה</option>
+                    <option value="finding">ממצא</option>
+                    <option value="todo">משימה</option>
+                  </select>
+                </div>
                 <textarea
                   value={newNoteText}
                   onChange={(e) => setNewNoteText(e.target.value)}
-                  placeholder="כתבו הערה, ממצא חשוב, או משימה לביצוע..."
+                  placeholder={
+                    newNoteType === 'todo' ? 'תאר את המשימה...' :
+                    newNoteType === 'finding' ? 'תאר את הממצא...' :
+                    'כתבו הערה...'
+                  }
                   rows={3}
                   className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 bg-white text-slate-900 placeholder-slate-400 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none resize-none"
                 />
@@ -1554,11 +2839,26 @@ export const CaseDetailPage: React.FC = () => {
                     isLoading={isSavingNotes}
                     leftIcon={<Plus className="w-4 h-4" />}
                   >
-                    הוסף הערה
+                    {newNoteType === 'todo' ? 'הוסף משימה' : newNoteType === 'finding' ? 'הוסף ממצא' : 'הוסף הערה'}
                   </Button>
                 </div>
               </div>
             </Card>
+
+            {/* Filter */}
+            <div className="flex gap-2">
+              {(['all', 'note', 'finding', 'todo'] as const).map((f) => (
+                <Button
+                  key={f}
+                  variant={notesFilter === f ? 'primary' : 'secondary'}
+                  size="sm"
+                  onClick={() => setNotesFilter(f)}
+                >
+                  {f === 'all' ? 'הכל' : f === 'note' ? 'הערות' : f === 'finding' ? 'ממצאים' : 'משימות'}
+                  {f !== 'all' && ` (${notes.filter((n) => (n.type || 'note') === f).length})`}
+                </Button>
+              ))}
+            </div>
 
             {/* Notes List */}
             {isLoadingNotes ? (
@@ -1573,8 +2873,10 @@ export const CaseDetailPage: React.FC = () => {
               />
             ) : (
               <div className="space-y-3">
-                {notes.map((note) => (
-                  <Card key={note.id}>
+                {notes
+                  .filter((n) => notesFilter === 'all' || (n.type || 'note') === notesFilter)
+                  .map((note) => (
+                  <Card key={note.id} className={note.type === 'todo' && note.done ? 'opacity-60' : ''}>
                     {editingNoteId === note.id ? (
                       <div className="space-y-3">
                         <textarea
@@ -1606,11 +2908,42 @@ export const CaseDetailPage: React.FC = () => {
                       </div>
                     ) : (
                       <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <p className="text-slate-800 whitespace-pre-wrap">{note.text}</p>
-                          <p className="text-xs text-slate-400 mt-2">
-                            {new Date(note.created_at).toLocaleString('he-IL')}
-                          </p>
+                        <div className="flex items-start gap-3 flex-1">
+                          {/* Todo checkbox */}
+                          {note.type === 'todo' && (
+                            <input
+                              type="checkbox"
+                              checked={!!note.done}
+                              onChange={async () => {
+                                const updated = notes.map((n) =>
+                                  n.id === note.id ? { ...n, done: !n.done } : n
+                                );
+                                setNotes(updated);
+                                setIsSavingNotes(true);
+                                try { await casesApi.saveMemory(caseId!, updated); }
+                                catch { await fetchNotes(); }
+                                finally { setIsSavingNotes(false); }
+                              }}
+                              className="mt-1.5 w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                            />
+                          )}
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant={
+                                note.type === 'finding' ? 'warning' :
+                                note.type === 'todo' ? (note.done ? 'success' : 'accent') :
+                                'neutral'
+                              }>
+                                {note.type === 'finding' ? 'ממצא' : note.type === 'todo' ? (note.done ? 'בוצע' : 'משימה') : 'הערה'}
+                              </Badge>
+                            </div>
+                            <p className={`text-slate-800 whitespace-pre-wrap ${note.type === 'todo' && note.done ? 'line-through text-slate-500' : ''}`}>
+                              {note.text}
+                            </p>
+                            <p className="text-xs text-slate-400 mt-2">
+                              {new Date(note.created_at).toLocaleString('he-IL')}
+                            </p>
+                          </div>
                         </div>
                         <div className="flex items-center gap-1">
                           <Button
@@ -1711,12 +3044,12 @@ export const CaseDetailPage: React.FC = () => {
         isOpen={showAddParticipantModal}
         onClose={() => {
           setShowAddParticipantModal(false);
-          setNewParticipantEmail('');
+          setSelectedParticipantId('');
           setNewParticipantRole('');
           setAddParticipantError('');
         }}
         title="הוספת משתתף לתיק"
-        description="הזינו את כתובת הדוא״ל של המשתמש להוספה לתיק"
+        description="בחרו חבר/ת משרד מהרשימה"
         size="md"
       >
         <div className="space-y-4">
@@ -1726,15 +3059,22 @@ export const CaseDetailPage: React.FC = () => {
             </div>
           )}
 
-          <Input
-            label="כתובת דוא״ל"
-            type="email"
-            value={newParticipantEmail}
-            onChange={(e) => setNewParticipantEmail(e.target.value)}
-            placeholder="user@example.com"
-            leftIcon={<Mail className="w-5 h-5" />}
-            required
-          />
+          <div>
+            <label className="text-sm text-slate-600">חבר/ת משרד</label>
+            <select
+              value={selectedParticipantId}
+              onChange={(e) => setSelectedParticipantId(e.target.value)}
+              className="mt-2 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 text-sm focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              disabled={isLoadingOrgMembers}
+            >
+              <option value="">בחר/י משתמש</option>
+              {orgMembers.map((member) => (
+                <option key={member.user_id} value={member.user_id}>
+                  {member.name} · {member.email} ({member.role})
+                </option>
+              ))}
+            </select>
+          </div>
 
           <Input
             label="תפקיד (אופציונלי)"
@@ -1748,7 +3088,7 @@ export const CaseDetailPage: React.FC = () => {
               onClick={handleAddParticipant}
               className="flex-1"
               isLoading={isAddingParticipant}
-              disabled={!newParticipantEmail.trim()}
+              disabled={!selectedParticipantId}
             >
               הוסף לתיק
             </Button>
@@ -1756,7 +3096,7 @@ export const CaseDetailPage: React.FC = () => {
               variant="secondary"
               onClick={() => {
                 setShowAddParticipantModal(false);
-                setNewParticipantEmail('');
+                setSelectedParticipantId('');
                 setNewParticipantRole('');
               }}
             >
@@ -2230,6 +3570,64 @@ export const CaseDetailPage: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      <EvidenceViewerModal
+        isOpen={isEvidenceViewerOpen}
+        onClose={() => setIsEvidenceViewerOpen(false)}
+        leftAnchor={evidenceLeftAnchor}
+        rightAnchor={evidenceRightAnchor}
+      />
+
+      <Modal
+        isOpen={isSimulationModalOpen}
+        onClose={() => setIsSimulationModalOpen(false)}
+        title="סימולציית עד"
+        size="lg"
+      >
+        {simulationResult ? (
+          <div className="space-y-4">
+            <div className="text-sm text-slate-500">
+              פרסונה: {simulationResult.persona}
+            </div>
+            {simulationResult.steps.map((step, idx) => (
+              <Card key={`${step.step_id}_${idx}`}>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="neutral">{step.stage}</Badge>
+                    <span className="text-slate-700">{step.question}</span>
+                  </div>
+                  <div className="text-slate-900 font-medium">תשובת העד: {step.witness_reply}</div>
+                  {step.chosen_branch_trigger && (
+                    <div className="text-xs text-slate-500">
+                      הסתעפות: {step.chosen_branch_trigger}
+                    </div>
+                  )}
+                  {step.follow_up_questions && step.follow_up_questions.length > 0 && (
+                    <ul className="list-disc list-inside text-xs text-slate-600">
+                      {step.follow_up_questions.map((q, qIdx) => (
+                        <li key={`${qIdx}-${q}`}>{q}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {step.warnings && step.warnings.length > 0 && (
+                    <div className="text-xs text-danger-600 space-y-1">
+                      {step.warnings.map((w, wIdx) => (
+                        <div key={`${wIdx}-${w}`}>{w}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<MessageSquare className="w-12 h-12" />}
+            title="אין סימולציה"
+            description="צור תכנית ואז הפעל סימולציה."
+          />
+        )}
+      </Modal>
     </div>
   );
 };
@@ -2309,11 +3707,346 @@ const FolderTreeItem: React.FC<{
   );
 };
 
+// Witness Card Component
+const WitnessCard: React.FC<{
+  witness: Witness;
+  documents: DocumentType[];
+  onRefresh: () => void;
+  onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
+}> = ({ witness, documents, onRefresh, onShowEvidence }) => {
+  const versions = witness.versions || [];
+  const [versionDocId, setVersionDocId] = useState('');
+  const [versionType, setVersionType] = useState('');
+  const [versionDate, setVersionDate] = useState('');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  const [diffA, setDiffA] = useState('');
+  const [diffB, setDiffB] = useState('');
+  const [diffResult, setDiffResult] = useState<WitnessVersionDiffResponse | null>(null);
+  const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (versions.length >= 2 && (!diffA || !diffB)) {
+      setDiffA(versions[0].id);
+      setDiffB(versions[1].id);
+    }
+  }, [versions, diffA, diffB]);
+
+  const handleAddVersion = async () => {
+    if (!versionDocId) return;
+    setIsSavingVersion(true);
+    setError('');
+    try {
+      await witnessesApi.createVersion(witness.id, {
+        document_id: versionDocId,
+        version_type: versionType || undefined,
+        version_date: versionDate || undefined,
+      });
+      setVersionDocId('');
+      setVersionType('');
+      setVersionDate('');
+      await onRefresh();
+    } catch (err) {
+      setError(handleApiError(err));
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
+  const handleDiff = async () => {
+    if (!diffA || !diffB || diffA === diffB) return;
+    setIsDiffLoading(true);
+    setError('');
+    try {
+      const res = await witnessesApi.diffVersions(witness.id, {
+        version_a_id: diffA,
+        version_b_id: diffB,
+      });
+      setDiffResult(res);
+    } catch (err) {
+      setError(handleApiError(err));
+    } finally {
+      setIsDiffLoading(false);
+    }
+  };
+
+  const getShiftLabel = (shiftType: string) => {
+    const map: Record<string, string> = {
+      low_similarity: 'דמיון נמוך',
+      time_change: 'שינוי במועדים',
+      entity_change: 'שינוי בישויות',
+      negation_flip: 'היפוך שלילה',
+    };
+    return map[shiftType] || shiftType;
+  };
+
+  return (
+    <Card>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="font-semibold text-slate-900">{witness.name}</h4>
+            <p className="text-xs text-slate-500">
+              צד: {witness.side || 'לא ידוע'}
+            </p>
+          </div>
+          <Badge variant="neutral">{versions.length} גרסאות</Badge>
+        </div>
+
+        {error && <div className="text-sm text-danger-600">{error}</div>}
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <select
+            value={versionDocId}
+            onChange={(e) => setVersionDocId(e.target.value)}
+            className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+          >
+            <option value="">בחר מסמך לגרסה</option>
+            {documents.map((doc) => (
+              <option key={doc.id} value={doc.id}>
+                {doc.doc_name || doc.original_filename || doc.id}
+              </option>
+            ))}
+          </select>
+          <Input
+            placeholder="סוג גרסה (למשל: תצהיר)"
+            value={versionType}
+            onChange={(e) => setVersionType(e.target.value)}
+          />
+          <Input
+            type="date"
+            value={versionDate}
+            onChange={(e) => setVersionDate(e.target.value)}
+          />
+          <Button
+            variant="secondary"
+            onClick={handleAddVersion}
+            isLoading={isSavingVersion}
+            disabled={!versionDocId}
+          >
+            הוסף גרסה
+          </Button>
+        </div>
+
+        {versions.length > 0 && (
+          <div className="space-y-2">
+            {versions.map((v) => (
+              <div key={v.id} className="flex items-center justify-between text-sm text-slate-700">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{v.document_name || v.document_id}</span>
+                  {v.version_type && <Badge variant="neutral">{v.version_type}</Badge>}
+                </div>
+                {v.version_date && (
+                  <span className="text-xs text-slate-500">
+                    {new Date(v.version_date).toLocaleDateString('he-IL')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {versions.length >= 2 && (
+          <div className="border-t border-slate-100 pt-4 space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <select
+                value={diffA}
+                onChange={(e) => setDiffA(e.target.value)}
+                className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.document_name || v.document_id}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={diffB}
+                onChange={(e) => setDiffB(e.target.value)}
+                className="w-full px-4 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 focus:outline-none"
+              >
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.document_name || v.document_id}
+                  </option>
+                ))}
+              </select>
+              <Button onClick={handleDiff} isLoading={isDiffLoading} disabled={!diffA || !diffB || diffA === diffB}>
+                השווה גרסאות
+              </Button>
+            </div>
+
+            {diffResult && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-500">
+                  דמיון כללי: {Math.round(diffResult.similarity * 100)}%
+                </p>
+                {diffResult.shifts.length === 0 ? (
+                  <EmptyState
+                    icon={<CheckCircle className="w-10 h-10" />}
+                    title="לא זוהו שינויים מהותיים"
+                    description="הגרסאות דומות ברמת הנרטיב"
+                  />
+                ) : (
+                  diffResult.shifts.map((shift, idx) => (
+                    <div key={`${shift.shift_type}_${idx}`} className="border border-slate-200 rounded-xl p-3">
+                      <div className="flex items-center justify-between">
+                        <Badge variant="warning">{getShiftLabel(shift.shift_type)}</Badge>
+                        {shift.similarity !== undefined && (
+                          <span className="text-xs text-slate-500">
+                            {Math.round(shift.similarity * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-700 mt-2">{shift.description}</p>
+                      {shift.details && (
+                        <pre className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 mt-2 whitespace-pre-wrap">
+                          {JSON.stringify(shift.details, null, 2)}
+                        </pre>
+                      )}
+                      {shift.anchor_a && shift.anchor_b && (
+                        <div className="mt-2 flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => onShowEvidence(shift.anchor_a, shift.anchor_b)}
+                          >
+                            הצג ראיות
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+};
+
+const PlanStepCard: React.FC<{
+  step: CrossExamPlanStep;
+  onShowEvidence: (left?: EvidenceAnchor | null, right?: EvidenceAnchor | null) => void;
+  usageSummary?: EntityUsageSummary;
+  feedbackSummary?: FeedbackAggregate;
+  onFeedback?: (entityType: 'insight' | 'plan_step', entityId: string, label: 'worked' | 'not_worked' | 'too_risky' | 'excellent', note?: string) => void;
+}> = ({ step, onShowEvidence, usageSummary, feedbackSummary, onFeedback }) => {
+  const anchors = step.anchors || [];
+  const left = anchors[0] || null;
+  const right = anchors[1] || null;
+  const [showBranches, setShowBranches] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState<'worked' | 'not_worked' | 'too_risky' | 'excellent'>('worked');
+
+  const usageBadge = buildUsageBadge(usageSummary);
+  const feedbackTag = buildFeedbackTag(feedbackSummary);
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant="neutral">{step.step_type}</Badge>
+          {usageBadge}
+          {feedbackTag}
+          <span className="text-sm font-medium text-slate-900">{step.title}</span>
+        </div>
+        {step.do_not_ask_flag && (
+          <Badge variant="danger">DON'T ASK</Badge>
+        )}
+      </div>
+      {step.do_not_ask_flag && step.do_not_ask_reason && (
+        <div className="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-2">
+          {step.do_not_ask_reason}
+        </div>
+      )}
+      <div className="text-sm text-slate-700">{step.question}</div>
+      {step.branches && step.branches.length > 0 && (
+        <div className="text-xs text-slate-600 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="font-medium text-slate-700">הסתעפויות:</div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowBranches((prev) => !prev)}
+            >
+              {showBranches ? 'הסתר' : 'הצג'}
+            </Button>
+          </div>
+          {showBranches &&
+            step.branches.map((branch, idx) => (
+              <div key={`${branch.trigger}_${idx}`} className="pl-3 border-r-2 border-slate-200">
+                <div>{branch.trigger}</div>
+                {branch.follow_up_questions?.length > 0 && (
+                  <ul className="list-disc list-inside mt-1">
+                    {branch.follow_up_questions.map((q, qIdx) => (
+                      <li key={`${qIdx}-${q}`} className="text-slate-600">
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
+      {onFeedback && step.id && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onFeedback('plan_step', step.id, 'worked')}
+          >
+            <ThumbsUp className="w-4 h-4" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onFeedback('plan_step', step.id, 'not_worked')}
+          >
+            <ThumbsDown className="w-4 h-4" />
+          </Button>
+          <select
+            value={selectedLabel}
+            onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)}
+            className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs"
+          >
+            <option value="worked">worked</option>
+            <option value="not_worked">not_worked</option>
+            <option value="too_risky">too_risky</option>
+            <option value="excellent">excellent</option>
+          </select>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onFeedback('plan_step', step.id, selectedLabel)}
+          >
+            שמור
+          </Button>
+        </div>
+      )}
+      {(left || right) && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="secondary" onClick={() => onShowEvidence(left, right)}>
+            הצג ראיות
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Contradiction Card Component
-const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number }> = ({
-  contradiction,
-  index,
-}) => {
+const ContradictionCard: React.FC<{
+  contradiction: Contradiction;
+  index: number;
+  onShowEvidence: (contradiction: Contradiction) => void;
+  insight?: ContradictionInsight;
+  usageSummary?: EntityUsageSummary;
+  feedbackSummary?: FeedbackAggregate;
+  onFeedback?: (entityType: 'insight' | 'plan_step', entityId: string, label: 'worked' | 'not_worked' | 'too_risky' | 'excellent', note?: string) => void;
+}> = ({ contradiction, index, onShowEvidence, insight, usageSummary, feedbackSummary, onFeedback }) => {
   const navigate = useNavigate();
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -2375,130 +4108,344 @@ const ContradictionCard: React.FC<{ contradiction: Contradiction; index: number 
   const severity = contradiction.severity || 'medium';
   const contradictionType = contradiction.contradiction_type || contradiction.type || 'unknown';
 
+  const getCategoryLabel = (cat?: string) => {
+    const labels: Record<string, string> = {
+      'HARD_CONTRADICTION': 'סתירה מוכרחת',
+      'NARRATIVE_AMBIGUITY': 'עמימות נרטיבית',
+      'LOGICAL_INCONSISTENCY': 'אי\u2011עקביות לוגית',
+      'RHETORICAL_SHIFT': 'שינוי רטורי',
+      'TRUE_CONTRADICTION': 'סתירה אמיתית',
+      'APPARENT_TENSION_RESOLVABLE': 'מתח לכאורה — ניתן ליישוב',
+      'DISAGREEMENT_BETWEEN_PARTIES': 'מחלוקת בין צדדים',
+      'ROLE_OR_ATTRIBUTION_MISMATCH': 'אי‑התאמה בייחוס/תפקיד',
+      'PLANE_MISMATCH': 'חוסר התאמה במישור',
+      'TIME_OR_STAGE_SHIFT': 'שינוי זמן או שלב',
+      'AMBIGUITY_OR_VAGUENESS': 'עמימות או אי\u2011בהירות',
+      'INSUFFICIENT_CONTEXT': 'הקשר חסר',
+      'DUPLICATE_OR_RESTATEMENT': 'כפילות או ניסוח מחדש',
+    };
+    return cat ? labels[cat] || cat : null;
+  };
+  const getCategoryColor = (cat?: string) => {
+    switch (cat) {
+      case 'HARD_CONTRADICTION':
+      case 'TRUE_CONTRADICTION': return 'danger';
+      case 'NARRATIVE_AMBIGUITY':
+      case 'APPARENT_TENSION_RESOLVABLE': return 'warning';
+      case 'LOGICAL_INCONSISTENCY':
+      case 'DISAGREEMENT_BETWEEN_PARTIES': return 'accent';
+      case 'ROLE_OR_ATTRIBUTION_MISMATCH': return 'accent';
+      case 'RHETORICAL_SHIFT':
+      case 'PLANE_MISMATCH':
+      case 'TIME_OR_STAGE_SHIFT': return 'neutral';
+      case 'AMBIGUITY_OR_VAGUENESS': return 'warning';
+      case 'INSUFFICIENT_CONTEXT': return 'warning';
+      case 'DUPLICATE_OR_RESTATEMENT': return 'neutral';
+      default: return 'neutral';
+    }
+  };
+
+  const claimAText =
+    contradiction.claim_a?.text || contradiction.claim1_text || contradiction.quote1 || 'לא זמין';
+  const claimBText =
+    contradiction.claim_b?.text || contradiction.claim2_text || contradiction.quote2 || 'לא זמין';
+  const hasEvidence = Boolean(
+    (toEvidenceAnchor(contradiction.claim1_locator) || anchorFromClaim(contradiction.claim_a)) &&
+      (toEvidenceAnchor(contradiction.claim2_locator) || anchorFromClaim(contradiction.claim_b))
+  );
+
+  const renderScore = (value?: number) => {
+    if (value === undefined || value === null) return '—';
+    return `${Math.round(value * 100)}%`;
+  };
+
+  const usageBadge = buildUsageBadge(usageSummary);
+  const feedbackTag = buildFeedbackTag(feedbackSummary);
+  const [selectedLabel, setSelectedLabel] = useState<'worked' | 'not_worked' | 'too_risky' | 'excellent'>('worked');
+  const [gatesOpen, setGatesOpen] = useState(false);
+
+  // Expert Notebook data
+  const ev1 = contradiction.claim1;
+  const ev2 = contradiction.claim2;
+  const gates = contradiction.gate_results;
+
+  // Speaker mode / plane badge helpers
+  const smLabel: Record<string, string> = { finding: 'קביעה שיפוטית', party_claim: 'טענת צד', quote: 'ציטוט', law_citation: 'אזכור חוק', opinion: 'דעה / הערכה' };
+  const plLabel: Record<string, string> = { FACT: 'עובדה', LAW: 'חוק', OPINION: 'דעה', PROCEDURAL: 'פרוצדורלי' };
+  const smColor: Record<string, string> = { finding: 'bg-blue-100 text-blue-800 border-blue-200', party_claim: 'bg-orange-100 text-orange-800 border-orange-200', quote: 'bg-purple-100 text-purple-800 border-purple-200', law_citation: 'bg-emerald-100 text-emerald-800 border-emerald-200', opinion: 'bg-pink-100 text-pink-800 border-pink-200' };
+  const plColor: Record<string, string> = { FACT: 'bg-sky-100 text-sky-800 border-sky-200', LAW: 'bg-teal-100 text-teal-800 border-teal-200', OPINION: 'bg-pink-100 text-pink-800 border-pink-200', PROCEDURAL: 'bg-slate-100 text-slate-700 border-slate-200' };
+  const gateLabel: Record<string, string> = { claim_a_complete: 'שלמות טענה א׳', claim_b_complete: 'שלמות טענה ב׳', time_match: 'תאימות זמן', scope_match: 'תאימות היקף', quantifier_match: 'כמת', modality_match: 'מודאליות', speaker_mode_ok: 'מצב דובר', plane_match: 'מישור' };
+
+  // Attribution highlighting
+  const attrPatterns = [/לטענת[ו]?/g, /נטען/g, /לכאורה/g, /ייתכן/g, /סביר להניח/g, /נראה כי/g, /ככל הנראה/g, /כנטען/g, /לדבריו/g, /לדבריה/g, /טוען/g, /טוענת/g];
+  const highlightAttr = (text: string) => {
+    if (!text) return [text];
+    const parts: React.ReactNode[] = [];
+    let lastIdx = 0;
+    const matches: { s: number; e: number }[] = [];
+    for (const p of attrPatterns) { p.lastIndex = 0; let m; while ((m = p.exec(text)) !== null) matches.push({ s: m.index, e: m.index + m[0].length }); }
+    matches.sort((a, b) => a.s - b.s);
+    const merged: { s: number; e: number }[] = [];
+    for (const m of matches) { if (merged.length && m.s <= merged[merged.length - 1].e) merged[merged.length - 1].e = Math.max(merged[merged.length - 1].e, m.e); else merged.push({ ...m }); }
+    for (const m of merged) { if (m.s > lastIdx) parts.push(text.slice(lastIdx, m.s)); parts.push(<mark key={m.s} className="bg-amber-200 text-amber-900 px-0.5 rounded">{text.slice(m.s, m.e)}</mark>); lastIdx = m.e; }
+    if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+    return parts;
+  };
+
+  // Hard UI stops (§10f)
+  const hasContext = !!(ev1?.context_before || ev1?.context_after || ev2?.context_before || ev2?.context_after);
+  const hasPartyClaimBlock = ev1?.speaker_mode === 'party_claim' || ev2?.speaker_mode === 'party_claim';
+  const hasPlaneMismatch = ev1?.plane && ev2?.plane && ev1.plane !== ev2.plane;
+  const reconciliationSucceeded = contradiction.reconciler_outcome && contradiction.reconciler_outcome !== 'TRUE_CONTRADICTION' && contradiction.reconciler_outcome !== 'APPARENT_TENSION_RESOLVABLE';
+  const markDisabled = !hasContext || hasPartyClaimBlock || hasPlaneMismatch || !!reconciliationSucceeded;
+  const disableReasons: string[] = [];
+  if (!hasContext) disableReasons.push('הקשר חסר');
+  if (hasPartyClaimBlock) disableReasons.push('טענת צד');
+  if (hasPlaneMismatch) disableReasons.push('חוסר התאמה במישור');
+  if (reconciliationSucceeded) disableReasons.push('יישוב הצליח');
+
+  // Claim panel renderer with badges, context, source link, highlighting
+  const renderClaimPanel = (
+    label: string, color: 'red' | 'orange', claimText: string,
+    claim: typeof contradiction.claim_a, evidence: typeof ev1,
+  ) => {
+    const sm = evidence?.speaker_mode;
+    const pl = evidence?.plane;
+    const bg = color === 'red' ? 'bg-red-50' : 'bg-orange-50';
+    const border = color === 'red' ? 'border-red-200' : 'border-orange-200';
+    const lc = color === 'red' ? 'text-red-600' : 'text-orange-600';
+    return (
+      <div className={`p-4 ${bg} rounded-xl border ${border}`}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-bold ${lc}`}>{label}</span>
+            {sm ? <span className={`text-[10px] px-1.5 py-0.5 rounded border ${smColor[sm] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{smLabel[sm] || sm}</span> : <span className="text-[10px] px-1.5 py-0.5 rounded border bg-slate-50 text-slate-400 border-slate-200 border-dashed">מצב דובר</span>}
+            {pl ? <span className={`text-[10px] px-1.5 py-0.5 rounded border ${plColor[pl] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>{plLabel[pl] || pl}</span> : <span className="text-[10px] px-1.5 py-0.5 rounded border bg-slate-50 text-slate-400 border-slate-200 border-dashed">מישור</span>}
+            {evidence?.negation && <span className="text-[10px] px-1.5 py-0.5 rounded border bg-red-100 text-red-700 border-red-200">שלילה</span>}
+          </div>
+        </div>
+        {evidence?.context_before ? <p className="text-xs text-slate-400 italic mb-1">...{evidence.context_before}</p> : <p className="text-xs text-slate-300 italic mb-1">— אין הקשר קודם —</p>}
+        <p className="text-slate-800 leading-relaxed">{highlightAttr(claimText)}</p>
+        {evidence?.context_after ? <p className="text-xs text-slate-400 italic mt-1">{evidence.context_after}...</p> : <p className="text-xs text-slate-300 italic mt-1">— אין הקשר נוסף —</p>}
+        <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            {evidence?.entities && evidence.entities.length > 0 && <span className="text-slate-400">ישויות: {evidence.entities.join(', ')}</span>}
+          </div>
+          {/* Source link (§10g) */}
+          {claim?.source_name && (
+            <div className="flex items-center gap-1">
+              {claim.source_doc_id ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const params = new URLSearchParams();
+                    if (claim?.page_no) params.set('page', String(claim.page_no));
+                    if (claim?.block_index !== undefined) params.set('block', String(claim.block_index));
+                    const query = params.toString() ? `?${params.toString()}` : '';
+                    if (claim?.source_doc_id) navigate(`/documents/${claim.source_doc_id}${query}`);
+                  }}
+                  className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
+                >
+                  {claim.source_name}
+                  {claim.page_no && <span className="text-slate-400">(עמ' {claim.page_no})</span>}
+                  <ExternalLink className="w-3 h-3" />
+                </button>
+              ) : (
+                <span className="text-xs text-slate-500">{claim.source_name}</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.1 }}
     >
-      <Card className="border-r-4 border-warning-500">
+      <Card className="border-r-4 border-warning-500 shadow-md">
         <div className="space-y-4">
+          {/* Expert Notebook header */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-l from-indigo-50 to-purple-50 rounded-lg border border-indigo-100">
+            <FileText className="w-4 h-4 text-indigo-500" />
+            <span className="text-xs font-semibold text-indigo-700">פנקס מומחה — ניתוח סתירה</span>
+          </div>
+
+          {/* 1) Header */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-warning-500" />
               <span className="font-bold text-slate-900">סתירה #{index + 1}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {usageBadge}
+              {feedbackTag}
               <Badge variant={getSeverityColor(severity) as any}>
                 {getSeverityLabel(severity)}
               </Badge>
               <Badge variant="neutral">{getTypeLabel(contradictionType)}</Badge>
+              {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category) && (
+                <Badge variant={getCategoryColor(contradiction.reconciler_outcome || contradiction.category) as any}>
+                  {getCategoryLabel(contradiction.reconciler_outcome || contradiction.category)}
+                </Badge>
+              )}
+              {contradiction.verified && (
+                <Badge variant="success">מאומת</Badge>
+              )}
             </div>
           </div>
 
-          {/* Claims */}
+          {/* 2) Claims with context + speaker/plane badges (§10a, §10b) */}
           <div className="space-y-3">
-            <div className="p-4 bg-red-50 rounded-xl border border-red-100">
-              <div className="text-xs text-red-500 font-medium mb-1">טענה א'</div>
-              <p className="text-slate-800">
-                {contradiction.claim_a?.text || 'לא זמין'}
-              </p>
-              {contradiction.claim_a?.source_name && (
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-slate-500">מקור:</span>
-                  {contradiction.claim_a.source_doc_id ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const params = new URLSearchParams();
-                        if (contradiction.claim_a?.page_no) {
-                          params.set('page', String(contradiction.claim_a.page_no));
-                        }
-                        if (contradiction.claim_a?.block_index !== undefined) {
-                          params.set('block', String(contradiction.claim_a.block_index));
-                        }
-                        const query = params.toString() ? `?${params.toString()}` : '';
-                        const docId = contradiction.claim_a?.source_doc_id;
-                        if (docId) navigate(`/documents/${docId}${query}`);
-                      }}
-                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
-                    >
-                      {contradiction.claim_a.source_name}
-                      {contradiction.claim_a.page_no && (
-                        <span className="text-slate-400">(עמ' {contradiction.claim_a.page_no})</span>
-                      )}
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-500">{contradiction.claim_a.source_name}</span>
-                  )}
-                </div>
-              )}
-            </div>
-
+            {renderClaimPanel('טענה א\'', 'red', claimAText, contradiction.claim_a, ev1)}
             <div className="flex justify-center">
               <div className="w-8 h-8 rounded-full bg-warning-100 flex items-center justify-center">
                 <ArrowDown className="w-4 h-4 text-warning-600" />
               </div>
             </div>
-
-            <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
-              <div className="text-xs text-orange-500 font-medium mb-1">טענה ב'</div>
-              <p className="text-slate-800">
-                {contradiction.claim_b?.text || 'לא זמין'}
-              </p>
-              {contradiction.claim_b?.source_name && (
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-slate-500">מקור:</span>
-                  {contradiction.claim_b.source_doc_id ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const params = new URLSearchParams();
-                        if (contradiction.claim_b?.page_no) {
-                          params.set('page', String(contradiction.claim_b.page_no));
-                        }
-                        if (contradiction.claim_b?.block_index !== undefined) {
-                          params.set('block', String(contradiction.claim_b.block_index));
-                        }
-                        const query = params.toString() ? `?${params.toString()}` : '';
-                        const docId = contradiction.claim_b?.source_doc_id;
-                        if (docId) navigate(`/documents/${docId}${query}`);
-                      }}
-                      className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1 hover:underline"
-                    >
-                      {contradiction.claim_b.source_name}
-                      {contradiction.claim_b.page_no && (
-                        <span className="text-slate-400">(עמ' {contradiction.claim_b.page_no})</span>
-                      )}
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-500">{contradiction.claim_b.source_name}</span>
-                  )}
-                </div>
-              )}
-            </div>
+            {renderClaimPanel('טענה ב\'', 'orange', claimBText, contradiction.claim_b, ev2)}
           </div>
 
-          {/* Explanation */}
+          {/* 3) Gate checks (§10c) — always visible */}
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setGatesOpen(!gatesOpen)}
+              className="w-full flex items-center justify-between px-4 py-2 bg-slate-50 hover:bg-slate-100 transition-colors"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Shield className="w-4 h-4" />
+                <span>בדיקות שערים {gates && Object.keys(gates).length > 0 ? `(${Object.keys(gates).length})` : ''}</span>
+              </div>
+              {gatesOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+            </button>
+            {gatesOpen && (
+              gates && Object.keys(gates).length > 0 ? (
+                <div className="p-3 grid grid-cols-2 gap-2">
+                  {Object.entries(gates).map(([key, val]) => (
+                    <div key={key} className="flex items-center gap-2 text-xs">
+                      {val === true ? <ShieldCheck className="w-3.5 h-3.5 text-green-500 flex-shrink-0" /> : val === false ? <ShieldX className="w-3.5 h-3.5 text-red-500 flex-shrink-0" /> : <Shield className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />}
+                      <span className={val === true ? 'text-green-700' : val === false ? 'text-red-700' : 'text-slate-500'}>{gateLabel[key] || key}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 text-xs text-slate-400 text-center">
+                  לא בוצעו בדיקות שערים עבור סתירה זו
+                </div>
+              )
+            )}
+          </div>
+
+          {/* 4) Reconciliation attempt (§10d) — always visible */}
+          <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+            <div className="text-xs text-indigo-600 font-medium mb-1 flex items-center gap-1">
+              <Search className="w-3 h-3" />
+              ניסיון יישוב
+            </div>
+            {contradiction.reconciliation_attempt ? (
+              <p className="text-sm text-slate-700">{contradiction.reconciliation_attempt}</p>
+            ) : contradiction.reconciler_rationale ? null : (
+              <p className="text-sm text-slate-400 italic">לא בוצע ניסיון יישוב</p>
+            )}
+            {contradiction.reconciler_rationale && <p className="text-sm text-indigo-800 mt-1">{contradiction.reconciler_rationale}</p>}
+            {contradiction.deciding_fields && contradiction.deciding_fields.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {contradiction.deciding_fields.map((f) => (
+                  <span key={f} className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">{f}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 5) Final decision (§10e) + 6) Mark as contradiction (§10f) */}
           <div className="p-4 bg-slate-50 rounded-xl">
-            <div className="text-xs text-slate-500 font-medium mb-1">הסבר</div>
+            <div className="flex items-center gap-2 mb-1">
+              <Lock className="w-3.5 h-3.5 text-slate-400" />
+              <span className="text-xs text-slate-500 font-medium">החלטה סופית</span>
+            </div>
             <p className="text-slate-700">{getExplanation()}</p>
           </div>
 
-          {/* Confidence */}
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <span>רמת ביטחון:</span>
-            <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
-              <div
-                className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full"
-                style={{ width: `${(contradiction.confidence || 0) * 100}%` }}
-              />
+          <div className="flex items-center justify-between">
+            <button
+              disabled={markDisabled}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${markDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+              title={markDisabled ? `חסום: ${disableReasons.join(', ')}` : 'סמן כסתירה'}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              סמן כסתירה
+            </button>
+            {markDisabled && disableReasons.length > 0 && (
+              <span className="text-xs text-slate-400 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                {disableReasons.join(' | ')}
+              </span>
+            )}
+          </div>
+
+          {hasEvidence && (
+            <div className="flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onShowEvidence(contradiction)}
+              >
+                השווה ראיות
+              </Button>
             </div>
-            <span className="font-medium">
-              {Math.round((contradiction.confidence || 0) * 100)}%
-            </span>
+          )}
+
+          {onFeedback && contradiction.id && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Button size="sm" variant="ghost" onClick={() => onFeedback('insight', contradiction.id as string, 'worked')}><ThumbsUp className="w-4 h-4" /></Button>
+              <Button size="sm" variant="ghost" onClick={() => onFeedback('insight', contradiction.id as string, 'not_worked')}><ThumbsDown className="w-4 h-4" /></Button>
+              <select value={selectedLabel} onChange={(e) => setSelectedLabel(e.target.value as typeof selectedLabel)} className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs">
+                <option value="worked">worked</option>
+                <option value="not_worked">not_worked</option>
+                <option value="too_risky">too_risky</option>
+                <option value="excellent">excellent</option>
+              </select>
+              <Button size="sm" variant="secondary" onClick={() => onFeedback('insight', contradiction.id as string, selectedLabel)}>שמור</Button>
+            </div>
+          )}
+
+          {insight && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">השפעה</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-red-400 to-red-600 rounded-full transition-all" style={{ width: `${(insight.impact_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.impact_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">סיכון</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-orange-400 to-orange-600 rounded-full transition-all" style={{ width: `${(insight.risk_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.risk_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">אימות</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full transition-all" style={{ width: `${(insight.verifiability_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.verifiability_score)}</span></div></div>
+                <div className="space-y-1"><div className="text-xs text-slate-500 font-medium">ציון כולל</div><div className="flex items-center gap-2"><div className="flex-1 h-2 bg-slate-200 rounded-full"><div className="h-full bg-gradient-to-r from-primary-400 to-primary-600 rounded-full transition-all" style={{ width: `${(insight.composite_score || 0) * 100}%` }} /></div><span className="text-xs font-bold text-slate-700">{renderScore(insight.composite_score)}</span></div></div>
+              </div>
+              {insight.stage_recommendation && (<div className="flex items-center gap-2"><Badge variant="warning">{insight.stage_recommendation === 'early' ? 'שלב מוקדם' : insight.stage_recommendation === 'mid' ? 'שלב אמצעי' : insight.stage_recommendation === 'late' ? 'שלב מתקדם' : `שלב: ${insight.stage_recommendation}`}</Badge><span className="text-xs text-slate-500">מתי לשאול בחקירה</span></div>)}
+              {insight.do_not_ask_flag && (<div className="text-sm text-danger-700 bg-danger-50 border border-danger-200 rounded-lg p-3 flex items-start gap-2"><AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" /><div><strong>אל תשאל/י זאת:</strong>{' '}{insight.do_not_ask_reason || 'סיכון גבוה לעומת אחיזה חלשה בעוגנים.'}</div></div>)}
+              {insight.prerequisites && insight.prerequisites.length > 0 && (<div className="space-y-1"><div className="text-xs text-slate-500 font-medium">דרישות קדם — מה לבסס לפני השאלה:</div><ul className="space-y-1">{insight.prerequisites.map((pre, i) => (<li key={i} className="text-sm text-slate-700 flex items-start gap-2"><span className="text-primary-400 font-bold">{i + 1}.</span>{pre}</li>))}</ul></div>)}
+              {insight.expected_evasions && insight.expected_evasions.length > 0 && (<div className="space-y-1"><div className="text-xs text-orange-600 font-medium">התחמקויות צפויות של העד:</div><div className="bg-orange-50 border border-orange-100 rounded-lg p-3 space-y-2">{insight.expected_evasions.map((evasion, i) => (<div key={i} className="text-sm text-orange-800 flex items-start gap-2"><span className="text-orange-400">⚠</span>{evasion}</div>))}</div></div>)}
+              {insight.best_counter_questions && insight.best_counter_questions.length > 0 && (<div className="space-y-1"><div className="text-xs text-green-600 font-medium">שאלות נגד מומלצות:</div><div className="bg-green-50 border border-green-100 rounded-lg p-3 space-y-2">{insight.best_counter_questions.map((question, i) => (<div key={i} className="text-sm text-green-800 flex items-start gap-2"><span className="text-green-500 font-bold">{i + 1}.</span>&ldquo;{question}&rdquo;</div>))}</div></div>)}
+            </div>
+          )}
+
+          {/* Confidence */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <span>ביטחון ניתוח:</span>
+              <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                <div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full" style={{ width: `${(contradiction.confidence || 0) * 100}%` }} />
+              </div>
+              <span className="font-medium">{Math.round((contradiction.confidence || 0) * 100)}%</span>
+            </div>
+            {contradiction.verifier_confidence != null && (
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <span>ביטחון מאמת:</span>
+                <div className="flex-1 h-2 bg-slate-200 rounded-full max-w-32">
+                  <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full" style={{ width: `${(contradiction.verifier_confidence || 0) * 100}%` }} />
+                </div>
+                <span className="font-medium text-green-700">{Math.round((contradiction.verifier_confidence || 0) * 100)}%</span>
+              </div>
+            )}
           </div>
         </div>
       </Card>

@@ -54,6 +54,12 @@ export const authApi = {
     return response.data;
   },
 
+  // Get current user's credit balance
+  getMyCredits: async (): Promise<{ balance: number }> => {
+    const response = await apiClient.get<{ balance: number }>('/api/v1/me/credits');
+    return response.data;
+  },
+
   // Get user by email (demo mode)
   getUserByEmail: async (email: string): Promise<User> => {
     const response = await apiClient.get<User>('/users/by-email', {

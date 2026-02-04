@@ -3,11 +3,11 @@ Deduplication Utils
 ===================
 
 Remove duplicate claims and contradictions.
-Imported from main JETHRO4 codebase.
+Uses both text similarity and structural (claim pair) matching.
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set, Tuple
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
@@ -70,33 +70,78 @@ def deduplicate_claims(claims: List[Dict[str, Any]], similarity_threshold: float
     return unique_claims
 
 
+def _extract_claim_pair_key(contr: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Extract a normalized claim pair key from a contradiction.
+    Returns a sorted tuple of (claim1_id, claim2_id) for order-independent matching.
+    """
+    c1 = contr.get('claim1_id', '') or ''
+    c2 = contr.get('claim2_id', '') or ''
+    return tuple(sorted([c1, c2]))
+
+
 def deduplicate_contradictions(
     contradictions: List[Dict[str, Any]],
     similarity_threshold: float = 0.80
 ) -> List[Dict[str, Any]]:
     """
-    Remove duplicate/similar contradictions
+    Remove duplicate/similar contradictions using multi-signal matching:
+    1. Exact claim pair match (same claim1_id + claim2_id regardless of order)
+    2. Text similarity of explanations
+    3. Quote pair similarity (same quotes even with different explanations)
     """
     if not contradictions:
         return []
 
-    unique = []
+    unique: List[Dict[str, Any]] = []
     removed = 0
+    seen_pairs: Set[Tuple[str, str]] = set()
 
     for contr in contradictions:
+        # Signal 1: Exact claim pair match
+        pair_key = _extract_claim_pair_key(contr)
+        if pair_key[0] and pair_key[1] and pair_key in seen_pairs:
+            removed += 1
+            continue
+
+        # Signal 2: Explanation text similarity
         desc = contr.get('explanation', '') or contr.get('description', '')
+
+        # Signal 3: Quote pair similarity
+        q1 = (contr.get('quote1', '') or '').strip().lower()
+        q2 = (contr.get('quote2', '') or '').strip().lower()
 
         is_dup = False
         for existing in unique:
             existing_desc = existing.get('explanation', '') or existing.get('description', '')
 
-            if calculate_similarity(desc, existing_desc) >= similarity_threshold:
+            # Check explanation similarity
+            if desc and existing_desc and calculate_similarity(desc, existing_desc) >= similarity_threshold:
                 is_dup = True
                 removed += 1
                 break
 
+            # Check quote pair similarity (both quotes must match)
+            eq1 = (existing.get('quote1', '') or '').strip().lower()
+            eq2 = (existing.get('quote2', '') or '').strip().lower()
+            if q1 and q2 and eq1 and eq2:
+                sim_direct = min(
+                    calculate_similarity(q1, eq1),
+                    calculate_similarity(q2, eq2)
+                )
+                sim_cross = min(
+                    calculate_similarity(q1, eq2),
+                    calculate_similarity(q2, eq1)
+                )
+                if max(sim_direct, sim_cross) >= similarity_threshold:
+                    is_dup = True
+                    removed += 1
+                    break
+
         if not is_dup:
             unique.append(contr)
+            if pair_key[0] and pair_key[1]:
+                seen_pairs.add(pair_key)
 
     logger.info(f"Dedup contradictions: {len(unique)} unique (removed {removed})")
     return unique

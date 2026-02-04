@@ -14,6 +14,7 @@ Key Features:
 """
 
 import math
+import os
 import re
 import logging
 from collections import Counter
@@ -559,6 +560,7 @@ class CandidatePairGenerator:
         """Build index from paragraphs"""
         self.index = _create_index(self.mode)
         self.index.add_paragraphs(paragraphs)
+        self._fingerprint = self._compute_fingerprint(paragraphs)
 
     def generate_candidates(
         self,
@@ -576,11 +578,14 @@ class CandidatePairGenerator:
             List of (para1, para2, similarity_score) tuples
         """
         # Build index if needed
-        if self.index.n_docs != len(paragraphs):
+        fingerprint = self._compute_fingerprint(paragraphs)
+        if self.index.n_docs != len(paragraphs) or self._fingerprint != fingerprint:
             self.build_index(paragraphs)
 
         candidates = []
         seen_pairs = set()
+        start_time = time.time()
+        reached_cap = False
 
         for para in paragraphs:
             # Find similar paragraphs
@@ -609,9 +614,24 @@ class CandidatePairGenerator:
                 other_para = self.index.paragraphs.get(result.paragraph_id)
                 if other_para:
                     candidates.append((para, other_para, result.score))
+                    if len(candidates) >= self.max_pairs:
+                        reached_cap = True
+                        break
+            if reached_cap:
+                break
 
         # Sort by similarity score descending
         candidates.sort(key=lambda x: x[2], reverse=True)
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.debug(
+            "Candidate pairs generated: total=%s cap=%s paragraphs=%s top_k=%s elapsed_ms=%s",
+            len(candidates),
+            self.max_pairs,
+            len(paragraphs),
+            self.top_k,
+            elapsed_ms,
+        )
 
         return candidates
 

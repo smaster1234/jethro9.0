@@ -54,6 +54,22 @@ class TeamRole(str, enum.Enum):
     TEAM_MEMBER = "team_member"
 
 
+class OrganizationRole(str, enum.Enum):
+    """Organization-level roles"""
+    VIEWER = "viewer"
+    INTERN = "intern"
+    LAWYER = "lawyer"
+    OWNER = "owner"
+
+
+class InviteStatus(str, enum.Enum):
+    """Invite lifecycle status"""
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
 class CaseStatus(str, enum.Enum):
     """Case lifecycle status"""
     ACTIVE = "active"
@@ -126,6 +142,21 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class TrainingSessionStatus(str, enum.Enum):
+    """Training session status"""
+    ACTIVE = "active"
+    FINISHED = "finished"
+    CANCELLED = "cancelled"
+
+
+class FeedbackLabel(str, enum.Enum):
+    """Feedback labels"""
+    WORKED = "worked"
+    NOT_WORKED = "not_worked"
+    TOO_RISKY = "too_risky"
+    EXCELLENT = "excellent"
+
+
 class EventType(str, enum.Enum):
     """Timeline event types"""
     DOCUMENT_ADDED = "document_added"
@@ -167,6 +198,72 @@ class ContradictionBucket(str, enum.Enum):
     UNKNOWN = "unknown"
 
 
+class DocClass(str, enum.Enum):
+    """Document class for completeness analysis.
+
+    PRIMARY / AFFIDAVIT / SUMMATION = complete factual version expected.
+    Omission of a fact from these = significant version change.
+    MOTION / SUPPORTING = partial; omission is NOT significant.
+    """
+    PRIMARY_PLEADING = "primary_pleading"   # תביעה, הגנה, עתירה, תשובה
+    AFFIDAVIT = "affidavit"                 # תצהיר עדות ראשית
+    SUMMATION = "summation"                 # סיכומים
+    MOTION = "motion"                       # בקשה — partial
+    SUPPORTING = "supporting"               # חוו"ד, נספח — context only
+
+
+# Roles that imply completeness obligation (omission = version change)
+COMPLETENESS_REQUIRED_ROLES = {
+    DocumentRole.STATEMENT_OF_CLAIM,
+    DocumentRole.DEFENSE,
+    DocumentRole.REPLY,
+    DocumentRole.AFFIDAVIT,
+    DocumentRole.SUMMATIONS,
+}
+
+
+def doc_class_from_role(role: DocumentRole) -> DocClass:
+    """Derive DocClass from DocumentRole."""
+    _map = {
+        DocumentRole.STATEMENT_OF_CLAIM: DocClass.PRIMARY_PLEADING,
+        DocumentRole.DEFENSE: DocClass.PRIMARY_PLEADING,
+        DocumentRole.REPLY: DocClass.PRIMARY_PLEADING,
+        DocumentRole.AFFIDAVIT: DocClass.AFFIDAVIT,
+        DocumentRole.SUMMATIONS: DocClass.SUMMATION,
+        DocumentRole.MOTION: DocClass.MOTION,
+        DocumentRole.RESPONSE: DocClass.MOTION,
+        DocumentRole.JUDGMENT: DocClass.SUPPORTING,
+        DocumentRole.EXHIBIT: DocClass.SUPPORTING,
+        DocumentRole.PROTOCOL: DocClass.SUPPORTING,
+        DocumentRole.EXPERT_OPINION: DocClass.SUPPORTING,
+        DocumentRole.CONTRACT: DocClass.SUPPORTING,
+        DocumentRole.LETTER: DocClass.SUPPORTING,
+        DocumentRole.UNKNOWN: DocClass.SUPPORTING,
+    }
+    return _map.get(role, DocClass.SUPPORTING)
+
+
+class VersionChangeType(str, enum.Enum):
+    """Type of factual version change across documents over time."""
+    CONSISTENT = "consistent"               # ✅ same version maintained
+    EXPANDED = "expanded"                   # 📈 claim broadened
+    REDUCED = "reduced"                     # 📉 claim narrowed
+    CHANGED = "changed"                     # 🔄 substantive change
+    OMITTED_SIGNIFICANT = "omitted_significant"  # 🚫 absent from ⭐ doc
+    OMITTED_IGNORED = "omitted_ignored"     # absent from 📎 doc (not significant)
+    NEW = "new"                             # ➕ first appearance
+    CONTRADICTION = "contradiction"         # ⚡ direct conflict
+
+
+class CreditTransactionType(str, enum.Enum):
+    """Type of credit transaction."""
+    GRANT = "grant"                 # Credits added (purchase, bonus, trial)
+    ANALYSIS = "analysis"           # Credits consumed by analysis run
+    VERIFICATION = "verification"   # Credits consumed by verifier calls
+    REFUND = "refund"               # Credits returned (failed analysis)
+    ADJUSTMENT = "adjustment"       # Manual admin adjustment
+
+
 # =============================================================================
 # ORGANIZATION MODELS
 # =============================================================================
@@ -186,10 +283,69 @@ class Firm(Base):
     users = relationship("User", back_populates="firm", cascade="all, delete-orphan")
     teams = relationship("Team", back_populates="firm", cascade="all, delete-orphan")
     cases = relationship("Case", back_populates="firm", cascade="all, delete-orphan")
+    organizations = relationship("Organization", back_populates="firm", cascade="all, delete-orphan")
     folders = relationship("Folder", back_populates="firm", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="firm", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="firm", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="firm", cascade="all, delete-orphan")
+    witnesses = relationship("Witness", back_populates="firm", cascade="all, delete-orphan")
+
+
+class Organization(Base):
+    """Organization / משרד"""
+    __tablename__ = "organizations"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    extra_data = Column(JSONB, default=dict)
+
+    __table_args__ = (
+        Index("ix_organization_firm", "firm_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm", back_populates="organizations")
+    members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
+    invites = relationship("OrganizationInvite", back_populates="organization", cascade="all, delete-orphan")
+    cases = relationship("Case", back_populates="organization")
+
+
+class OrganizationMember(Base):
+    """Organization membership"""
+    __tablename__ = "organization_members"
+
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role = Column(Enum(OrganizationRole), default=OrganizationRole.VIEWER, nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    added_by_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    organization = relationship("Organization", back_populates="members")
+    user = relationship("User", back_populates="organization_memberships", foreign_keys=[user_id])
+
+
+class OrganizationInvite(Base):
+    """Organization invite"""
+    __tablename__ = "organization_invites"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    email = Column(String(255), nullable=False)
+    token = Column(String(64), nullable=False, unique=True)
+    status = Column(Enum(InviteStatus), default=InviteStatus.PENDING, nullable=False)
+    role = Column(Enum(OrganizationRole), default=OrganizationRole.VIEWER, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_organization_invite_org", "organization_id"),
+        Index("ix_organization_invite_email", "email"),
+    )
+
+    organization = relationship("Organization", back_populates="invites")
 
 
 class User(Base):
@@ -219,6 +375,7 @@ class User(Base):
     admin_scopes = relationship("AdminTeamScope", back_populates="admin_user", cascade="all, delete-orphan", foreign_keys="AdminTeamScope.admin_user_id")
     case_participations = relationship("CaseParticipant", back_populates="user", cascade="all, delete-orphan", foreign_keys="CaseParticipant.user_id")
     responsible_cases = relationship("Case", back_populates="responsible_user", foreign_keys="Case.responsible_user_id")
+    organization_memberships = relationship("OrganizationMember", back_populates="user", cascade="all, delete-orphan", foreign_keys="OrganizationMember.user_id")
 
 
 class Team(Base):
@@ -279,6 +436,7 @@ class Case(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     responsible_user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -293,12 +451,17 @@ class Case(Base):
     case_number = Column(String(100), nullable=True)
     tags = Column(JSONB, default=list)
 
+    __table_args__ = (
+        Index("ix_case_org", "organization_id"),
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     extra_data = Column(JSONB, default=dict)  # Note: 'metadata' is reserved by SQLAlchemy
 
     # Relationships
     firm = relationship("Firm", back_populates="cases")
+    organization = relationship("Organization", back_populates="cases")
     responsible_user = relationship("User", back_populates="responsible_cases", foreign_keys=[responsible_user_id])
     participants = relationship("CaseParticipant", back_populates="case", cascade="all, delete-orphan")
     case_teams = relationship("CaseTeam", back_populates="case", cascade="all, delete-orphan")
@@ -307,6 +470,7 @@ class Case(Base):
     events = relationship("Event", back_populates="case", cascade="all, delete-orphan")
     issues = relationship("Issue", back_populates="case", cascade="all, delete-orphan")
     analysis_runs = relationship("AnalysisRun", back_populates="case", cascade="all, delete-orphan")
+    witnesses = relationship("Witness", back_populates="case", cascade="all, delete-orphan")
 
 
 class CaseParticipant(Base):
@@ -336,6 +500,57 @@ class CaseTeam(Base):
     # Relationships
     case = relationship("Case", back_populates="case_teams")
     team = relationship("Team", back_populates="case_teams")
+
+
+# =============================================================================
+# WITNESSES
+# =============================================================================
+
+class Witness(Base):
+    """Witness in a case / עד"""
+    __tablename__ = "witnesses"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    side = Column(String(50), nullable=True)  # ours/theirs/unknown
+    extra_data = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_witness_case", "case_id"),
+        Index("ix_witness_firm", "firm_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm", back_populates="witnesses")
+    case = relationship("Case", back_populates="witnesses")
+    versions = relationship("WitnessVersion", back_populates="witness", cascade="all, delete-orphan")
+
+
+class WitnessVersion(Base):
+    """Witness version tied to a specific document"""
+    __tablename__ = "witness_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    version_type = Column(String(50), nullable=True)  # statement/affidavit/testimony/etc
+    version_date = Column(DateTime, nullable=True)
+    extra_data = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("document_id", name="uq_witness_version_document"),
+        Index("ix_witness_version_witness", "witness_id"),
+        Index("ix_witness_version_document", "document_id"),
+    )
+
+    # Relationships
+    witness = relationship("Witness", back_populates="versions")
+    document = relationship("Document", back_populates="witness_versions")
+    claims = relationship("Claim", back_populates="witness_version")
 
 
 # =============================================================================
@@ -393,6 +608,7 @@ class Document(Base):
     # Legal metadata
     party = Column(Enum(DocumentParty), default=DocumentParty.UNKNOWN)
     role = Column(Enum(DocumentRole), default=DocumentRole.UNKNOWN)
+    doc_class = Column(String(20), default="supporting")  # Derived from role; uses DocClass values
     author = Column(String(255), nullable=True)
     version_label = Column(String(50), nullable=True)  # "מתוקן", "טיוטה", "הוגש"
     occurred_at = Column(DateTime, nullable=True)  # When the document was created/signed
@@ -430,6 +646,7 @@ class Document(Base):
     blocks = relationship("DocumentBlock", back_populates="document", cascade="all, delete-orphan")
     versions = relationship("DocumentVersion", back_populates="document", cascade="all, delete-orphan")
     claims = relationship("Claim", back_populates="document", cascade="all, delete-orphan")
+    witness_versions = relationship("WitnessVersion", back_populates="document", cascade="all, delete-orphan")
 
 
 class DocumentPage(Base):
@@ -598,6 +815,7 @@ class Claim(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     run_id = Column(String(36), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    witness_version_id = Column(String(36), ForeignKey("witness_versions.id", ondelete="SET NULL"), nullable=True)
     claim_hash = Column(String(64), nullable=True)
     text = Column(Text, nullable=False)
     party = Column(String(50), nullable=True)
@@ -608,11 +826,13 @@ class Claim(Base):
     __table_args__ = (
         Index("ix_claim_run", "run_id"),
         Index("ix_claim_document", "document_id"),
+        Index("ix_claim_witness_version", "witness_version_id"),
     )
 
     # Relationships
     analysis_run = relationship("AnalysisRun", back_populates="claims")
     document = relationship("Document", back_populates="claims")
+    witness_version = relationship("WitnessVersion", back_populates="claims")
 
 
 class Issue(Base):
@@ -675,6 +895,150 @@ class Contradiction(Base):
 
     # Relationships
     analysis_run = relationship("AnalysisRun", back_populates="contradictions")
+    insight = relationship("ContradictionInsight", back_populates="contradiction", uselist=False, cascade="all, delete-orphan")
+
+
+class ContradictionInsight(Base):
+    """Derived insight for contradiction scoring and planning"""
+    __tablename__ = "contradiction_insights"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    contradiction_id = Column(String(36), ForeignKey("contradictions.id", ondelete="CASCADE"), nullable=False)
+
+    impact_score = Column(Float, default=0.0)
+    risk_score = Column(Float, default=0.0)
+    verifiability_score = Column(Float, default=0.0)
+    stage_recommendation = Column(String(20), nullable=True)  # early/mid/late
+
+    prerequisites_json = Column(JSONB, default=list)
+    evasions_json = Column(JSONB, default=list)
+    counters_json = Column(JSONB, default=list)
+    do_not_ask = Column(Boolean, default=False)
+    do_not_ask_reason = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("contradiction_id", name="uq_contradiction_insight_contradiction"),
+        Index("ix_contradiction_insight_contradiction", "contradiction_id"),
+    )
+
+    # Relationships
+    contradiction = relationship("Contradiction", back_populates="insight")
+
+
+class CrossExamPlan(Base):
+    """Cross-examination plan for a case/run"""
+    __tablename__ = "cross_exam_plans"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String(36), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="SET NULL"), nullable=True)
+    plan_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_cross_exam_plan_case", "case_id"),
+        Index("ix_cross_exam_plan_run", "run_id"),
+    )
+
+    # Relationships
+    firm = relationship("Firm")
+    case = relationship("Case")
+    analysis_run = relationship("AnalysisRun")
+    witness = relationship("Witness")
+
+
+class TrainingSession(Base):
+    """Training session for cross-examination practice"""
+    __tablename__ = "training_sessions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(String(36), ForeignKey("cross_exam_plans.id", ondelete="CASCADE"), nullable=False)
+    witness_id = Column(String(36), ForeignKey("witnesses.id", ondelete="SET NULL"), nullable=True)
+    persona = Column(String(50), nullable=True)
+    status = Column(Enum(TrainingSessionStatus), default=TrainingSessionStatus.ACTIVE, nullable=False)
+    back_remaining = Column(Integer, default=2)
+    summary_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_training_session_case", "case_id"),
+        Index("ix_training_session_plan", "plan_id"),
+    )
+
+    case = relationship("Case")
+    plan = relationship("CrossExamPlan")
+    witness = relationship("Witness")
+    turns = relationship("TrainingTurn", back_populates="session", cascade="all, delete-orphan")
+
+
+class TrainingTurn(Base):
+    """Single turn within a training session"""
+    __tablename__ = "training_turns"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(String(36), ForeignKey("training_sessions.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(String(64), nullable=False)
+    stage = Column(String(50), nullable=True)
+    question = Column(Text, nullable=False)
+    chosen_branch = Column(Text, nullable=True)
+    witness_reply = Column(Text, nullable=True)
+    metadata_json = Column(JSONB, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_training_turn_session", "session_id"),
+    )
+
+    session = relationship("TrainingSession", back_populates="turns")
+
+
+class EntityUsage(Base):
+    """Track entity usage in plan/training/export"""
+    __tablename__ = "entity_usage"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    entity_type = Column(String(50), nullable=False)  # insight/contradiction/narrative_shift/plan_step/question
+    entity_id = Column(String(128), nullable=False)
+    usage_type = Column(String(50), nullable=False)  # plan/training/export
+    created_at = Column(DateTime, default=datetime.utcnow)
+    meta_json = Column(JSONB, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "entity_type", "entity_id", "usage_type", name="uq_entity_usage_case_entity_usage"),
+        Index("ix_entity_usage_case", "case_id"),
+        Index("ix_entity_usage_type", "entity_type"),
+        Index("ix_entity_usage_usage", "usage_type"),
+    )
+
+
+class Feedback(Base):
+    """User feedback for entities"""
+    __tablename__ = "feedback"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    org_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    entity_type = Column(String(50), nullable=False)  # insight/plan_step
+    entity_id = Column(String(128), nullable=False)
+    label = Column(Enum(FeedbackLabel), nullable=False)
+    note = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(64), nullable=False, default="system")
+
+    __table_args__ = (
+        Index("ix_feedback_case", "case_id"),
+        Index("ix_feedback_entity", "entity_type", "entity_id"),
+        Index("ix_feedback_org", "org_id"),
+    )
 
 
 class Finding(Base):
@@ -755,4 +1119,149 @@ class AuditLog(Base):
         Index("ix_audit_action", "action"),
         Index("ix_audit_created", "created_at"),
     )
+
+
+# =============================================================================
+# VERSION TRACKING MODELS
+# =============================================================================
+
+class FactCluster(Base):
+    """
+    A cluster of related claims across documents that refer to the same fact.
+    Tracks how a factual assertion evolves over time across pleadings.
+    """
+    __tablename__ = "fact_clusters"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+
+    # Fact identity
+    summary = Column(Text, nullable=False)  # Brief description: "סכום העסקה"
+    category = Column(String(100), nullable=True)  # temporal/monetary/factual/identity/...
+    party = Column(Enum(DocumentParty), nullable=True)  # Which party's version
+
+    # Status
+    has_version_change = Column(Boolean, default=False)  # Any change detected?
+    trend = Column(String(50), nullable=True)  # consistent/expanding/reducing/shifting/abandoned
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_fact_cluster_case", "case_id"),
+        Index("ix_fact_cluster_party", "party"),
+    )
+
+    # Relationships
+    case = relationship("Case")
+    appearances = relationship("FactAppearance", back_populates="cluster",
+                               cascade="all, delete-orphan",
+                               order_by="FactAppearance.doc_date")
+
+
+class FactAppearance(Base):
+    """
+    A single appearance of a fact in a specific document.
+    Together with its cluster, forms the timeline of factual version changes.
+    """
+    __tablename__ = "fact_appearances"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    cluster_id = Column(String(36), ForeignKey("fact_clusters.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    claim_id = Column(String(36), ForeignKey("claims.id", ondelete="SET NULL"), nullable=True)
+
+    # Document context (denormalized for query performance)
+    doc_date = Column(DateTime, nullable=True)  # Copy of document.occurred_at
+    doc_class = Column(String(20), nullable=True)  # Copy of document.doc_class
+    doc_role = Column(Enum(DocumentRole), nullable=True)
+    doc_party = Column(Enum(DocumentParty), nullable=True)
+    doc_name = Column(String(255), nullable=True)
+
+    # Content
+    text = Column(Text, nullable=True)  # Quoted text from this document (null = absent)
+    status = Column(String(30), default="new")  # Uses VersionChangeType values
+    change_detail = Column(Text, nullable=True)  # "500K → 450K" or "הושמט בתצהיר"
+
+    # Comparison
+    previous_appearance_id = Column(String(36), ForeignKey("fact_appearances.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_fact_appearance_cluster", "cluster_id"),
+        Index("ix_fact_appearance_doc", "document_id"),
+        Index("ix_fact_appearance_date", "doc_date"),
+    )
+
+    # Relationships
+    cluster = relationship("FactCluster", back_populates="appearances")
+    document = relationship("Document")
+    claim = relationship("Claim")
+    previous = relationship("FactAppearance", remote_side="FactAppearance.id")
+
+
+# =============================================================================
+# CREDIT TRACKING MODELS (precursor to subscription system)
+# =============================================================================
+
+class CreditLedger(Base):
+    """
+    Credit transaction log per user.
+    Every credit change (grant, consumption, refund) is an immutable row.
+    Current balance = SUM of all amounts for a user.
+    """
+    __tablename__ = "credit_ledger"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # Transaction
+    transaction_type = Column(String(20), nullable=False)  # Uses CreditTransactionType values
+    amount = Column(Integer, nullable=False)  # Positive = credit added, negative = consumed
+    balance_after = Column(Integer, nullable=False)  # Running balance after this transaction
+
+    # Context
+    description = Column(String(500), nullable=True)  # "Analysis run on case X"
+    case_id = Column(String(36), ForeignKey("cases.id", ondelete="SET NULL"), nullable=True)
+    run_id = Column(String(36), ForeignKey("analysis_runs.id", ondelete="SET NULL"), nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(36), nullable=True)  # Admin who granted/adjusted
+
+    __table_args__ = (
+        Index("ix_credit_ledger_user", "user_id"),
+        Index("ix_credit_ledger_firm", "firm_id"),
+        Index("ix_credit_ledger_created", "created_at"),
+    )
+
+    # Relationships
+    user = relationship("User")
+    firm = relationship("Firm")
+
+
+class UserCreditBalance(Base):
+    """
+    Materialized credit balance per user (for fast reads).
+    Updated on every credit transaction.
+    """
+    __tablename__ = "user_credit_balances"
+
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    firm_id = Column(String(36), ForeignKey("firms.id", ondelete="CASCADE"), nullable=False)
+    balance = Column(Integer, default=0, nullable=False)
+    total_granted = Column(Integer, default=0, nullable=False)
+    total_consumed = Column(Integer, default=0, nullable=False)
+    last_transaction_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_credit_balance_firm", "firm_id"),
+    )
+
+    # Relationships
+    user = relationship("User")
 

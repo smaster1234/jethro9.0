@@ -10,7 +10,7 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text, event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 
@@ -31,11 +31,19 @@ def _current_database_url() -> str:
 def _create_engine_for_url(database_url: str):
     # For SQLite fallback in tests
     if database_url.startswith("sqlite"):
-        return create_engine(
+        engine = create_engine(
             database_url,
             connect_args={"check_same_thread": False},
             echo=os.environ.get("SQL_ECHO", "false").lower() == "true",
         )
+        # Enforce foreign keys for SQLite
+        def _enable_sqlite_fk(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        event.listen(engine, "connect", _enable_sqlite_fk)
+        return engine
 
     return create_engine(
         database_url,
@@ -74,6 +82,131 @@ def init_db():
     """Initialize database tables"""
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    _ensure_phase2_schema(engine)
+    _ensure_b1_schema(engine)
+    _ensure_notebook_schema(engine)
+    _ensure_credits_schema(engine)
+
+
+def _ensure_phase2_schema(engine) -> None:
+    """
+    Ensure Phase 2 columns exist (lightweight migration).
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("claims")}
+        if "witness_version_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE claims ADD COLUMN witness_version_id VARCHAR(36)"))
+    except Exception:
+        # Non-fatal: avoid breaking startup if ALTER isn't supported
+        pass
+
+
+def _ensure_b1_schema(engine) -> None:
+    """
+    Ensure B1 columns exist (lightweight migration).
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("cases")}
+        if "organization_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE cases ADD COLUMN organization_id VARCHAR(36)"))
+    except Exception:
+        pass
+
+
+def _ensure_notebook_schema(engine) -> None:
+    """
+    Ensure Notebook-era columns exist (lightweight migration).
+    Adds doc_class to documents table.
+    Also cleans up any stale PostgreSQL native enum types that may have been
+    created by an earlier model definition using Enum(DocClass).
+    """
+    try:
+        inspector = inspect(engine)
+        columns = {c["name"] for c in inspector.get_columns("documents")}
+        if "doc_class" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE documents ADD COLUMN doc_class VARCHAR(20) DEFAULT 'supporting'"
+                ))
+    except Exception:
+        pass
+
+    # Clean up stale native enum types that conflict with VARCHAR columns
+    for enum_name in ("docclass", "versionchangetype", "credittransactiontype"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP TYPE IF EXISTS {enum_name} CASCADE"))
+        except Exception:
+            pass
+
+
+def _ensure_credits_schema(engine) -> None:
+    """
+    Ensure credit system columns exist (lightweight migration).
+    The credit_ledger and user_credit_balances tables may have been created
+    by an earlier schema version missing newer columns.
+    """
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+
+        # --- credit_ledger ---
+        if "credit_ledger" in tables:
+            columns = {c["name"] for c in inspector.get_columns("credit_ledger")}
+            with engine.begin() as conn:
+                if "transaction_type" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN transaction_type VARCHAR(20) DEFAULT 'grant' NOT NULL"
+                    ))
+                if "balance_after" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN balance_after INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "description" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN description VARCHAR(500)"
+                    ))
+                if "case_id" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN case_id VARCHAR(36)"
+                    ))
+                if "run_id" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN run_id VARCHAR(36)"
+                    ))
+                if "created_by" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE credit_ledger ADD COLUMN created_by VARCHAR(36)"
+                    ))
+
+        # --- user_credit_balances ---
+        if "user_credit_balances" in tables:
+            columns = {c["name"] for c in inspector.get_columns("user_credit_balances")}
+            with engine.begin() as conn:
+                if "total_granted" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN total_granted INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "total_consumed" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN total_consumed INTEGER DEFAULT 0 NOT NULL"
+                    ))
+                if "last_transaction_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN last_transaction_at TIMESTAMP"
+                    ))
+                if "updated_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE user_credit_balances ADD COLUMN updated_at TIMESTAMP"
+                    ))
+
+    except Exception:
+        # Non-fatal: avoid breaking startup
+        pass
 
 
 def drop_db():
