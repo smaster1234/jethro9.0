@@ -299,3 +299,25 @@ def is_hebert_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def hebert_health_check() -> dict:
+    """Startup health check — attempts to load the model and returns status."""
+    embedder = get_embedder()
+    available = embedder.is_available
+    result = {
+        "model": embedder.model_name,
+        "available": available,
+        "error": embedder._load_error,
+    }
+    if available:
+        # Quick sanity test
+        try:
+            vec = embedder.embed("בדיקת בריאות")
+            result["embedding_dim"] = vec.shape[0] if vec is not None else None
+            result["sanity_ok"] = vec is not None and vec.shape[0] == EMBEDDING_DIM
+        except Exception as e:
+            result["sanity_ok"] = False
+            result["error"] = str(e)
+    logger.info("Legal-heBERT health: %s", result)
+    return result

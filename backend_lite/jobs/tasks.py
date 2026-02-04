@@ -991,6 +991,12 @@ async def task_analyze_case(
                     update_job_progress(65, "Verifying with LLM")
                     verifier.reset_stats()
 
+                    # Dynamically scale max_calls based on candidate count
+                    # Base 30, +10 per 100 candidates, capped at 200
+                    base_max = int(os.getenv("VERIFIER_MAX_CALLS", "30"))
+                    dynamic_max = min(200, base_max + (len(raw_candidates) // 100) * 10)
+                    verifier.max_calls = dynamic_max
+
                     # Sort by confidence (highest first) and take top N
                     sorted_candidates = sorted(
                         raw_candidates, key=lambda c: c.confidence, reverse=True

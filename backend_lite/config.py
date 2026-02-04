@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # Detection settings
     detection_confidence_threshold: float = 0.6
     max_claims_per_request: int = 500
+    precision_mode: str = "balanced"  # "balanced" | "strict"
 
     # Database
     db_path: str = "./cases.db"

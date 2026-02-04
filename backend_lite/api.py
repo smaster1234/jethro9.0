@@ -2333,7 +2333,35 @@ async def analyze_claims_internal(
     deduped = deduplicate_contradictions(deduped_contradictions)
     all_contradictions = [d["_obj"] for d in deduped]
 
-    # 5. Expert strict evaluation
+    # 5. Expert strict evaluation – hard gate: only pass strong candidates
+    #    precision_mode=strict: confidence ≥ 0.85, verifier required
+    #    precision_mode=balanced: confidence ≥ 0.75, or top-150 per type
+    from collections import defaultdict as _defaultdict
+    _precision_mode = os.getenv("PRECISION_MODE", "balanced").lower()
+    _MIN_CONF = 0.85 if _precision_mode == "strict" else 0.75
+    _MAX_PER_TYPE = 150
+    _by_type: dict = _defaultdict(list)
+    for _c in all_contradictions:
+        _ctype = _c.type.value if hasattr(_c.type, "value") else str(_c.type)
+        _by_type[_ctype].append(_c)
+    _gated: list = []
+    for _ctype, _clist in _by_type.items():
+        _clist.sort(key=lambda x: x.confidence, reverse=True)
+        for _idx, _c in enumerate(_clist):
+            _status = _c.status.value if hasattr(_c.status, "value") else str(_c.status)
+            if _precision_mode == "strict":
+                # Strict: only verified or high-confidence
+                if _status == "verified" or _c.confidence >= _MIN_CONF:
+                    _gated.append(_c)
+            else:
+                # Balanced: verified, high-confidence, or top-K per type
+                if _status == "verified" or _c.confidence >= _MIN_CONF or _idx < _MAX_PER_TYPE:
+                    _gated.append(_c)
+    logger.info(
+        "Expert gate (%s): %d/%d candidates passed (conf>=%.2f)",
+        _precision_mode, len(_gated), len(all_contradictions), _MIN_CONF,
+    )
+
     expert_claims = build_expert_claims(
         claims=claims,
         claims_data=claims_data,
@@ -2342,7 +2370,7 @@ async def analyze_claims_internal(
     expert_lookup = {c.claim_id: c for c in expert_claims}
     expert_result = analyze_expert_pairs(
         expert_claims=expert_claims,
-        candidate_contradictions=all_contradictions,
+        candidate_contradictions=_gated,
     )
     validation_flags.extend(expert_result.validation_flags)
     true_contradictions = expert_result.true_contradictions

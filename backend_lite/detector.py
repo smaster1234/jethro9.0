@@ -414,7 +414,13 @@ class RuleBasedDetector:
             for claim2, dates2 in claims_with_dates[i + 1:]:
                 # Check if claims are related
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.15:
+                if relatedness < self._relatedness_threshold:
+                    continue
+                # Require shared strong entities for temporal
+                if not self._has_shared_strong_entities(claim1.text, claim2.text):
+                    continue
+                # Skip if ordinals/qualifiers differentiate events
+                if self._events_differentiated(claim1.text, claim2.text):
                     continue
 
                 # Check for conflicting dates
@@ -597,7 +603,10 @@ class RuleBasedDetector:
             for claim2, times2 in claims_with_times[i + 1:]:
                 # Check if claims are related
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.15:
+                if relatedness < self._relatedness_threshold:
+                    continue
+                # Require shared strong entities for time
+                if not self._has_shared_strong_entities(claim1.text, claim2.text):
                     continue
 
                 # Check for conflicting times
@@ -734,7 +743,13 @@ class RuleBasedDetector:
             for claim2, amounts2 in claims_with_amounts[i + 1:]:
                 # Check if claims are related
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.15:
+                if relatedness < self._relatedness_threshold:
+                    continue
+                # Require shared strong entities for amount
+                if not self._has_shared_strong_entities(claim1.text, claim2.text):
+                    continue
+                # Skip if ordinals/qualifiers differentiate events
+                if self._events_differentiated(claim1.text, claim2.text):
                     continue
 
                 # Check for conflicting amounts of same type
@@ -874,7 +889,7 @@ class RuleBasedDetector:
             for claim2, attr2 in claims_with_attr[i + 1:]:
                 # Check if claims are related (same event/action)
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.15:
+                if relatedness < 0.30:
                     continue
 
                 # Check for conflicting attributions of same action type
@@ -972,7 +987,7 @@ class RuleBasedDetector:
             for claim2, pol2 in claims_with_presence[i + 1:]:
                 # Check if claims are related
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.20:  # Higher threshold for presence
+                if relatedness < 0.30:  # Higher threshold for presence
                     continue
 
                 # Conflict if opposite polarity
@@ -1054,7 +1069,7 @@ class RuleBasedDetector:
             for claim2, pol2 in claims_with_doc[i + 1:]:
                 # Check if claims are related (same document type)
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.20:
+                if relatedness < 0.30:
                     continue
 
                 # Conflict if opposite polarity
@@ -1134,7 +1149,7 @@ class RuleBasedDetector:
             for claim2, ids2 in claims_with_id[i + 1:]:
                 # Check if claims are related
                 relatedness = self._claims_relatedness(claim1.text, claim2.text)
-                if relatedness < 0.15:
+                if relatedness < 0.25:
                     continue
 
                 # Check for conflicting IDs of same type
@@ -1194,6 +1209,17 @@ class RuleBasedDetector:
     # Helper Methods
     # =========================================================================
 
+    @property
+    def _relatedness_threshold(self) -> float:
+        """Return appropriate relatedness threshold based on available backend.
+
+        heBERT embeddings produce well-distributed 0-1 scores → use 0.35.
+        TF-IDF/word-overlap produces very low scores for Hebrew → use 0.10.
+        """
+        if getattr(self, '_using_hebert', False):
+            return 0.35
+        return 0.08  # TF-IDF gives very low scores for Hebrew; keep minimal filter
+
     def _claims_relatedness(self, text1: str, text2: str) -> float:
         """Calculate relatedness score between two claims (0-1).
 
@@ -1205,10 +1231,26 @@ class RuleBasedDetector:
             from .hebrew_embeddings import get_embedder
             embedder = get_embedder()
             if embedder.is_available:
+                self._using_hebert = True
                 sim = embedder.similarity(text1, text2)
                 return sim
-        except Exception:
-            pass
+            else:
+                if not getattr(self, '_hebert_fallback_warned', False):
+                    logger.warning(
+                        "Legal-heBERT unavailable (error=%s) — "
+                        "falling back to TF-IDF/word-overlap for relatedness. "
+                        "Detection quality will be reduced.",
+                        embedder._load_error,
+                    )
+                    self._hebert_fallback_warned = True
+        except Exception as exc:
+            if not getattr(self, '_hebert_fallback_warned', False):
+                logger.warning(
+                    "Legal-heBERT import failed (%s) — "
+                    "falling back to TF-IDF/word-overlap for relatedness.",
+                    exc,
+                )
+                self._hebert_fallback_warned = True
 
         # Fallback: word overlap
         words1 = self._get_meaningful_words(text1)
@@ -1258,6 +1300,73 @@ class RuleBasedDetector:
     def _claims_related(self, text1: str, text2: str) -> bool:
         """Check if two claims are related (legacy method)"""
         return self._claims_relatedness(text1, text2) > 0.12
+
+    # Hebrew ordinals and instance differentiators
+    _ORDINAL_RE = re.compile(
+        r'(?:ה?ראשון(?:ה)?|ה?שני(?:ה|ית)?|ה?שלישי(?:ת)?|ה?רביעי(?:ת)?|'
+        r'ה?חמישי(?:ת)?|ה?שישי(?:ת)?|'
+        r"[א-ת]'(?=\s|$)|"  # Hebrew letter labels (א', ב', etc.)
+        r'מקדמה|יתרה|'  # advance vs balance
+        r'שלב\s+[א-ת]|חלק\s+[א-ת]|רבעון\s+ה?(?:ראשון|שני|שלישי|רביעי))',
+        re.UNICODE,
+    )
+    # Qualifying nouns that distinguish different items
+    _QUALIFIER_RE = re.compile(
+        r'(?:שכירות|ארנונה|ועד|ניהול|תיווך|אבטחה|ניקיון|'
+        r'פיטורין|הודעה\s+מוקדמת|בונוס|מענק|'
+        r"עו\"ד|רו\"ח|רופא|מהנדס|שמאי|"
+        r'תביעה\s+(?:עיקרית|שכנגד)|'
+        r'חומרי?\s+גלם|עבודה|ציוד|'
+        r'חשבון\s+[א-ת])',
+        re.UNICODE,
+    )
+
+    # Complementary/sequential action verb pairs that indicate different events
+    _COMPLEMENTARY_VERBS = [
+        ("עבד", "פוטר"), ("עבד", "התפטר"), ("שכר", "פוטר"),
+        ("יצא", "חזר"), ("נסע", "חזר"), ("נכנס", "יצא"),
+        ("קנה", "מכר"), ("רכש", "מכר"),
+        ("החל", "סיים"), ("פתח", "סגר"),
+        ("הגיש", "משך"), ("חתם", "ביטל"),
+    ]
+
+    def _events_differentiated(self, text1: str, text2: str) -> bool:
+        """Return True if texts describe different instances of the same
+        action type — ordinals, letter labels, qualifying nouns differ,
+        or complementary/sequential verbs indicate different events."""
+        # Check ordinals
+        ords1 = set(self._ORDINAL_RE.findall(text1))
+        ords2 = set(self._ORDINAL_RE.findall(text2))
+        if ords1 and ords2 and ords1.isdisjoint(ords2):
+            return True
+        # Check qualifying nouns (different expense/fee types, etc.)
+        quals1 = set(self._QUALIFIER_RE.findall(text1))
+        quals2 = set(self._QUALIFIER_RE.findall(text2))
+        if quals1 and quals2 and quals1.isdisjoint(quals2):
+            return True
+        # Check complementary action verbs (sequential events)
+        for v1, v2 in self._COMPLEMENTARY_VERBS:
+            if (v1 in text1 and v2 in text2) or (v2 in text1 and v1 in text2):
+                return True
+        return False
+
+    def _has_shared_strong_entities(self, text1: str, text2: str) -> bool:
+        """Return True if both texts share at least one strong named entity
+        (person, company, case number, ID) via the entity graph extractor."""
+        try:
+            from .entity_graph import get_entity_graph, EntityType
+            graph = get_entity_graph()
+            ents1 = set(
+                e[0] for e in graph._extract_entities(text1)
+                if e[1] in (EntityType.PERSON, EntityType.ROLE, EntityType.DOCUMENT, EntityType.EVENT)
+            )
+            ents2 = set(
+                e[0] for e in graph._extract_entities(text2)
+                if e[1] in (EntityType.PERSON, EntityType.ROLE, EntityType.DOCUMENT, EntityType.EVENT)
+            )
+            return bool(ents1 & ents2)
+        except Exception:
+            return True  # fail-open: don't block if graph unavailable
 
     def _get_meaningful_words(self, text: str) -> set:
         """Extract meaningful words from text"""

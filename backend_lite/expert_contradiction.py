@@ -334,21 +334,115 @@ def _detect_negation(text: str) -> bool:
     return _matches_any(text, _NEGATION_MARKERS)
 
 
+# ── Strong-entity extraction patterns ──
+_PERSON_NAME_RE = re.compile(
+    r'(?:מר|גב|גברת|עו"ד|ד"ר|פרופ|רו"ח)?\s*'
+    r'([\u0590-\u05FF]{2,})\s+([\u0590-\u05FF]{2,}(?:\s+[\u0590-\u05FF]{2,})?)',
+    re.UNICODE,
+)
+_ROLE_RE = re.compile(
+    r'(?:הנתבע|התובע|המשיב|המערער|המבקש|המשיבה|התובעת|הנתבעת|'
+    r'הנאשם|הנאשמת|העד|העדה|המומחה|השוכר|המשכיר|הקונה|המוכר|'
+    r'העובד|המעביד|החייב|הנושה|הערב)',
+    re.UNICODE,
+)
+_COMPANY_RE = re.compile(
+    r'(?:חברת|חברה|עמותת|קרן|בנק|ביטוח)\s+[\u0590-\u05FF\w\s]{2,40}(?:\s+בע"מ)?|'
+    r'[\u0590-\u05FF\w\s]{2,40}\s+(?:בע"מ|בע״מ)',
+    re.UNICODE,
+)
+_CASE_NUMBER_RE = re.compile(
+    r'(?:ת"א|ת\.א\.|ע"א|ע\.א\.|בג"ץ|בג"צ|רע"א|ה"פ|ע"ע|תא"מ|ת"ת)'
+    r'\s*\d{1,6}[/\-]\d{2,4}|'
+    r'\d{4,6}\s*-\s*\d{2}\s*-\s*\d{2,4}',
+    re.UNICODE,
+)
+_ID_NUMBER_RE = re.compile(r'(?:ת"ז|ת\.ז\.|ח"פ|ח\.פ\.)\s*\d{5,9}', re.UNICODE)
+_DOC_REF_RE = re.compile(
+    r'(?:הסכם|חוזה|תצהיר|כתב\s+(?:תביעה|הגנה|ערעור)|חשבונית|קבלה|מכתב|אישור)'
+    r'\s*(?:מיום\s+[\d/.\-]+|מס[\'׳]\s*\d+)?',
+    re.UNICODE,
+)
+_EVENT_RE = re.compile(
+    r'(?:הפגישה|האירוע|התאונה|החתימה|ההסכם|המשא\s*ומתן|'
+    r'הדיון|הישיבה|הבדיקה|הביקור|העסקה|ההעברה|התשלום|'
+    r'הפיטורין|ההתפטרות|המינוי)',
+    re.UNICODE,
+)
+_AMOUNT_RE = re.compile(
+    r'(?:₪|ש"ח|שקל|דולר|\$)\s*[\d,]+(?:\.\d+)?|'
+    r'[\d,]+(?:\.\d+)?\s*(?:₪|ש"ח|שקל|שקלים|דולר|דולרים|\$)',
+    re.UNICODE,
+)
+_DATE_RE = re.compile(
+    r'\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}|'
+    r'\d{1,2}\s*ב?(?:ינואר|פברואר|מרץ|מרס|אפריל|מאי|יוני|יולי|אוגוסט|ספטמבר|אוקטובר|נובמבר|דצמבר)\s*\d{4}',
+    re.UNICODE,
+)
+# General entities to EXCLUDE from strong entities
+_WEAK_TOKENS = {
+    "התובע", "הנתבע", "היה", "היתה", "סעיף", "לפי", "בית", "משפט",
+    "הודעה", "ביום", "בין", "לבין", "אשר", "כאשר", "אולם", "לפיכך",
+    "המבקש", "המשיב", "הנתבעת", "התובעת", "בהתאם", "במסגרת", "לעניין",
+}
+
+
 def _extract_entities(text: str, metadata: Optional[Dict[str, Any]]) -> List[str]:
-    entities = []
+    """Extract only *strong* entities — named people, companies, case numbers,
+    IDs, document references, events, and amounts.  General tokens and bare
+    numbers are excluded."""
+    entities: List[str] = []
+    seen: set = set()
+
+    def _add(value: str) -> None:
+        v = value.strip()
+        if v and v not in seen:
+            seen.add(v)
+            entities.append(v)
+
+    # 1. Metadata entities (highest priority)
     if metadata:
         meta_entities = metadata.get("entities")
         if isinstance(meta_entities, list):
-            entities.extend([str(e) for e in meta_entities if str(e).strip()])
-    tokens = _tokenize(text)
-    for token in tokens:
-        if token not in entities:
-            entities.append(token)
-    numbers = _NUM_RE.findall(text or "")
-    for num in numbers:
-        if num not in entities:
-            entities.append(num)
-    return entities
+            for e in meta_entities:
+                s = str(e).strip()
+                if s and s not in _WEAK_TOKENS:
+                    _add(s)
+
+    # 2. Regex-based strong entities
+    for m in _PERSON_NAME_RE.finditer(text or ""):
+        name = m.group().strip()
+        # Strip titles
+        name = re.sub(r'^(?:מר|גב|גברת|עו"ד|ד"ר|פרופ|רו"ח)\s+', '', name).strip()
+        if name and len(name) >= 4:
+            _add(name)
+
+    for m in _COMPANY_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _CASE_NUMBER_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _ID_NUMBER_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _DOC_REF_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _EVENT_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _AMOUNT_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _DATE_RE.finditer(text or ""):
+        _add(m.group())
+
+    for m in _ROLE_RE.finditer(text or ""):
+        _add(m.group())
+
+    # Filter out weak/generic tokens that passed through regex
+    return [e for e in entities if e not in _WEAK_TOKENS]
 
 
 def _extract_confidence(text: str, metadata: Optional[Dict[str, Any]]) -> float:
@@ -495,11 +589,51 @@ def _missing_claim_fields(
     return missing
 
 
+def _is_unique_id(entity: str) -> bool:
+    """Return True if *entity* is a case number, ת"ז, or ח"פ."""
+    return bool(_CASE_NUMBER_RE.search(entity) or _ID_NUMBER_RE.search(entity))
+
+
+def _is_strong_entity(entity: str) -> bool:
+    """Return True if *entity* qualifies as a strong entity (not a generic token)."""
+    if _is_unique_id(entity):
+        return True
+    if _AMOUNT_RE.fullmatch(entity):
+        return False  # amounts are not identity anchors
+    if entity in _WEAK_TOKENS:
+        return False
+    # Person names (≥ 4 chars), companies, docs, events, roles
+    return len(entity) >= 4 or _ROLE_RE.fullmatch(entity)
+
+
 def _subject_overlap(a: ExpertClaim, b: ExpertClaim) -> bool:
+    """Return True only when there is meaningful entity overlap:
+    • ≥ 2 shared strong entities, OR
+    • 1 shared strong entity  +  Jaccard ≥ 0.2, OR
+    • any shared unique-ID (case number / ת"ז / ח"פ).
+    """
     if not a.entities_relations or not b.entities_relations:
         return False
-    overlap = set(a.entities_relations) & set(b.entities_relations)
-    return len(overlap) >= 1
+
+    set_a = set(a.entities_relations)
+    set_b = set(b.entities_relations)
+    overlap = set_a & set_b
+
+    # Unique-ID match is sufficient on its own
+    if any(_is_unique_id(e) for e in overlap):
+        return True
+
+    strong_overlap = [e for e in overlap if _is_strong_entity(e)]
+
+    if len(strong_overlap) >= 2:
+        return True
+
+    if len(strong_overlap) == 1:
+        union = set_a | set_b
+        jaccard = len(overlap) / len(union) if union else 0.0
+        return jaccard >= 0.2
+
+    return False
 
 
 def _token_overlap(a: ExpertClaim, b: ExpertClaim) -> float:
@@ -533,11 +667,13 @@ def _extract_time_values(detector: RuleBasedDetector, claim: ExpertClaim) -> Lis
 
 
 def _time_conflict(detector: RuleBasedDetector, a: ExpertClaim, b: ExpertClaim) -> bool:
-    da = _extract_time_values(detector, a)
-    db = _extract_time_values(detector, b)
-    if not da or not db:
+    """Delegate to RuleBasedDetector._dates_conflict which handles partial
+    dates (year-only, month+year) correctly.  Raw set-disjointness is removed."""
+    dates_a = detector._extract_dates(a.text_span)
+    dates_b = detector._extract_dates(b.text_span)
+    if not dates_a or not dates_b:
         return False
-    return len(set(da) & set(db)) == 0
+    return detector._dates_conflict(dates_a, dates_b) is not None
 
 
 def _amount_conflict(detector: RuleBasedDetector, a: ExpertClaim, b: ExpertClaim) -> bool:
@@ -566,15 +702,61 @@ def _negation_conflict(a: ExpertClaim, b: ExpertClaim) -> bool:
     return a.negation != b.negation and _token_overlap(a, b) >= 0.2
 
 
+# ── Action / document / event overlap helpers for direct-conflict gate ──
+_ACTION_RE = re.compile(
+    r'(?:שילם|חתם|נכח|העביר|קיבל|מכר|רכש|שכר|פיטר|מינה|'
+    r'אישר|סירב|דרש|הודיע|הסכים|התחייב|ביצע|הפר|ביטל|חידש)',
+    re.UNICODE,
+)
+
+
+def _shared_action_or_event(a: ExpertClaim, b: ExpertClaim) -> bool:
+    """Return True if both claims share an action verb, document ref, or event."""
+    # Shared event entity
+    events_a = set(_EVENT_RE.findall(a.text_span or ""))
+    events_b = set(_EVENT_RE.findall(b.text_span or ""))
+    if events_a & events_b:
+        return True
+
+    # Shared document reference
+    docs_a = set(_DOC_REF_RE.findall(a.text_span or ""))
+    docs_b = set(_DOC_REF_RE.findall(b.text_span or ""))
+    if docs_a & docs_b:
+        return True
+
+    # Shared action verb
+    actions_a = set(_ACTION_RE.findall(a.text_span or ""))
+    actions_b = set(_ACTION_RE.findall(b.text_span or ""))
+    if actions_a & actions_b:
+        return True
+
+    return False
+
+
 def _direct_conflict(detector: RuleBasedDetector, a: ExpertClaim, b: ExpertClaim) -> Tuple[bool, str, Optional[ContradictionType]]:
-    if _time_conflict(detector, a, b):
-        return True, "time_conflict", ContradictionType.TEMPORAL_DATE
-    if _amount_conflict(detector, a, b):
-        return True, "amount_conflict", ContradictionType.QUANT_AMOUNT
-    if _negation_conflict(a, b):
+    """Declare a direct conflict only when subject_overlap is true AND the
+    claims share at least one action/document/event anchor.  Negation and
+    quantifier conflicts already imply topical overlap via token_overlap ≥ 0.2
+    so they bypass the action gate."""
+    has_subject = _subject_overlap(a, b)
+
+    # Negation / quantifier conflicts already require high token overlap
+    if _negation_conflict(a, b) and has_subject:
         return True, "negation_conflict", ContradictionType.FACTUAL
-    if _quantifier_conflict(a, b):
+    if _quantifier_conflict(a, b) and has_subject:
         return True, "quantifier_conflict", ContradictionType.FACTUAL
+
+    # Time and amount conflicts require subject overlap + shared action/event
+    if not has_subject:
+        return False, "no_subject_overlap", None
+
+    has_anchor = _shared_action_or_event(a, b)
+
+    if _time_conflict(detector, a, b) and has_anchor:
+        return True, "time_conflict", ContradictionType.TEMPORAL_DATE
+    if _amount_conflict(detector, a, b) and has_anchor:
+        return True, "amount_conflict", ContradictionType.QUANT_AMOUNT
+
     return False, "no_direct_conflict", None
 
 
