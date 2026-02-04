@@ -5,13 +5,18 @@ LLM Module
 Provides separate analyzer and verifier LLM clients.
 
 Architecture:
-- Analyzer (DeepSeek): Proposes contradiction candidates, optimized for recall
-- Verifier (Qwen): Confirms/rejects candidates, optimized for precision
+- Analyzer: Proposes contradiction candidates, optimized for recall
+- Verifier: Confirms/rejects candidates, optimized for precision
 
-Both use OpenRouter API with different models.
+Supports multiple backends:
+- Gemini (primary): Google Gemini API
+- OpenRouter (fallback): DeepSeek analyzer + Qwen verifier
 
 Environment Variables:
-- OPENROUTER_API_KEY: Required for both
+- LLM_MODE: none|gemini|openrouter|deepseek (default: none)
+- GEMINI_API_KEY: API key for Google Gemini (primary)
+- GEMINI_MODEL: Gemini model (default: gemini-1.5-flash)
+- OPENROUTER_API_KEY: API key for OpenRouter (fallback)
 - OPENROUTER_ANALYZER_MODEL: Analyzer model (default: deepseek/deepseek-chat)
 - OPENROUTER_VERIFIER_MODEL: Verifier model (default: qwen/qwen-2.5-72b-instruct)
 - VERIFIER_ENABLED: Enable verifier (default: true)
@@ -29,12 +34,14 @@ Usage:
 """
 
 from .openrouter_base import OpenRouterBaseClient, LLMCallResult
+from .gemini_client import GeminiBaseClient
 from .analyzer import AnalyzerLLM, AnalyzerResult, AnalyzerStats, get_analyzer
 from .verifier import VerifierLLM, VerifierResult, VerifierStats, get_verifier
 
 __all__ = [
-    # Base
+    # Base clients
     "OpenRouterBaseClient",
+    "GeminiBaseClient",
     "LLMCallResult",
     # Analyzer
     "AnalyzerLLM",

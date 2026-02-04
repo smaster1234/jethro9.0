@@ -2196,7 +2196,7 @@ async def analyze_claims_internal(
         try:
             llm_start = datetime.now()
 
-            # Get analyzer (DeepSeek via OpenRouter)
+            # Get analyzer (Gemini primary / OpenRouter fallback)
             analyzer = get_analyzer()
 
             if analyzer.enabled:
@@ -2271,7 +2271,7 @@ async def analyze_claims_internal(
             else:
                 validation_flags.append("ANALYZER_NOT_ENABLED")
 
-            # 3b. Run verifier on ambiguous/suspicious candidates (Qwen via OpenRouter)
+            # 3b. Run verifier on ambiguous/suspicious candidates (Gemini / Qwen fallback)
             verifier = get_verifier()
             if verifier.enabled and all_contradictions:
                 verifier.reset_stats()  # Reset for this analysis
@@ -3819,6 +3819,17 @@ async def startup_event():
         if val:
             logger.info(f"Build commit: {key}={val}")
             break
+
+    # Log RAG/embeddings status
+    logger.info(f"RAG Mode: {settings.rag_mode}")
+    try:
+        from .hebrew_embeddings import is_hebert_available
+        if is_hebert_available():
+            logger.info(f"Legal-heBERT: available (model={settings.hebert_model})")
+        else:
+            logger.info("Legal-heBERT: not available (transformers/torch not installed)")
+    except Exception:
+        logger.info("Legal-heBERT: not available")
 
     warnings = settings.validate_llm_config()
     for warning in warnings:

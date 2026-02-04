@@ -1,9 +1,9 @@
 """
-Analyzer LLM Client (DeepSeek via OpenRouter)
-=============================================
+Analyzer LLM Client (Gemini / DeepSeek via OpenRouter)
+======================================================
 
 Primary analyzer for contradiction detection.
-Uses DeepSeek model for cost-effective analysis.
+Uses Gemini (default) or DeepSeek via OpenRouter as fallback.
 
 Role:
 - Propose contradiction candidates
@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from .openrouter_base import OpenRouterBaseClient, LLMCallResult
-from ..llm_client import parse_json_robust
+from .gemini_client import GeminiBaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +96,31 @@ class AnalyzerResult:
     output_tokens: int = 0
 
 
+def _detect_llm_backend() -> str:
+    """
+    Detect which LLM backend to use for the analyzer.
+
+    Priority:
+    1. GEMINI_API_KEY set -> use Gemini
+    2. OPENROUTER_API_KEY set -> use OpenRouter (DeepSeek)
+    3. None available -> disabled
+    """
+    llm_mode = os.getenv("LLM_MODE", "none").lower()
+
+    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif llm_mode in ("openrouter", "deepseek") and os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    elif os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return "none"
+
+
 class AnalyzerLLM:
     """
-    Analyzer LLM for contradiction detection.
+    Analyzer LLM - supports Gemini (primary) and DeepSeek via OpenRouter (fallback).
 
     Supports OpenAI (GPT-4o), OpenRouter (DeepSeek), or any OpenAI-compatible API.
     Proposes contradiction candidates with broad detection.
@@ -109,28 +131,28 @@ class AnalyzerLLM:
     GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
     def __init__(self):
-        llm_mode = os.getenv("LLM_MODE", "none").lower()
-
-        # Resolve API key, model, and base URL based on LLM_MODE
-        if llm_mode == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            model = os.getenv("OPENAI_MODEL", "gpt-4o")
-            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
-        elif llm_mode == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
-            model = os.getenv("GEMINI_ANALYZER_MODEL", "gemini-2.5-pro-preview-03-25")
-            base_url = self.GEMINI_BASE_URL
-        else:
-            # OpenRouter fallback
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "google/gemini-2.5-pro-preview-03-25")
-            base_url = None  # Use default OpenRouter URL
-
-        self.enabled = bool(api_key)
-        self.model = model
+        backend = _detect_llm_backend()
+        self.backend = backend
         self.stats = AnalyzerStats()
 
-        if self.enabled:
+        if backend == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+            self.model = model
+            self.enabled = True
+            self.client = GeminiBaseClient(
+                api_key=api_key,
+                model=model,
+                timeout=60,
+                app_name="JETHRO Analyzer"
+            )
+            logger.info(f"Analyzer initialized with Gemini: {model}")
+
+        elif backend == "openrouter":
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "deepseek/deepseek-chat")
+            self.model = model
+            self.enabled = True
             self.client = OpenRouterBaseClient(
                 api_key=api_key,
                 model=model,
@@ -138,10 +160,13 @@ class AnalyzerLLM:
                 app_name="JETHRO Analyzer",
                 base_url=base_url,
             )
-            logger.info(f"Analyzer initialized with model: {model} (mode: {llm_mode})")
+            logger.info(f"Analyzer initialized with OpenRouter: {model}")
+
         else:
+            self.model = "none"
+            self.enabled = False
             self.client = None
-            logger.warning(f"Analyzer disabled: no API key set for mode '{llm_mode}'")
+            logger.warning("Analyzer disabled: no LLM API key configured")
 
     async def close(self):
         """Close the client"""
@@ -194,7 +219,7 @@ class AnalyzerLLM:
 
         if not result.success:
             self.stats.failed += 1
-            logger.error(f"Analyzer API call failed: {result.error}")
+            logger.error(f"Analyzer API call failed ({self.backend}): {result.error}")
             return AnalyzerResult(
                 success=False,
                 error=result.error
@@ -206,7 +231,7 @@ class AnalyzerLLM:
 
         # Log raw response for debugging
         content_preview = result.content[:500] if result.content else 'None'
-        logger.info(f"Analyzer response ({result.output_tokens} tokens): {content_preview}...")
+        logger.info(f"Analyzer response ({self.backend}, {result.output_tokens} tokens): {content_preview}...")
 
         # Parse JSON response using robust parser
         if not result.content or not result.content.strip():
@@ -244,6 +269,8 @@ class AnalyzerLLM:
     def get_stats(self) -> Dict[str, Any]:
         """Get analyzer statistics"""
         return {
+            "backend": self.backend,
+            "model": self.model,
             "calls": self.stats.calls,
             "successful": self.stats.successful,
             "failed": self.stats.failed,

@@ -3,17 +3,17 @@ Configuration for Contradiction Service
 =======================================
 
 Environment variables:
-- LLM_MODE: none|openrouter|openai|gemini|deepseek (default: none)
-- OPENAI_API_KEY: API key for OpenAI (GPT-4o)
-- OPENAI_MODEL: Model to use (default: gpt-4o)
-- OPENROUTER_API_KEY: API key for OpenRouter
+- LLM_MODE: none|openrouter|gemini|deepseek (default: none)
+- GEMINI_API_KEY: API key for Gemini (primary)
+- GEMINI_MODEL: Model to use (default: gemini-1.5-flash)
+- OPENROUTER_API_KEY: API key for OpenRouter (fallback)
 - OPENROUTER_MODEL: Model to use (default: anthropic/claude-3-haiku)
 - DEEPSEEK_API_KEY: API key for DeepSeek (analyzer)
 - DEEPSEEK_MODEL: Model to use (default: deepseek-chat)
 - VERIFIER_MODEL: Model for verification via OpenRouter (default: qwen/qwen-2.5-72b-instruct)
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
-- GEMINI_API_KEY: API key for Gemini
-- GEMINI_MODEL: Model to use (default: gemini-1.5-flash)
+- RAG_MODE: bm25|hebert|hybrid (default: hybrid)
+- HEBERT_MODEL: HuggingFace model name (default: avichr/Legal-heBERT)
 """
 
 import os
@@ -63,7 +63,8 @@ class Settings(BaseSettings):
 
     # RAG / Retrieval settings
     rag_top_k: int = 8
-    rag_mode: str = "bm25"  # bm25 | embeddings (future)
+    rag_mode: str = "hybrid"  # bm25 | hebert | hybrid
+    hebert_model: str = "avichr/Legal-heBERT"
 
     # Timeouts (seconds)
     llm_timeout: int = 30

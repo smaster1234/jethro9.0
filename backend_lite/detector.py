@@ -1195,17 +1195,22 @@ class RuleBasedDetector:
     # =========================================================================
 
     def _claims_relatedness(self, text1: str, text2: str) -> float:
-        """
-        Calculate relatedness score between two claims (0-1).
+        """Calculate relatedness score between two claims (0-1).
 
-        Uses a combined approach:
-        1. Semantic TF-IDF similarity (character n-grams) — captures morphological variants
-        2. Word overlap — fast exact-match baseline
-        3. Entity overlap — from entity graph if available
-
-        The combined score is weighted: 60% semantic + 25% word overlap + 15% entity.
+        Uses Legal-heBERT embeddings when available for semantic similarity,
+        falls back to word overlap.
         """
-        # Word overlap (fast baseline)
+        # Try HeBERT semantic similarity first
+        try:
+            from .hebrew_embeddings import get_embedder
+            embedder = get_embedder()
+            if embedder.is_available:
+                sim = embedder.similarity(text1, text2)
+                return sim
+        except Exception:
+            pass
+
+        # Fallback: word overlap
         words1 = self._get_meaningful_words(text1)
         words2 = self._get_meaningful_words(text2)
 

@@ -1,9 +1,9 @@
 """
-Verifier LLM Client (Qwen via OpenRouter)
-=========================================
+Verifier LLM Client (Gemini / Qwen via OpenRouter)
+===================================================
 
 Second opinion verifier for contradiction validation.
-Uses Qwen model for high precision verification.
+Uses Gemini (primary) or Qwen via OpenRouter (fallback).
 
 Role:
 - Binary decision only (yes/no/unclear)
@@ -18,110 +18,32 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from .openrouter_base import OpenRouterBaseClient
-from ..llm_client import parse_json_robust
+from .gemini_client import GeminiBaseClient
 
 logger = logging.getLogger(__name__)
 
 
-# Verifier system prompt (v4 – Hebrew, precision-first with 9-category outcome + few-shot)
-VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות בטקסטים משפטיים בעברית.
+# Verifier system prompt - strict and focused
+VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות משפטיות.
 
-תפקידך: לקבוע את היחס **המדויק** בין שתי טענות.
+התפקיד שלך: לקבוע אם שתי טענות סותרות זו את זו.
 
-## כללים קריטיים
-1. מספרי תיקים (17682-06-25, ת.א. 12345/20) הם **לא** תאריכים!
-2. אל תמציא עובדות — השתמש רק במה שנאמר בטענות.
-3. סתירה אמיתית (TRUE_CONTRADICTION) = אותו מושא + אותו מישור + אי-אפשר ששתיהן נכונות.
+חוקים קריטיים:
+1. מספרי תיקים כמו 17682-06-25 הם לא תאריכים - לעולם אל תסמן כסתירה זמנית
+2. אם הטענות מתייחסות לאירועים/נושאים שונים - אין סתירה
+3. לעולם אל תמציא עובדות שלא נאמרו בטענות
+4. סתירה = אותו נושא, שתי גרסאות שלא יכולות להיות נכונות שתיהן
 
-## מה **אינו** סתירה:
-- טענות צדדים שונים ("התובע טען X" מול "הנתבע טען Y") → DISAGREEMENT_BETWEEN_PARTIES
-- ציטוט/חוות דעת/הפניה לפסיקה מול ממצא → ROLE_OR_ATTRIBUTION_MISMATCH
-- תקופות/שלבים שונים → TIME_OR_STAGE_SHIFT
-- עובדה מול הערכה/טיעון משפטי → PLANE_MISMATCH
-- ניסוח עמום / מספרים משוערים → AMBIGUITY_OR_VAGUENESS
-- חוסר הקשר / שדות חסרים → INSUFFICIENT_CONTEXT
-- ניסוח מחדש של אותו רעיון → DUPLICATE_OR_RESTATEMENT
-- ניתן ליישוב דרך היקף/תנאי/כימות → APPARENT_TENSION_RESOLVABLE
-
-## דגשים לדיוק:
-- בדוק: זמן, כימות, תחולה, מודאליות (חובה/רשות/ייתכן), שלילה.
-- "לטענת X" = ציטוט/ייחוס, לא קביעה עובדתית.
-- קביעת בית משפט (ממצא) עומדת מעל טענת צד — אין סתירה ביניהם.
-- עדיף לפספס מאשר לדווח שגוי. דיוק חשוב מזכרון.
-
-## דוגמאות:
-
-### דוגמה 1 — TRUE_CONTRADICTION:
-טענה א: "ההסכם נחתם ביום 15.3.2024"
-טענה ב: "ההסכם נחתם ביום 22.3.2024"
-→ outcome: TRUE_CONTRADICTION, type: temporal, confidence: 0.95
-→ reason: אותו הסכם, שני תאריכי חתימה שונים שאינם יכולים להתקיים יחד.
-
-### דוגמה 2 — DISAGREEMENT_BETWEEN_PARTIES:
-טענה א: "התובע טען כי שילם את מלוא התמורה"
-טענה ב: "הנתבע טען כי התובע לא שילם דבר"
-→ outcome: DISAGREEMENT_BETWEEN_PARTIES, confidence: 0.90
-→ reason: שני צדדים שונים טוענים הפוך — זו מחלוקת בין צדדים, לא סתירה עובדתית.
-
-### דוגמה 3 — ROLE_OR_ATTRIBUTION_MISMATCH:
-טענה א: "בית המשפט קבע כי ההסכם בטל"
-טענה ב: "לטענת התובע, ההסכם תקף ומחייב"
-→ outcome: ROLE_OR_ATTRIBUTION_MISMATCH, confidence: 0.85
-→ reason: ממצא שיפוטי מול טענת צד — אלו מישורים שונים, לא סתירה.
-
-### דוגמה 4 — TIME_OR_STAGE_SHIFT:
-טענה א: "בשלב הראשון החברה הייתה רווחית"
-טענה ב: "החברה הפסידה סכומים ניכרים"
-→ outcome: TIME_OR_STAGE_SHIFT, confidence: 0.80
-→ reason: תקופות שונות — רווחיות בשלב א' לא סותרת הפסדים בשלב מאוחר.
-
-### דוגמה 5 — APPARENT_TENSION_RESOLVABLE:
-טענה א: "כל העובדים קיבלו בונוס"
-טענה ב: "חלק מהעובדים לא קיבלו בונוס"
-→ outcome: TRUE_CONTRADICTION, type: quant, confidence: 0.90
-→ reason: "כל" מול "חלק לא" = סתירה ישירה באותו מושא, ללא אפשרות יישוב.
-
-### דוגמה 6 — TRUE_CONTRADICTION (כמותי):
-טענה א: "התובע שילם סך של 50,000 ש"ח"
-טענה ב: "התובע שילם סך של 30,000 ש"ח בלבד"
-→ outcome: TRUE_CONTRADICTION, type: quant, confidence: 0.95
-→ reason: אותו תשלום, שני סכומים שונים שאינם יכולים להתקיים יחד.
-
-### דוגמה 7 — TRUE_CONTRADICTION (שעות):
-טענה א: "הפגישה התקיימה בשעה 10:00 בבוקר"
-טענה ב: "הפגישה התקיימה בשעה 16:00"
-→ outcome: TRUE_CONTRADICTION, type: temporal, confidence: 0.90
-→ reason: אותה פגישה, שני זמנים שונים שאינם יכולים להתקיים יחד.
-
-### דוגמה 8 — TRUE_CONTRADICTION (נוכחות):
-טענה א: "הנתבע היה נוכח בפגישה"
-טענה ב: "הנתבע לא היה נוכח בפגישה"
-→ outcome: TRUE_CONTRADICTION, type: presence, confidence: 0.95
-→ reason: סתירה ישירה — נוכח/לא נוכח באותו אירוע.
-
-### דוגמה 9 — AMBIGUITY_OR_VAGUENESS:
-טענה א: "הסכום שולם בסביבות חודש מרץ"
-טענה ב: "התשלום בוצע באפריל"
-→ outcome: AMBIGUITY_OR_VAGUENESS, confidence: 0.60
-→ reason: "בסביבות" = ניסוח עמום, ייתכן שמדובר באותו זמן.
-
-### דוגמה 10 — INSUFFICIENT_CONTEXT:
-טענה א: "החוזה נחתם"
-טענה ב: "לא נחתם הסכם"
-→ outcome: INSUFFICIENT_CONTEXT, confidence: 0.50
-→ reason: לא ברור אם מדובר באותו חוזה/הסכם — חסר הקשר.
-
-החזר JSON בלבד."""
+החזר JSON בלבד. בלי הסבר מחוץ ל-JSON."""
 
 
-VERIFIER_USER_TEMPLATE = """סכמה (בדיוק):
+VERIFIER_USER_TEMPLATE = """סכמה (מחייבת):
 {{
   "same_fact": "yes|no|unclear",
   "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
-  "reason": "הסבר קצר בעברית, עד 30 מילים",
-  "reconciliation_tried": "תיאור קצר של ניסיון יישוב"
+  "reason": "בעברית, עד 20 מילים"
 }}
 
 טענה א: {claim_a}
@@ -130,7 +52,7 @@ VERIFIER_USER_TEMPLATE = """סכמה (בדיוק):
 
 סוג מוצע: {suggested_type}
 
-קבע את היחס המדויק בין הטענות."""
+האם הטענות סותרות זו את זו?"""
 
 
 @dataclass
@@ -159,9 +81,32 @@ class VerifierResult:
     raw_response: Optional[Dict] = None
 
 
+def _detect_verifier_backend() -> str:
+    """
+    Detect which LLM backend to use for the verifier.
+
+    Priority:
+    1. LLM_MODE=gemini + GEMINI_API_KEY -> use Gemini
+    2. OPENROUTER_API_KEY set -> use OpenRouter (Qwen)
+    3. GEMINI_API_KEY set -> use Gemini
+    4. None -> disabled
+    """
+    llm_mode = os.getenv("LLM_MODE", "none").lower()
+
+    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif llm_mode in ("openrouter", "deepseek") and os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    elif os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return "none"
+
+
 class VerifierLLM:
     """
-    Verifier LLM for contradiction verification.
+    Verifier LLM - supports Gemini (primary) and Qwen via OpenRouter (fallback).
 
     Supports OpenAI (GPT-4o), OpenRouter (Qwen), or any OpenAI-compatible API.
     Provides second opinion on contradiction candidates.
@@ -172,31 +117,38 @@ class VerifierLLM:
     GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
     def __init__(self):
-        llm_mode = os.getenv("LLM_MODE", "none").lower()
+        backend = _detect_verifier_backend()
+        self.backend = backend
         enabled_str = os.getenv("VERIFIER_ENABLED", "true").lower()
         max_calls = int(os.getenv("VERIFIER_MAX_CALLS", "30"))
-
-        # Resolve API key, model, and base URL based on LLM_MODE
-        if llm_mode == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-            model = os.getenv("OPENAI_MODEL", "gpt-4o")
-            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/chat/completions"
-        elif llm_mode == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
-            model = os.getenv("GEMINI_VERIFIER_MODEL", "gemini-2.0-flash-001")
-            base_url = self.GEMINI_BASE_URL
-        else:
-            # OpenRouter fallback
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "google/gemini-2.0-flash-001")
-            base_url = None  # Use default OpenRouter URL
-
-        self.enabled = enabled_str == "true" and bool(api_key)
-        self.model = model
         self.max_calls = max_calls
         self.stats = VerifierStats()
 
-        if self.enabled:
+        if enabled_str != "true":
+            self.enabled = False
+            self.client = None
+            self.model = "none"
+            logger.info("Verifier disabled via VERIFIER_ENABLED=false")
+            return
+
+        if backend == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+            self.model = model
+            self.enabled = True
+            self.client = GeminiBaseClient(
+                api_key=api_key,
+                model=model,
+                timeout=30,
+                app_name="JETHRO Verifier"
+            )
+            logger.info(f"Verifier initialized with Gemini: {model}")
+
+        elif backend == "openrouter":
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+            self.model = model
+            self.enabled = True
             self.client = OpenRouterBaseClient(
                 api_key=api_key,
                 model=model,
@@ -204,13 +156,13 @@ class VerifierLLM:
                 app_name="JETHRO Verifier",
                 base_url=base_url,
             )
-            logger.info(f"Verifier initialized with model: {model} (mode: {llm_mode})")
+            logger.info(f"Verifier initialized with OpenRouter: {model}")
+
         else:
+            self.model = "none"
+            self.enabled = False
             self.client = None
-            if not api_key:
-                logger.warning(f"Verifier disabled: no API key set for mode '{llm_mode}'")
-            else:
-                logger.info("Verifier disabled via VERIFIER_ENABLED=false")
+            logger.warning("Verifier disabled: no LLM API key configured")
 
     async def close(self):
         """Close the client"""
@@ -371,6 +323,8 @@ class VerifierLLM:
     def get_stats(self) -> Dict[str, Any]:
         """Get verifier statistics"""
         return {
+            "backend": self.backend,
+            "model": self.model,
             "calls": self.stats.calls,
             "promoted": self.stats.promoted,
             "rejected": self.stats.rejected,
