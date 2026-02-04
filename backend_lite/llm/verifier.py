@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from .openrouter_base import OpenRouterBaseClient
 from .gemini_client import GeminiBaseClient
+from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class VerifierLLM:
                 model=model,
                 timeout=30,
                 app_name="JETHRO Verifier",
-                base_url=base_url,
+                base_url=os.getenv("OPENROUTER_BASE_URL"),
             )
             logger.info(f"Verifier initialized with OpenRouter: {model}")
 

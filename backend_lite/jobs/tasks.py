@@ -910,9 +910,19 @@ async def task_analyze_case(
                     analyzer = get_analyzer()
                     if analyzer and analyzer.enabled:
                         update_job_progress(62, "Running LLM analyzer")
+                        # Convert Claim objects to dicts for LLM analyzer
+                        claims_for_llm = [
+                            {"id": getattr(c, "id", str(i)), "text": getattr(c, "text", str(c))}
+                            for i, c in enumerate(all_claims, 1)
+                        ]
+                        # Append few-shot examples to default system prompt if available
+                        from ..llm.analyzer import ANALYZER_SYSTEM_PROMPT
+                        custom_prompt = None
+                        if few_shot_section:
+                            custom_prompt = ANALYZER_SYSTEM_PROMPT + "\n\n" + few_shot_section
                         analyzer_result = await analyzer.analyze(
-                            all_claims,
-                            extra_system_context=few_shot_section,
+                            claims_for_llm,
+                            system_prompt=custom_prompt,
                         )
                         if analyzer_result and hasattr(analyzer_result, 'contradictions'):
                             llm_candidates = analyzer_result.contradictions
@@ -940,6 +950,16 @@ async def task_analyze_case(
                         getattr(c, 'claim2', c).id if hasattr(c, 'claim2') else str(c.get('claim2_id', '')),
                     ]))
                     llm_pairs.add(pair_key)
+
+                # Build LLM confidence lookup: pair_key -> confidence from analyzer
+                llm_confidence_map = {}
+                for c in llm_candidates:
+                    c1_id = getattr(c, 'claim1', c).id if hasattr(c, 'claim1') else str(c.get('claim1_id', ''))
+                    c2_id = getattr(c, 'claim2', c).id if hasattr(c, 'claim2') else str(c.get('claim2_id', ''))
+                    pk = tuple(sorted([c1_id, c2_id]))
+                    conf = c.get('confidence', None) if isinstance(c, dict) else getattr(c, 'confidence', None)
+                    if conf is not None:
+                        llm_confidence_map[pk] = float(conf)
 
                 # Track which engine found each contradiction
                 both_engine_pairs = rule_pairs & llm_pairs
@@ -1079,7 +1099,7 @@ async def task_analyze_case(
 
                     signals = ContradictionSignals(
                         rule_confidence=contr.confidence,
-                        llm_confidence=None,  # analyzer doesn't give per-contradiction confidence
+                        llm_confidence=llm_confidence_map.get(pair_key),
                         verifier_confidence=verifier_confidences.get(cid),
                         semantic_similarity=sem_score,
                         entity_overlap=ent_overlap,

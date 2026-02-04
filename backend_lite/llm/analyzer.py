@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from .openrouter_base import OpenRouterBaseClient, LLMCallResult
 from .gemini_client import GeminiBaseClient
+from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class AnalyzerLLM:
                 model=model,
                 timeout=120,
                 app_name="JETHRO Analyzer",
-                base_url=base_url,
+                base_url=os.getenv("OPENROUTER_BASE_URL"),
             )
             logger.info(f"Analyzer initialized with OpenRouter: {model}")
 
