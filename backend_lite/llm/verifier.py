@@ -1,9 +1,9 @@
 """
-Verifier LLM Client (Qwen via OpenRouter)
-=========================================
+Verifier LLM Client (Gemini / Qwen via OpenRouter)
+===================================================
 
 Second opinion verifier for contradiction validation.
-Uses Qwen model for high precision verification.
+Uses Gemini (primary) or Qwen via OpenRouter (fallback).
 
 Role:
 - Binary decision only (yes/no/unclear)
@@ -18,40 +18,41 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from .openrouter_base import OpenRouterBaseClient
+from .gemini_client import GeminiBaseClient
 
 logger = logging.getLogger(__name__)
 
 
 # Verifier system prompt - strict and focused
-VERIFIER_SYSTEM_PROMPT = """You are a verification judge for legal contradictions.
+VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות משפטיות.
 
-Your job: Determine if two claims contradict each other.
+התפקיד שלך: לקבוע אם שתי טענות סותרות זו את זו.
 
-Critical Rules:
-1. Case numbers like 17682-06-25 are NOT dates - never flag as temporal contradiction
-2. If claims refer to different events/subjects - no contradiction
-3. Never invent facts not stated in the claims
-4. Contradiction = same subject, two versions that cannot both be true
+חוקים קריטיים:
+1. מספרי תיקים כמו 17682-06-25 הם לא תאריכים - לעולם אל תסמן כסתירה זמנית
+2. אם הטענות מתייחסות לאירועים/נושאים שונים - אין סתירה
+3. לעולם אל תמציא עובדות שלא נאמרו בטענות
+4. סתירה = אותו נושא, שתי גרסאות שלא יכולות להיות נכונות שתיהן
 
-Return ONLY valid JSON. No explanation outside JSON."""
+החזר JSON בלבד. בלי הסבר מחוץ ל-JSON."""
 
 
-VERIFIER_USER_TEMPLATE = """Schema (strict):
+VERIFIER_USER_TEMPLATE = """סכמה (מחייבת):
 {{
   "same_fact": "yes|no|unclear",
   "contradiction": "yes|no|unclear",
   "type": "temporal|quant|presence|actor|document|identity|none",
   "confidence": 0.0-1.0,
-  "reason": "Hebrew, max 20 words"
+  "reason": "בעברית, עד 20 מילים"
 }}
 
-Claim A: {claim_a}
+טענה א: {claim_a}
 
-Claim B: {claim_b}
+טענה ב: {claim_b}
 
-Suggested type: {suggested_type}
+סוג מוצע: {suggested_type}
 
-Are these claims contradictory?"""
+האם הטענות סותרות זו את זו?"""
 
 
 @dataclass
@@ -78,39 +79,83 @@ class VerifierResult:
     raw_response: Optional[Dict] = None
 
 
+def _detect_verifier_backend() -> str:
+    """
+    Detect which LLM backend to use for the verifier.
+
+    Priority:
+    1. LLM_MODE=gemini + GEMINI_API_KEY -> use Gemini
+    2. OPENROUTER_API_KEY set -> use OpenRouter (Qwen)
+    3. GEMINI_API_KEY set -> use Gemini
+    4. None -> disabled
+    """
+    llm_mode = os.getenv("LLM_MODE", "none").lower()
+
+    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif llm_mode in ("openrouter", "deepseek") and os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    elif os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    elif os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return "none"
+
+
 class VerifierLLM:
     """
-    Verifier LLM using Qwen via OpenRouter.
+    Verifier LLM - supports Gemini (primary) and Qwen via OpenRouter (fallback).
 
     Provides second opinion on contradiction candidates.
     Optimized for precision - filters false positives.
     """
 
     def __init__(self):
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+        backend = _detect_verifier_backend()
+        self.backend = backend
         enabled_str = os.getenv("VERIFIER_ENABLED", "true").lower()
         max_calls = int(os.getenv("VERIFIER_MAX_CALLS", "30"))
-
-        self.enabled = enabled_str == "true" and bool(api_key)
-        self.model = model
         self.max_calls = max_calls
         self.stats = VerifierStats()
 
-        if self.enabled:
+        if enabled_str != "true":
+            self.enabled = False
+            self.client = None
+            self.model = "none"
+            logger.info("Verifier disabled via VERIFIER_ENABLED=false")
+            return
+
+        if backend == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+            self.model = model
+            self.enabled = True
+            self.client = GeminiBaseClient(
+                api_key=api_key,
+                model=model,
+                timeout=30,
+                app_name="JETHRO Verifier"
+            )
+            logger.info(f"Verifier initialized with Gemini: {model}")
+
+        elif backend == "openrouter":
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            model = os.getenv("OPENROUTER_VERIFIER_MODEL", "qwen/qwen-2.5-72b-instruct")
+            self.model = model
+            self.enabled = True
             self.client = OpenRouterBaseClient(
                 api_key=api_key,
                 model=model,
                 timeout=30,
                 app_name="JETHRO Verifier"
             )
-            logger.info(f"Verifier initialized with model: {model}")
+            logger.info(f"Verifier initialized with OpenRouter: {model}")
+
         else:
+            self.model = "none"
+            self.enabled = False
             self.client = None
-            if not api_key:
-                logger.warning("Verifier disabled: OPENROUTER_API_KEY not set")
-            else:
-                logger.info("Verifier disabled via VERIFIER_ENABLED=false")
+            logger.warning("Verifier disabled: no LLM API key configured")
 
     async def close(self):
         """Close the client"""
@@ -217,6 +262,8 @@ class VerifierLLM:
     def get_stats(self) -> Dict[str, Any]:
         """Get verifier statistics"""
         return {
+            "backend": self.backend,
+            "model": self.model,
             "calls": self.stats.calls,
             "promoted": self.stats.promoted,
             "rejected": self.stats.rejected,

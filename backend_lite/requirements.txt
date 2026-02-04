@@ -31,6 +31,11 @@ chardet>=5.0.0  # Encoding detection
 python-docx>=1.1.0  # DOCX parsing
 PyPDF2>=3.0.0  # PDF parsing
 
+# NLP / Hebrew Legal Embeddings (Legal-heBERT)
+transformers>=4.30.0
+torch>=2.0.0  # CPU inference for Legal-heBERT
+numpy>=1.24.0
+
 # Storage
 boto3>=1.34.0  # S3-compatible storage
 

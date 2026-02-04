@@ -958,7 +958,22 @@ class RuleBasedDetector:
     # =========================================================================
 
     def _claims_relatedness(self, text1: str, text2: str) -> float:
-        """Calculate relatedness score between two claims (0-1)"""
+        """Calculate relatedness score between two claims (0-1).
+
+        Uses Legal-heBERT embeddings when available for semantic similarity,
+        falls back to word overlap.
+        """
+        # Try HeBERT semantic similarity first
+        try:
+            from .hebrew_embeddings import get_embedder
+            embedder = get_embedder()
+            if embedder.is_available:
+                sim = embedder.similarity(text1, text2)
+                return sim
+        except Exception:
+            pass
+
+        # Fallback: word overlap
         words1 = self._get_meaningful_words(text1)
         words2 = self._get_meaningful_words(text2)
 

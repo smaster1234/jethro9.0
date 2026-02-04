@@ -1,24 +1,30 @@
 """
-BM25 Retrieval Module for Case-RAG
-===================================
+BM25 + HeBERT Retrieval Module for Case-RAG
+=============================================
 
-Implements BM25 (Best Match 25) for candidate pair generation.
-Used to find paragraphs that are likely to contradict each other.
+Implements BM25 and Legal-heBERT embeddings for candidate pair generation.
+Used to find paragraphs/claims that are likely to contradict each other.
 
 Key Features:
 - Hebrew text tokenization
 - BM25 scoring with tunable parameters
-- TF-IDF fallback
+- Legal-heBERT dense embeddings (avichr/Legal-heBERT)
+- Hybrid retrieval (BM25 + HeBERT)
 - Candidate pair generation for contradiction detection
 """
 
 import math
 import re
+import logging
 from collections import Counter
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 
+import numpy as np
+
 from .models import Paragraph
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -280,22 +286,278 @@ class BM25Index:
         return results[:top_k]
 
 
+class HeBERTIndex:
+    """
+    Dense embedding index using Legal-heBERT (avichr/Legal-heBERT).
+
+    Uses BERT embeddings for semantic similarity instead of keyword matching.
+    Better at finding paraphrases and semantically related paragraphs.
+    """
+
+    def __init__(self, min_similarity: float = 0.3):
+        self.min_similarity = min_similarity
+        self.paragraphs: Dict[str, Paragraph] = {}
+        self.embeddings: Optional[np.ndarray] = None
+        self.para_ids: List[str] = []
+        self._embedder = None
+        self.n_docs = 0
+
+    def _get_embedder(self):
+        """Lazy-load the embedder"""
+        if self._embedder is None:
+            from .hebrew_embeddings import get_embedder
+            self._embedder = get_embedder()
+        return self._embedder
+
+    @property
+    def is_available(self) -> bool:
+        """Check if HeBERT model is loaded"""
+        embedder = self._get_embedder()
+        return embedder.is_available
+
+    def add_paragraphs(self, paragraphs: List[Paragraph]):
+        """Add paragraphs and compute embeddings"""
+        if not paragraphs:
+            return
+
+        embedder = self._get_embedder()
+        if not embedder.is_available:
+            logger.warning("HeBERT not available, skipping embedding index")
+            return
+
+        texts = [p.text for p in paragraphs]
+        self.embeddings = embedder.embed_batch(texts)
+
+        if self.embeddings is None:
+            logger.warning("HeBERT embedding failed")
+            return
+
+        self.para_ids = []
+        for p in paragraphs:
+            self.paragraphs[p.id] = p
+            self.para_ids.append(p.id)
+
+        self.n_docs = len(paragraphs)
+        logger.info(f"HeBERT index built: {self.n_docs} paragraphs, {self.embeddings.shape[1]}d embeddings")
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        exclude_ids: Optional[Set[str]] = None
+    ) -> List[RetrievalResult]:
+        """Search for similar paragraphs using embedding similarity"""
+        if self.embeddings is None or self.n_docs == 0:
+            return []
+
+        embedder = self._get_embedder()
+        query_emb = embedder.embed(query)
+        if query_emb is None:
+            return []
+
+        exclude_ids = exclude_ids or set()
+
+        # Cosine similarity (embeddings are normalized)
+        similarities = np.dot(self.embeddings, query_emb)
+
+        # Get top-k indices
+        scored = []
+        for i, sim in enumerate(similarities):
+            para_id = self.para_ids[i]
+            if para_id in exclude_ids:
+                continue
+            if sim >= self.min_similarity:
+                scored.append((i, float(sim)))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        results = []
+        for idx, score in scored[:top_k]:
+            para_id = self.para_ids[idx]
+            para = self.paragraphs[para_id]
+            results.append(RetrievalResult(
+                paragraph_id=para_id,
+                doc_id=para.doc_id,
+                text=para.text,
+                score=score,
+                paragraph_index=para.paragraph_index
+            ))
+
+        return results
+
+    def find_similar_paragraphs(
+        self,
+        paragraph: Paragraph,
+        top_k: int = 5,
+        min_score: float = 0.3
+    ) -> List[RetrievalResult]:
+        """Find similar paragraphs from other documents"""
+        same_doc_ids = {
+            pid for pid, para in self.paragraphs.items()
+            if para.doc_id == paragraph.doc_id
+        }
+
+        results = self.search(
+            query=paragraph.text,
+            top_k=top_k * 2,
+            exclude_ids=same_doc_ids
+        )
+
+        results = [r for r in results if r.score >= min_score]
+        return results[:top_k]
+
+
+class HybridIndex:
+    """
+    Hybrid retrieval combining BM25 (keyword) + HeBERT (semantic).
+
+    Merges scores from both indices using weighted combination.
+    Falls back to BM25-only if HeBERT is unavailable.
+    """
+
+    def __init__(
+        self,
+        bm25_weight: float = 0.3,
+        hebert_weight: float = 0.7,
+        min_score: float = 0.1
+    ):
+        self.bm25_weight = bm25_weight
+        self.hebert_weight = hebert_weight
+        self.min_score = min_score
+        self.bm25 = BM25Index()
+        self.hebert = HeBERTIndex()
+        self.n_docs = 0
+
+    def add_paragraphs(self, paragraphs: List[Paragraph]):
+        """Add paragraphs to both indices"""
+        self.bm25.add_paragraphs(paragraphs)
+
+        if self.hebert.is_available:
+            self.hebert.add_paragraphs(paragraphs)
+            self.n_docs = self.hebert.n_docs
+            logger.info(f"Hybrid index built: BM25 + HeBERT ({self.n_docs} docs)")
+        else:
+            self.n_docs = self.bm25.n_docs
+            logger.info(f"Hybrid index built: BM25 only ({self.n_docs} docs, HeBERT unavailable)")
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        exclude_ids: Optional[Set[str]] = None
+    ) -> List[RetrievalResult]:
+        """Search using hybrid scoring"""
+        bm25_results = self.bm25.search(query, top_k=top_k * 2, exclude_ids=exclude_ids)
+
+        # If HeBERT unavailable, return BM25 only
+        if self.hebert.embeddings is None:
+            return bm25_results[:top_k]
+
+        hebert_results = self.hebert.search(query, top_k=top_k * 2, exclude_ids=exclude_ids)
+
+        # Merge scores
+        scores: Dict[str, float] = {}
+        result_map: Dict[str, RetrievalResult] = {}
+
+        # Normalize BM25 scores to 0-1
+        max_bm25 = max((r.score for r in bm25_results), default=1.0) or 1.0
+        for r in bm25_results:
+            norm_score = r.score / max_bm25
+            scores[r.paragraph_id] = self.bm25_weight * norm_score
+            result_map[r.paragraph_id] = r
+
+        # Add HeBERT scores (already 0-1)
+        for r in hebert_results:
+            if r.paragraph_id in scores:
+                scores[r.paragraph_id] += self.hebert_weight * r.score
+            else:
+                scores[r.paragraph_id] = self.hebert_weight * r.score
+                result_map[r.paragraph_id] = r
+
+        # Sort by combined score
+        sorted_ids = sorted(scores.keys(), key=lambda pid: scores[pid], reverse=True)
+
+        results = []
+        for pid in sorted_ids[:top_k]:
+            r = result_map[pid]
+            results.append(RetrievalResult(
+                paragraph_id=r.paragraph_id,
+                doc_id=r.doc_id,
+                text=r.text,
+                score=scores[pid],
+                paragraph_index=r.paragraph_index
+            ))
+
+        return results
+
+    def find_similar_paragraphs(
+        self,
+        paragraph: Paragraph,
+        top_k: int = 5,
+        min_score: float = 0.1
+    ) -> List[RetrievalResult]:
+        """Find similar paragraphs using hybrid scoring"""
+        same_doc_ids = {
+            pid for pid, para in self.bm25.paragraphs.items()
+            if para.doc_id == paragraph.doc_id
+        }
+
+        results = self.search(
+            query=paragraph.text,
+            top_k=top_k * 2,
+            exclude_ids=same_doc_ids
+        )
+
+        results = [r for r in results if r.score >= min_score]
+        return results[:top_k]
+
+
+def _create_index(mode: str = "auto"):
+    """Create retrieval index based on mode.
+
+    Args:
+        mode: "bm25", "hebert", "hybrid", or "auto"
+              "auto" uses HeBERT if available, otherwise BM25
+    """
+    import os
+    if mode == "auto":
+        mode = os.environ.get("RAG_MODE", "hybrid")
+
+    if mode == "hebert":
+        from .hebrew_embeddings import is_hebert_available
+        if is_hebert_available():
+            return HeBERTIndex()
+        logger.warning("HeBERT requested but unavailable, falling back to BM25")
+        return BM25Index()
+
+    elif mode == "hybrid":
+        from .hebrew_embeddings import is_hebert_available
+        if is_hebert_available():
+            return HybridIndex()
+        logger.info("Hybrid mode: HeBERT unavailable, using BM25")
+        return BM25Index()
+
+    else:  # bm25
+        return BM25Index()
+
+
 class CandidatePairGenerator:
     """
     Generate candidate paragraph pairs for contradiction detection.
 
-    Uses BM25 to find paragraphs that discuss similar topics,
-    which are more likely to contain contradictions.
+    Uses BM25, HeBERT, or Hybrid index to find paragraphs
+    that discuss similar topics for potential contradiction detection.
     """
 
-    def __init__(self, top_k: int = 8, min_score: float = 0.1):
+    def __init__(self, top_k: int = 8, min_score: float = 0.1, mode: str = "auto"):
         self.top_k = top_k
         self.min_score = min_score
-        self.index = BM25Index()
+        self.mode = mode
+        self.index = _create_index(mode)
 
     def build_index(self, paragraphs: List[Paragraph]):
-        """Build BM25 index from paragraphs"""
-        self.index = BM25Index()
+        """Build index from paragraphs"""
+        self.index = _create_index(self.mode)
         self.index.add_paragraphs(paragraphs)
 
     def generate_candidates(
