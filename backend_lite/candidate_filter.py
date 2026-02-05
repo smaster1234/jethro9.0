@@ -32,6 +32,7 @@ from .extractor import (
     SPEAKER_MODE_PARTY_CLAIM,
     SPEAKER_MODE_QUOTE,
 )
+from .reconciler import _normalize_entity
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +53,21 @@ def passes_hard_filters(a: Claim, b: Claim) -> bool:
     If False, skip this pair entirely.
 
     Cursor 5.2 §4 — hard gates:
-    - Both claims must have speaker_mode set
+    - Both claims must have speaker_mode set (with FACT/FACT fallback)
     - Both claims must have plane set (and be comparable)
     - Two party claims → route to DISAGREEMENT, never TRUE_CONTRADICTION
     - Entity/subject overlap required
     """
     # Filter 0: speaker_mode must be present on both (Cursor 5.2 §4)
+    # P0 fallback: if speaker_mode missing but both are FACT/FACT with strong
+    # subject overlap, allow the pair through — downstream reconciler will
+    # handle the INSUFFICIENT_CONTEXT gate.
     if not a.speaker_mode or not b.speaker_mode:
-        return False
+        if (a.plane == PLANE_FACT and b.plane == PLANE_FACT
+                and _strong_subject_overlap(a, b)):
+            pass  # fallback: allow FACT/FACT with strong overlap
+        else:
+            return False
 
     # Filter 1: entity / subject overlap
     if not _entity_overlap(a, b):
@@ -75,6 +83,58 @@ def passes_hard_filters(a: Claim, b: Claim) -> bool:
         return False
 
     return True
+
+
+# Weak tokens that should not count as "strong entity" for subject overlap
+_WEAK_TOKENS = {
+    'התובע', 'הנתבע', 'המשיב', 'המערער', 'המבקש', 'התובעת', 'הנתבעת',
+    'המשיבה', 'המערערת', 'המבקשת', 'תובע', 'נתבע', 'משיב', 'מערער',
+    'סעיף', 'חוק', 'תקנה', 'ביום', 'בית המשפט', 'ביהמש',
+}
+
+# Pattern for unique identifiers (case numbers, ID numbers, company IDs)
+_UNIQUE_ID_PATTERN = re.compile(
+    r'(?:\d{3,6}-\d{2}-\d{2})'     # case number: 12345-01-22
+    r'|(?:\d{9})'                    # Israeli ID (9 digits)
+    r'|(?:\d{7,8})'                  # Company ID (7-8 digits)
+)
+
+
+def _strong_subject_overlap(a: Claim, b: Claim) -> bool:
+    """
+    Deterministic, conservative subject overlap for the P0 fallback.
+
+    Returns True if:
+    - Both share a unique identifier (case no / ID / company no), OR
+    - At least 2 strong (non-weak) entities are shared, OR
+    - Jaccard on strong entities >= 0.20
+    """
+    ea = set(a.entities or [])
+    eb = set(b.entities or [])
+
+    # 1) Unique identifier overlap
+    ids_a = set(_UNIQUE_ID_PATTERN.findall(a.text))
+    ids_b = set(_UNIQUE_ID_PATTERN.findall(b.text))
+    if ids_a and ids_b and (ids_a & ids_b):
+        return True
+
+    # 2) Strong entity overlap (normalize + filter weak tokens)
+    strong_a = {_normalize_entity(e) for e in ea} - {w.lower() for w in _WEAK_TOKENS}
+    strong_b = {_normalize_entity(e) for e in eb} - {w.lower() for w in _WEAK_TOKENS}
+    strong_a.discard('')
+    strong_b.discard('')
+
+    shared = strong_a & strong_b
+    if len(shared) >= 2:
+        return True
+
+    # 3) Jaccard on strong entities >= 0.20
+    if strong_a and strong_b:
+        jaccard = len(shared) / len(strong_a | strong_b)
+        if jaccard >= 0.20:
+            return True
+
+    return False
 
 
 def _entity_overlap(a: Claim, b: Claim) -> bool:

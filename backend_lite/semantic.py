@@ -27,14 +27,46 @@ Usage:
     neighbors = engine.find_related(claim_a, top_k=10)  # ANN search
 """
 
+import json
 import math
 import logging
 import hashlib
+import os
 from typing import List, Dict, Tuple, Optional, Set
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Hebrew synonym map for TF-IDF fallback canonicalization
+# ---------------------------------------------------------------------------
+_SYNONYM_MAP: Optional[Dict[str, str]] = None
+
+
+def _load_synonym_map() -> Dict[str, str]:
+    """Load and build a word→canonical synonym map from the JSON config."""
+    global _SYNONYM_MAP
+    if _SYNONYM_MAP is not None:
+        return _SYNONYM_MAP
+
+    _SYNONYM_MAP = {}
+    json_path = os.path.join(os.path.dirname(__file__), 'hebrew_synonyms.json')
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        for canonical, synonyms in data.items():
+            if canonical.startswith('_'):
+                continue
+            _SYNONYM_MAP[canonical] = canonical
+            for syn in synonyms:
+                _SYNONYM_MAP[syn] = canonical
+        logger.info("Loaded %d synonym mappings from %s", len(_SYNONYM_MAP), json_path)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.warning("Could not load synonym map from %s: %s", json_path, e)
+        _SYNONYM_MAP = {}
+    return _SYNONYM_MAP
 
 
 @dataclass
@@ -268,11 +300,14 @@ class SemanticEngine:
         return text
 
     def _get_meaningful_words(self, text: str) -> List[str]:
-        """Extract meaningful words (skip stopwords and short words)."""
+        """Extract meaningful words (skip stopwords and short words).
+        Applies synonym canonicalization for TF-IDF fallback path."""
+        syn_map = _load_synonym_map()
         words = []
         for word in text.split():
             if len(word) >= 3 and word not in self._stopwords:
-                words.append(word)
+                # Canonicalize synonyms so related terms share the same feature
+                words.append(syn_map.get(word, word))
         return words
 
     # =========================================================================

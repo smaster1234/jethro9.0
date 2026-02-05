@@ -178,12 +178,18 @@ def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     if na in nb or nb in na:
         return True
 
-    # Last-word match (handles "יוסי כהן" vs "מר כהן")
+    # Last-word match: require last name match AND at least one additional
+    # matching token (to avoid "יוסי כהן" == "דוד כהן" false positives).
+    # Single last-name-only ("כהן") is not sufficient.
     words_a = na.split()
     words_b = nb.split()
-    if words_a and words_b:
+    if words_a and words_b and len(words_a) >= 2 and len(words_b) >= 2:
         if words_a[-1] == words_b[-1] and len(words_a[-1]) > 2:
-            return True
+            # Check if there is at least one additional common token
+            other_a = set(words_a[:-1])
+            other_b = set(words_b[:-1])
+            if other_a & other_b:
+                return True
 
     # Fuzzy similarity
     ratio = SequenceMatcher(None, na, nb).ratio()
@@ -521,18 +527,118 @@ def _check_claim_completeness(claim: Claim) -> Optional[List[str]]:
     return missing if missing else None
 
 
+_DUPLICATE_SYNONYMS = {
+    'הסכם': 'חוזה', 'חוזה': 'חוזה',
+    'שילם': 'תשלום', 'תשלום': 'תשלום', 'סכום': 'תשלום',
+    'שלח': 'מסר', 'מסר': 'מסר', 'הודיע': 'מסר',
+    'קיבל': 'קיבל', 'קבלה': 'קיבל',
+}
+
+_DUPLICATE_STOPWORDS = {
+    'את', 'של', 'על', 'עם', 'אל', 'מן', 'כי', 'גם', 'או', 'אם',
+    'הוא', 'היא', 'הם', 'הן', 'אני', 'זה', 'זו', 'זאת',
+    'כך', 'רק', 'עוד', 'יותר', 'היה', 'היתה', 'היו',
+    'ה', 'ו', 'ב', 'ל', 'מ', 'ש', 'כ',
+    # NOTE: 'לא' and 'כל' intentionally NOT included — they carry
+    # semantic meaning for contradiction vs duplicate detection.
+}
+
+_DATE_NORMALIZE_RE = re.compile(r'(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})')
+_HEB_MONTH_MAP = {
+    'ינואר': '01', 'פברואר': '02', 'מרץ': '03', 'מרס': '03',
+    'אפריל': '04', 'מאי': '05', 'יוני': '06', 'יולי': '07',
+    'אוגוסט': '08', 'ספטמבר': '09', 'אוקטובר': '10',
+    'נובמבר': '11', 'דצמבר': '12',
+}
+_HEB_DATE_RE = re.compile(
+    r'(\d{1,2})\s*ב?(ינואר|פברואר|מרץ|מרס|אפריל|מאי|יוני|יולי|אוגוסט|ספטמבר|אוקטובר|נובמבר|דצמבר)\s+(\d{4})'
+)
+
+
+def _normalize_for_duplicate(text: str) -> str:
+    """Normalize text for duplicate detection: dates, synonyms, stopwords."""
+    t = text.lower().strip()
+    # Normalize Hebrew dates to DD.MM.YYYY
+    for m in _HEB_DATE_RE.finditer(t):
+        day, month_name, year = m.group(1), m.group(2), m.group(3)
+        mm = _HEB_MONTH_MAP.get(month_name, '00')
+        t = t.replace(m.group(0), f"{int(day):02d}.{mm}.{year}")
+    # Normalize numeric dates to DD.MM.YYYY
+    def _norm_date(m):
+        d, mo, y = m.group(1), m.group(2), m.group(3)
+        if len(y) == 2:
+            y = '20' + y
+        return f"{int(d):02d}.{int(mo):02d}.{y}"
+    t = _DATE_NORMALIZE_RE.sub(_norm_date, t)
+    return t
+
+
+def _char_ngram_similarity(a: str, b: str, n: int = 3) -> float:
+    """Character n-gram (trigram) similarity between two strings."""
+    if len(a) < n or len(b) < n:
+        return 1.0 if a == b else 0.0
+    ngrams_a = set(a[i:i+n] for i in range(len(a) - n + 1))
+    ngrams_b = set(b[i:i+n] for i in range(len(b) - n + 1))
+    if not ngrams_a or not ngrams_b:
+        return 0.0
+    return len(ngrams_a & ngrams_b) / len(ngrams_a | ngrams_b)
+
+
 def _is_duplicate(a: Claim, b: Claim) -> bool:
     na = a.normalized_claim or a.text.lower()
     nb = b.normalized_claim or b.text.lower()
     if na == nb:
         return True
-    # Jaccard similarity > 0.85 → restatement
-    wa = set(na.split())
-    wb = set(nb.split())
+
+    # Normalize for comparison (dates, synonyms)
+    norm_a = _normalize_for_duplicate(a.text)
+    norm_b = _normalize_for_duplicate(b.text)
+    if norm_a == norm_b:
+        return True
+
+    # Token-level comparison with synonym canonicalization
+    def _canonical_tokens(text: str) -> set:
+        tokens = set(re.sub(r'[^\w\s]', '', text).split())
+        result = set()
+        for tok in tokens:
+            if tok in _DUPLICATE_STOPWORDS or len(tok) < 2:
+                continue
+            # Try synonym lookup: as-is, then with one prefix stripped,
+            # then with two prefixes stripped.
+            canon = _DUPLICATE_SYNONYMS.get(tok)
+            if canon is None and len(tok) > 3 and tok[0] in 'הבלמושכ':
+                canon = _DUPLICATE_SYNONYMS.get(tok[1:])
+            if canon is None and len(tok) > 4 and tok[0] in 'הבלמושכ' and tok[1] in 'הבלמושכ':
+                canon = _DUPLICATE_SYNONYMS.get(tok[2:])
+            if canon is None:
+                # Use the most-stripped form as the token
+                stripped = tok
+                if len(tok) > 3 and tok[0] in 'הבלמושכ':
+                    stripped = tok[1:]
+                canon = stripped
+            result.add(canon)
+        return result
+
+    wa = _canonical_tokens(norm_a)
+    wb = _canonical_tokens(norm_b)
     if not wa or not wb:
         return False
+
+    # Token Jaccard >= 0.75, but NOT if the only difference is a negation word
+    _NEGATION_WORDS = {'לא', 'אינו', 'אינה', 'אינם', 'אין', 'מעולם', 'כלל'}
     jaccard = len(wa & wb) / len(wa | wb)
-    return jaccard > 0.85
+    if jaccard >= 0.80:
+        diff = (wa - wb) | (wb - wa)
+        # If the sets differ only in negation words, this is a contradiction, not a duplicate
+        if diff and diff <= _NEGATION_WORDS:
+            return False
+        return True
+
+    # Character trigram similarity >= 0.90
+    if _char_ngram_similarity(norm_a, norm_b) >= 0.90:
+        return True
+
+    return False
 
 
 def _check_time_alignment(a: Claim, b: Claim):
