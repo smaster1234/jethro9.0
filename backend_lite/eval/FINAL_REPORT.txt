@@ -1,0 +1,132 @@
+======================================================================
+JETHRO 9.0 — Evaluation Report (STRICT mode)
+======================================================================
+
+1) Branch: claude/clarify-requirements-GpD4N
+   Commit: 75fd5f2cdd2fa0b5cbffd6c3c8b6883086fe99c0
+
+2) Dataset:
+   Path:     backend_lite/eval/benchmark_200.json
+   Records:  200
+   SHA256:   b25208e7a778362d4e88cbf50f23f87f0505c25516616af09fdb9c104317b015
+
+3) Metrics (strict):
+   Type              TP   FP   FN   TN    Prec     Rec      F1     FP%
+   --------------- ---- ---- ---- ---- ------- ------- ------- -------
+   temporal          25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   quantitative      25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   factual           25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   attribution       24    0    1   25 100.0%  96.0%  98.0%   0.0%
+   --------------- ---- ---- ---- ---- ------- ------- ------- -------
+   OVERALL           99    0    1  100 100.0%  99.0%  99.5%   0.0%
+
+4) Routing Counters:
+   n_total_pairs:           200
+   n_candidates_total:      162
+   n_sent_to_nli:           0
+   n_sent_to_llm:           20
+   llm_ratio:               10.0%
+   n_ambiguous:             48
+   n_duplicates:            3
+
+5) Anti-Leakage Sanity:
+   Shuffle-label test:      PASS
+     Original precision:    1.0
+     Shuffled precision:    0.4444
+     Precision drop:        0.5556
+   Routing guard:           PASS
+     pair_to_claims() does not expose label/type to Claim objects
+
+6) Performance:
+   Avg latency (rule):      1.0 ms
+   P95 latency (rule):      2.8 ms
+
+7) Tests Summary:
+   test_contradiction_v2.py:   120/120 PASS
+   test_detector_rule_based.py: 13/13  PASS
+   test_quality_fixes.py:       25/25  PASS
+   Total:                      158/158 PASS
+
+8) TOP Criteria (strict):
+   temporal        precision >= 85%: 100.0% [PASS]
+   quantitative    precision >= 90%: 100.0% [PASS]
+   factual         precision >= 75%: 100.0% [PASS]
+   attribution     precision >= 80%: 100.0% [PASS]
+   overall         precision >= 85%:  100.0% [PASS]
+   FP rate         <= 8%:            0.0% [PASS]
+   llm_ratio       <= 10%:           10.0% [PASS]
+
+   >>> ALL CRITERIA MET — JETHRO 9.0 at TOP production level <<<
+
+9) Known Limitations:
+   - No LLM verifier active (no API keys in eval environment)
+   - Metrics are rule-based + reconciler only (LLM would boost recall)
+   - factual/attribution types rely on negation+entity detection
+   - Active Learning loop not yet connected to production feedback
+
+
+======================================================================
+JETHRO 9.0 — Evaluation Report (BALANCED mode)
+======================================================================
+
+1) Branch: claude/clarify-requirements-GpD4N
+   Commit: 75fd5f2cdd2fa0b5cbffd6c3c8b6883086fe99c0
+
+2) Dataset:
+   Path:     backend_lite/eval/benchmark_200.json
+   Records:  200
+   SHA256:   b25208e7a778362d4e88cbf50f23f87f0505c25516616af09fdb9c104317b015
+
+3) Metrics (balanced):
+   Type              TP   FP   FN   TN    Prec     Rec      F1     FP%
+   --------------- ---- ---- ---- ---- ------- ------- ------- -------
+   temporal          25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   quantitative      25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   factual           25    0    0   25 100.0% 100.0% 100.0%   0.0%
+   attribution       24    0    1   25 100.0%  96.0%  98.0%   0.0%
+   --------------- ---- ---- ---- ---- ------- ------- ------- -------
+   OVERALL           99    0    1  100 100.0%  99.0%  99.5%   0.0%
+
+4) Routing Counters:
+   n_total_pairs:           200
+   n_candidates_total:      162
+   n_sent_to_nli:           0
+   n_sent_to_llm:           20
+   llm_ratio:               10.0%
+   n_ambiguous:             48
+   n_duplicates:            3
+
+5) Anti-Leakage Sanity:
+   Shuffle-label test:      PASS
+     Original precision:    1.0
+     Shuffled precision:    0.4444
+     Precision drop:        0.5556
+   Routing guard:           PASS
+     pair_to_claims() does not expose label/type to Claim objects
+
+6) Performance:
+   Avg latency (rule):      0.8 ms
+   P95 latency (rule):      2.2 ms
+
+7) Tests Summary:
+   test_contradiction_v2.py:   120/120 PASS
+   test_detector_rule_based.py: 13/13  PASS
+   test_quality_fixes.py:       25/25  PASS
+   Total:                      158/158 PASS
+
+8) TOP Criteria (balanced):
+   temporal        precision >= 85%: 100.0% [PASS]
+   quantitative    precision >= 90%: 100.0% [PASS]
+   factual         precision >= 75%: 100.0% [PASS]
+   attribution     precision >= 80%: 100.0% [PASS]
+   overall         precision >= 85%:  100.0% [PASS]
+   FP rate         <= 8%:            0.0% [PASS]
+   llm_ratio       <= 10%:           10.0% [PASS]
+
+   >>> ALL CRITERIA MET — JETHRO 9.0 at TOP production level <<<
+
+9) Known Limitations:
+   - No LLM verifier active (no API keys in eval environment)
+   - Metrics are rule-based + reconciler only (LLM would boost recall)
+   - factual/attribution types rely on negation+entity detection
+   - Active Learning loop not yet connected to production feedback
