@@ -260,9 +260,33 @@ class TestCandidateFilter:
         assert passes_hard_filters(a, b) is False
 
     def test_same_plane_accepted(self):
-        a = _claim("הנתבע שילם", plane=PLANE_FACT, entities=["הנתבע"])
-        b = _claim("הנתבע לא שילם", plane=PLANE_FACT, entities=["הנתבע"])
+        a = _claim("הנתבע שילם", plane=PLANE_FACT, entities=["הנתבע"],
+                    speaker_mode="finding")
+        b = _claim("הנתבע לא שילם", plane=PLANE_FACT, entities=["הנתבע"],
+                    speaker_mode="finding")
         assert passes_hard_filters(a, b) is True
+
+    def test_same_plane_no_speaker_mode_with_strong_overlap(self):
+        """P0 fallback: FACT/FACT without speaker_mode but strong entities → ACCEPT."""
+        a = _claim("יוסי כהן שילם 100,000 ₪ לחברת אלפא",
+                    plane=PLANE_FACT, entities=["יוסי כהן", "חברת אלפא"])
+        b = _claim("יוסי כהן לא שילם לחברת אלפא",
+                    plane=PLANE_FACT, entities=["יוסי כהן", "חברת אלפא"])
+        assert passes_hard_filters(a, b) is True
+
+    def test_same_plane_no_speaker_mode_no_strong_overlap(self):
+        """P0 fallback: FACT/FACT without speaker_mode, only weak entities → REJECT."""
+        a = _claim("התובע שילם", plane=PLANE_FACT, entities=["התובע"])
+        b = _claim("הנתבע לא שילם", plane=PLANE_FACT, entities=["הנתבע"])
+        assert passes_hard_filters(a, b) is False
+
+    def test_opinion_fact_no_speaker_mode_rejected(self):
+        """P0 fallback: OPINION/FACT without speaker_mode → REJECT."""
+        a = _claim("נראה שהנתבע שילם", plane=PLANE_OPINION,
+                    entities=["יוסי כהן", "חברת אלפא"])
+        b = _claim("יוסי כהן לא שילם לחברת אלפא", plane=PLANE_FACT,
+                    entities=["יוסי כהן", "חברת אלפא"])
+        assert passes_hard_filters(a, b) is False
 
     def test_cross_party_disagreement_rejected(self):
         a = _claim("שילם", speaker_mode=SPEAKER_MODE_PARTY_CLAIM, speaker_role="plaintiff", plane=PLANE_FACT, entities=["הנתבע"])

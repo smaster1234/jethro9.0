@@ -167,28 +167,32 @@ class EnsembleScorer:
             total_weight += w
             signals_used['same_subject'] = signals.same_subject_score
 
-        # 6. Temporal evidence (additive boost)
+        # 6. Temporal evidence — tracked but applied post-normalization
+        temporal_additive = 0.0
         if signals.temporal_boost > 0:
-            weighted_sum += signals.temporal_boost
+            temporal_additive += signals.temporal_boost * self.weights['temporal']
             signals_used['temporal_boost'] = signals.temporal_boost
             boosted_by.append("עדות זמנית תומכת")
 
         if signals.has_temporal_conflict:
-            weighted_sum += 0.1
+            temporal_additive += self.weights['temporal']
             boosted_by.append("סתירה זמנית ישירה")
 
-        # 7. Agreement bonus (both engines found it)
+        # 7. Agreement bonus — tracked but applied post-normalization
+        agreement_additive = 0.0
         if signals.both_engines_agree:
-            w = self.weights['agreement_bonus']
-            weighted_sum += 0.15 * w / 0.05  # Significant boost
-            signals_used['agreement_bonus'] = 0.15
+            agreement_additive = self.weights['agreement_bonus']
+            signals_used['agreement_bonus'] = 1.0
             boosted_by.append("שני מנועי זיהוי מסכימים")
 
-        # Normalize
+        # Normalize weighted components, then apply additive bonuses
         if total_weight > 0:
             base_score = weighted_sum / total_weight
         else:
             base_score = signals.rule_confidence  # Fallback to rule only
+
+        # Apply temporal and agreement bonuses post-normalization
+        base_score += temporal_additive + agreement_additive
 
         # 8. Learning adjustment (additive)
         base_score += signals.learning_adjustment
