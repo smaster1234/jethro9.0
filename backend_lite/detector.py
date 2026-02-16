@@ -39,6 +39,7 @@ from .schemas import (
     Locator,
     EvidenceAnchor,
 )
+from .triplet import extract_claim_triplets, triplet_relatedness
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,9 @@ class RuleBasedDetector:
             'ה', 'ו', 'ב', 'ל', 'מ', 'ש', 'כ', 'התובע', 'הנתבע'
         }
 
+        # Triplet cache for current detection run
+        self._triplets: dict = {}
+
     def detect(
         self,
         claims: List[Claim],
@@ -319,6 +323,18 @@ class RuleBasedDetector:
                 logger.info("Claims enriched with v2 fields (speaker, plane, time, entities, negation)")
             except Exception as e:
                 logger.warning(f"Claim enrichment failed (non-fatal): {e}")
+
+        # --- V3: Extract semantic triplets (WHO/WHAT/TOPIC/WHEN) ---
+        try:
+            self._triplets = extract_claim_triplets(claims)
+            triplet_stats = sum(1 for t in self._triplets.values() if t.has_who)
+            logger.info(
+                "Triplets extracted: %d/%d claims have WHO entities",
+                triplet_stats, len(claims),
+            )
+        except Exception as e:
+            logger.warning(f"Triplet extraction failed (non-fatal): {e}")
+            self._triplets = {}
 
         # Tier 1 detection
         temporal = self._detect_temporal(claims)
@@ -377,10 +393,15 @@ class RuleBasedDetector:
             f"in {elapsed_ms:.1f}ms"
         )
 
+        # V3: triplet stats
+        triplet_with_who = sum(1 for t in self._triplets.values() if t.has_who) if self._triplets else 0
+        triplet_with_what = sum(1 for t in self._triplets.values() if t.has_what) if self._triplets else 0
+        triplet_with_topic = sum(1 for t in self._triplets.values() if t.has_topic) if self._triplets else 0
+
         return DetectionResult(
             contradictions=contradictions,
             detection_time_ms=elapsed_ms,
-            method="rule_based_v2" if enrich else "rule_based",
+            method="rule_based_v3" if enrich else "rule_based",
             metadata={
                 "temporal_count": len(temporal),
                 "time_count": len(time_conflicts),
@@ -393,6 +414,10 @@ class RuleBasedDetector:
                 "status_counts": status_counts,
                 "outcome_counts": outcome_counts,
                 "tier1_count": len(contradictions),
+                # V3: triplet stats
+                "triplet_with_who": triplet_with_who,
+                "triplet_with_what": triplet_with_what,
+                "triplet_with_topic": triplet_with_topic,
             }
         )
 
@@ -414,8 +439,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, dates1) in enumerate(claims_with_dates):
             for claim2, dates2 in claims_with_dates[i + 1:]:
-                # Check if claims are related
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.15:
                     continue
 
@@ -617,8 +644,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, times1) in enumerate(claims_with_times):
             for claim2, times2 in claims_with_times[i + 1:]:
-                # Check if claims are related
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.15:
                     continue
 
@@ -784,8 +813,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, amounts1) in enumerate(claims_with_amounts):
             for claim2, amounts2 in claims_with_amounts[i + 1:]:
-                # Check if claims are related
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.15:
                     continue
 
@@ -924,8 +955,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, attr1) in enumerate(claims_with_attr):
             for claim2, attr2 in claims_with_attr[i + 1:]:
-                # Check if claims are related (same event/action)
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.15:
                     continue
 
@@ -1037,8 +1070,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, pol1) in enumerate(claims_with_presence):
             for claim2, pol2 in claims_with_presence[i + 1:]:
-                # Check if claims are related
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.20:  # Higher threshold for presence
                     continue
 
@@ -1119,8 +1154,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, pol1) in enumerate(claims_with_doc):
             for claim2, pol2 in claims_with_doc[i + 1:]:
-                # Check if claims are related (same document type)
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.20:
                     continue
 
@@ -1199,8 +1236,10 @@ class RuleBasedDetector:
         # Compare pairs
         for i, (claim1, ids1) in enumerate(claims_with_id):
             for claim2, ids2 in claims_with_id[i + 1:]:
-                # Check if claims are related
-                relatedness = self._claims_relatedness(claim1.text, claim2.text)
+                # Check if claims are related (V3: triplet-aware)
+                relatedness = self._claims_relatedness(
+                    claim1.text, claim2.text, claim1=claim1, claim2=claim2
+                )
                 if relatedness < 0.15:
                     continue
 
@@ -1261,23 +1300,51 @@ class RuleBasedDetector:
     # Helper Methods
     # =========================================================================
 
-    def _claims_relatedness(self, text1: str, text2: str) -> float:
+    def _claims_relatedness(self, text1: str, text2: str,
+                            claim1: Optional[Claim] = None,
+                            claim2: Optional[Claim] = None) -> float:
         """Calculate relatedness score between two claims (0-1).
 
-        Uses Legal-heBERT embeddings when available for semantic similarity,
-        falls back to word overlap.
+        V3: Uses semantic triplet matching as the primary signal.
+        Triplet matching checks WHO/WHAT/TOPIC/WHEN alignment to ensure
+        claims discuss the same entity performing the same type of action.
+
+        Falls back to word overlap + semantic similarity when triplets
+        are unavailable or incomplete.
         """
+        # --- V3: Triplet-based relatedness (primary signal) ---
+        triplet_score = None
+        if claim1 is not None and claim2 is not None and self._triplets:
+            id1 = getattr(claim1, 'id', None)
+            id2 = getattr(claim2, 'id', None)
+            if id1 in self._triplets and id2 in self._triplets:
+                t1 = self._triplets[id1]
+                t2 = self._triplets[id2]
+                triplet_score = triplet_relatedness(t1, t2)
+
+                # If both triplets are well-formed (WHO + WHAT or TOPIC) AND
+                # score is positive, use triplet score as authoritative.
+                # When score is 0 (no WHO overlap), fall through to legacy
+                # matching — entity extraction might have been incomplete.
+                if t1.has_who and t2.has_who and triplet_score > 0:
+                    return triplet_score
+
+        # --- Fallback: existing multi-signal approach ---
+
         # Try HeBERT semantic similarity first
         try:
             from .hebrew_embeddings import get_embedder
             embedder = get_embedder()
             if embedder.is_available:
                 sim = embedder.similarity(text1, text2)
+                # Blend with triplet score if available
+                if triplet_score is not None:
+                    return 0.5 * sim + 0.5 * triplet_score
                 return sim
         except Exception:
             pass
 
-        # Fallback: word overlap
+        # Word overlap
         words1 = self._get_meaningful_words(text1)
         words2 = self._get_meaningful_words(text2)
 
@@ -1295,7 +1362,6 @@ class RuleBasedDetector:
         try:
             from .semantic import get_semantic_engine
             engine = get_semantic_engine()
-            # Use ad-hoc similarity if index exists (claim objects) or text-based
             semantic_score = engine._compute_adhoc_similarity(text1, text2)
         except Exception:
             semantic_score = word_score  # Fallback to word overlap
@@ -1306,7 +1372,6 @@ class RuleBasedDetector:
             from .entity_graph import get_entity_graph
             graph = get_entity_graph()
             if graph._built:
-                # Extract entities from both texts and check overlap
                 ents1 = set(e[0] for e in graph._extract_entities(text1))
                 ents2 = set(e[0] for e in graph._extract_entities(text2))
                 if ents1 and ents2:
@@ -1318,13 +1383,21 @@ class RuleBasedDetector:
         except Exception:
             pass
 
-        # Combined score
-        combined = (0.60 * semantic_score) + (0.25 * word_score) + (0.15 * entity_score)
-        return combined
+        # Combined score (blend with triplet if available)
+        fallback = (0.60 * semantic_score) + (0.25 * word_score) + (0.15 * entity_score)
 
-    def _claims_related(self, text1: str, text2: str) -> bool:
+        if triplet_score is not None:
+            # Triplet available but incomplete (missing WHO on one/both sides)
+            # Use as partial signal blended with fallback
+            return 0.4 * triplet_score + 0.6 * fallback
+
+        return fallback
+
+    def _claims_related(self, text1: str, text2: str,
+                        claim1: Optional[Claim] = None,
+                        claim2: Optional[Claim] = None) -> bool:
         """Check if two claims are related (legacy method)"""
-        return self._claims_relatedness(text1, text2) > 0.12
+        return self._claims_relatedness(text1, text2, claim1=claim1, claim2=claim2) > 0.12
 
     def _get_meaningful_words(self, text: str) -> set:
         """Extract meaningful words from text"""

@@ -213,7 +213,7 @@ class TestIntegration:
         result = detect_contradictions(claims)
 
         assert result is not None
-        assert result.method == "rule_based_v2"
+        assert result.method in ("rule_based_v2", "rule_based_v3")
         assert result.detection_time_ms >= 0
         assert "claims_analyzed" in result.metadata
 
