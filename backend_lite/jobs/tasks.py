@@ -991,14 +991,47 @@ async def task_analyze_case(
                     update_job_progress(65, "Verifying with LLM")
                     verifier.reset_stats()
 
-                    # Sort by confidence (highest first) and take top N
+                    # Smart prioritization: score candidates by verification value.
+                    # High-value = uncertain candidates with strong evidence signals
+                    # (verifier time is best spent on borderline cases, not obvious ones).
+                    def _verification_priority(c):
+                        severity_w = {"critical": 1.0, "high": 0.8, "medium": 0.5, "low": 0.2}
+                        sev_val = c.severity.value if hasattr(c.severity, 'value') else str(c.severity)
+                        sev_score = severity_w.get(sev_val, 0.3)
+
+                        # Uncertainty bonus: candidates near decision boundary benefit most
+                        # from verification (very high or very low confidence need it less)
+                        uncertainty = 1.0 - abs(c.confidence - 0.65) * 2.0
+                        uncertainty = max(0.0, min(1.0, uncertainty))
+
+                        # Entity overlap signal (from reconciler metadata)
+                        entity_score = 0.5
+                        if c.metadata.get("reconciler_outcome") == "TRUE_CONTRADICTION":
+                            entity_score = 1.0
+                        elif c.metadata.get("reconciler_outcome") in (
+                            "APPARENT_TENSION_RESOLVABLE", "AMBIGUITY_OR_VAGUENESS"
+                        ):
+                            entity_score = 0.7  # uncertain — worth verifying
+
+                        # Both-engines bonus
+                        pair_key = tuple(sorted([c.claim1.id, c.claim2.id]))
+                        agreement_bonus = 0.2 if engine_agreement.get(pair_key) == 'both' else 0.0
+
+                        return (
+                            sev_score * 0.30 +
+                            uncertainty * 0.30 +
+                            entity_score * 0.25 +
+                            c.confidence * 0.15 +  # slight boost for higher base confidence
+                            agreement_bonus
+                        )
+
                     sorted_candidates = sorted(
-                        raw_candidates, key=lambda c: c.confidence, reverse=True
+                        raw_candidates, key=_verification_priority, reverse=True
                     )
                     to_verify = sorted_candidates[:verifier.max_calls]
 
                     logger.info(
-                        "Verifying %d/%d candidates with %s",
+                        "Verifying %d/%d candidates with %s (priority-sorted)",
                         len(to_verify), len(raw_candidates), verifier.model,
                     )
 
