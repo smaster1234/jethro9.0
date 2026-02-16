@@ -17,7 +17,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
-from .openrouter_base import OpenRouterBaseClient, LLMCallResult
+from .openrouter_base import LLMCallResult
 from .gemini_client import GeminiBaseClient
 from ..llm_client import parse_json_robust
 
@@ -99,37 +99,37 @@ class AnalyzerResult:
 
 def _detect_llm_backend() -> str:
     """
-    Detect which LLM backend to use for the analyzer.
+    Detect which Gemini model to use for the analyzer.
+
+    Privacy-first: Only Google Gemini is supported — no third-party proxies.
+    All data goes directly to generativelanguage.googleapis.com.
 
     Priority:
     1. GEMINI_API_KEY set -> use Gemini
-    2. OPENROUTER_API_KEY set -> use OpenRouter (DeepSeek)
-    3. None available -> disabled
+    2. None -> disabled
     """
-    llm_mode = os.getenv("LLM_MODE", "none").lower()
-
-    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+    if os.getenv("GEMINI_API_KEY"):
         return "gemini"
-    elif llm_mode in ("openrouter", "deepseek") and os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
-    elif os.getenv("GEMINI_API_KEY"):
-        return "gemini"
-    elif os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
     return "none"
 
 
 class AnalyzerLLM:
     """
-    Analyzer LLM - supports Gemini (primary) and DeepSeek via OpenRouter (fallback).
+    Analyzer LLM — Gemini only (privacy-first).
 
-    Supports OpenAI (GPT-4o), OpenRouter (DeepSeek), or any OpenAI-compatible API.
+    Primary: Gemini 3 Flash Preview (with thinking_level=low for speed)
+    Fallback: Gemini 2.5 Flash (if primary fails)
+
+    All data goes directly to Google — no third-party proxies.
     Proposes contradiction candidates with broad detection.
-    Optimized for recall - may over-detect, verifier filters.
+    Optimized for recall — may over-detect, verifier filters.
     """
 
-    # Gemini OpenAI-compatible endpoint (direct, no proxy)
-    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    # Default models
+    PRIMARY_MODEL = "gemini-3-flash-preview"
+    FALLBACK_MODEL = "gemini-2.5-flash"
+    # Thinking level for analysis — low for speed (analyzer prioritizes recall)
+    THINKING_LEVEL = "low"
 
     def __init__(self):
         backend = _detect_llm_backend()
@@ -138,41 +138,48 @@ class AnalyzerLLM:
 
         if backend == "gemini":
             api_key = os.getenv("GEMINI_API_KEY")
-            model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+            # Primary: Gemini 3 Flash Preview with thinking
+            model = os.getenv("GEMINI_ANALYZER_MODEL", self.PRIMARY_MODEL)
+            thinking = os.getenv("GEMINI_ANALYZER_THINKING", self.THINKING_LEVEL)
             self.model = model
             self.enabled = True
             self.client = GeminiBaseClient(
                 api_key=api_key,
                 model=model,
                 timeout=60,
-                app_name="JETHRO Analyzer"
-            )
-            logger.info(f"Analyzer initialized with Gemini: {model}")
-
-        elif backend == "openrouter":
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            model = os.getenv("OPENROUTER_ANALYZER_MODEL", "deepseek/deepseek-chat")
-            self.model = model
-            self.enabled = True
-            self.client = OpenRouterBaseClient(
-                api_key=api_key,
-                model=model,
-                timeout=120,
                 app_name="JETHRO Analyzer",
-                base_url=os.getenv("OPENROUTER_BASE_URL"),
+                thinking_level=thinking,
             )
-            logger.info(f"Analyzer initialized with OpenRouter: {model}")
+
+            # Fallback: Gemini 2.5 Flash (no thinking, faster)
+            fallback_model = os.getenv("GEMINI_ANALYZER_FALLBACK", self.FALLBACK_MODEL)
+            self.fallback_model = fallback_model
+            self.fallback_client = GeminiBaseClient(
+                api_key=api_key,
+                model=fallback_model,
+                timeout=60,
+                app_name="JETHRO Analyzer Fallback",
+            )
+            logger.info(
+                "Analyzer initialized: primary=%s (thinking=%s), fallback=%s",
+                model, thinking, fallback_model,
+            )
 
         else:
             self.model = "none"
+            self.fallback_model = "none"
             self.enabled = False
             self.client = None
-            logger.warning("Analyzer disabled: no LLM API key configured")
+            self.fallback_client = None
+            logger.warning("Analyzer disabled: GEMINI_API_KEY not configured")
 
     async def close(self):
-        """Close the client"""
+        """Close primary and fallback clients"""
         if self.client:
             await self.client.close()
+        if self.fallback_client:
+            await self.fallback_client.close()
 
     async def analyze(
         self,
@@ -210,13 +217,26 @@ class AnalyzerLLM:
             {"role": "user", "content": user_prompt}
         ]
 
-        # Call LLM
+        # Call primary LLM (Gemini 3 Flash with thinking)
         result = await self.client.call(
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=4096
+            max_tokens=4096,
         )
+
+        # If primary fails, try fallback (Gemini 2.5 Flash)
+        if not result.success and self.fallback_client:
+            logger.warning(
+                "Analyzer primary (%s) failed: %s — trying fallback (%s)",
+                self.model, result.error, self.fallback_model,
+            )
+            result = await self.fallback_client.call(
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=4096,
+            )
 
         if not result.success:
             self.stats.failed += 1
