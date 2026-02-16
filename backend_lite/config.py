@@ -2,15 +2,17 @@
 Configuration for Contradiction Service
 =======================================
 
+Privacy-first: Only Google Gemini is supported — no third-party proxies.
+All LLM data goes directly to generativelanguage.googleapis.com.
+
 Environment variables:
-- LLM_MODE: none|openrouter|gemini|deepseek (default: none)
-- GEMINI_API_KEY: API key for Gemini (primary)
-- GEMINI_MODEL: Model to use (default: gemini-1.5-flash)
-- OPENROUTER_API_KEY: API key for OpenRouter (fallback)
-- OPENROUTER_MODEL: Model to use (default: anthropic/claude-3-haiku)
-- DEEPSEEK_API_KEY: API key for DeepSeek (analyzer)
-- DEEPSEEK_MODEL: Model to use (default: deepseek-chat)
-- VERIFIER_MODEL: Model for verification via OpenRouter (default: qwen/qwen-2.5-72b-instruct)
+- GEMINI_API_KEY: API key for Google Gemini (required for LLM features)
+- GEMINI_ANALYZER_MODEL: Analyzer model (default: gemini-3-flash-preview)
+- GEMINI_ANALYZER_FALLBACK: Analyzer fallback model (default: gemini-2.5-flash)
+- GEMINI_ANALYZER_THINKING: Thinking level for analyzer (default: low)
+- GEMINI_VERIFIER_MODEL: Verifier model (default: gemini-3-flash-preview)
+- GEMINI_VERIFIER_FALLBACK: Verifier fallback model (default: gemini-2.5-flash)
+- GEMINI_VERIFIER_THINKING: Thinking level for verifier (default: medium)
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
 - RAG_MODE: bm25|hebert|hybrid (default: hybrid)
 - HEBERT_MODEL: HuggingFace model name (default: avichr/Legal-heBERT)
@@ -27,32 +29,30 @@ from .schemas import LLMMode
 class Settings(BaseSettings):
     """Application settings from environment variables"""
 
-    # LLM Configuration
+    # LLM Configuration — Gemini only (privacy-first)
     llm_mode: LLMMode = LLMMode.NONE
 
-    # OpenAI (GPT-4o)
-    openai_api_key: Optional[str] = None
-    openai_model: str = "gpt-4o"
-    openai_base_url: str = "https://api.openai.com/v1"
+    # Gemini (primary and only LLM provider)
+    gemini_api_key: Optional[str] = None
 
-    # OpenRouter (for verifier and general use)
-    openrouter_api_key: Optional[str] = None
-    openrouter_model: str = "anthropic/claude-3-haiku"
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Analyzer models
+    gemini_analyzer_model: str = "gemini-3-flash-preview"
+    gemini_analyzer_fallback: str = "gemini-2.5-flash"
+    gemini_analyzer_thinking: str = "low"
 
-    # DeepSeek (primary analyzer)
-    deepseek_api_key: Optional[str] = None
-    deepseek_model: str = "deepseek-chat"
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    # Verifier models
+    gemini_verifier_model: str = "gemini-3-flash-preview"
+    gemini_verifier_fallback: str = "gemini-2.5-flash"
+    gemini_verifier_thinking: str = "medium"
 
-    # Verifier (Qwen via OpenRouter)
-    verifier_model: str = "qwen/qwen-2.5-72b-instruct"
+    # Verifier settings
     verifier_max_calls: int = 30
     verifier_enabled: bool = True
 
-    # Gemini
-    gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-1.5-flash"
+    # Legacy compat — kept but unused (all traffic routes to Gemini)
+    openai_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
 
     # Detection settings
     detection_confidence_threshold: float = 0.6
@@ -83,25 +83,14 @@ class Settings(BaseSettings):
         """Validate LLM configuration, return list of warnings"""
         warnings = []
 
-        if self.llm_mode == LLMMode.OPENAI:
-            if not self.openai_api_key:
-                warnings.append("LLM_MODE=openai but OPENAI_API_KEY not set")
+        if not self.gemini_api_key:
+            warnings.append(
+                "GEMINI_API_KEY not set — LLM features (analyzer, verifier) will be disabled. "
+                "All LLM traffic routes through Google Gemini for privacy."
+            )
 
-        elif self.llm_mode == LLMMode.OPENROUTER:
-            if not self.openrouter_api_key:
-                warnings.append("LLM_MODE=openrouter but OPENROUTER_API_KEY not set")
-
-        elif self.llm_mode == LLMMode.GEMINI:
-            if not self.gemini_api_key:
-                warnings.append("LLM_MODE=gemini but GEMINI_API_KEY not set")
-
-        elif self.llm_mode == LLMMode.DEEPSEEK:
-            if not self.deepseek_api_key:
-                warnings.append("LLM_MODE=deepseek but DEEPSEEK_API_KEY not set")
-
-        # Check verifier config
-        if self.verifier_enabled and not self.openrouter_api_key:
-            warnings.append("VERIFIER_ENABLED=true but OPENROUTER_API_KEY not set (verifier uses OpenRouter)")
+        if self.verifier_enabled and not self.gemini_api_key:
+            warnings.append("VERIFIER_ENABLED=true but GEMINI_API_KEY not set")
 
         return warnings
 

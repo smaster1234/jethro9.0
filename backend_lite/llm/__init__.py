@@ -1,24 +1,26 @@
 """
-LLM Module
-==========
+LLM Module — Privacy-First (Gemini Only)
+=========================================
 
-Provides separate analyzer and verifier LLM clients.
+All LLM calls go directly to Google's Gemini API.
+No third-party proxies (OpenRouter, DeepSeek, etc.) are used.
 
 Architecture:
 - Analyzer: Proposes contradiction candidates, optimized for recall
 - Verifier: Confirms/rejects candidates, optimized for precision
 
-Supports multiple backends:
-- Gemini (primary): Google Gemini API
-- OpenRouter (fallback): DeepSeek analyzer + Qwen verifier
+Models:
+- Primary: Gemini 3 Flash Preview (with thinking support)
+- Fallback: Gemini 2.5 Flash (when primary fails)
 
 Environment Variables:
-- LLM_MODE: none|gemini|openrouter|deepseek (default: none)
-- GEMINI_API_KEY: API key for Google Gemini (primary)
-- GEMINI_MODEL: Gemini model (default: gemini-1.5-flash)
-- OPENROUTER_API_KEY: API key for OpenRouter (fallback)
-- OPENROUTER_ANALYZER_MODEL: Analyzer model (default: deepseek/deepseek-chat)
-- OPENROUTER_VERIFIER_MODEL: Verifier model (default: qwen/qwen-2.5-72b-instruct)
+- GEMINI_API_KEY: API key for Google Gemini (required)
+- GEMINI_ANALYZER_MODEL: Analyzer model (default: gemini-3-flash-preview)
+- GEMINI_ANALYZER_FALLBACK: Analyzer fallback (default: gemini-2.5-flash)
+- GEMINI_ANALYZER_THINKING: Thinking level for analyzer (default: low)
+- GEMINI_VERIFIER_MODEL: Verifier model (default: gemini-3-flash-preview)
+- GEMINI_VERIFIER_FALLBACK: Verifier fallback (default: gemini-2.5-flash)
+- GEMINI_VERIFIER_THINKING: Thinking level for verifier (default: medium)
 - VERIFIER_ENABLED: Enable verifier (default: true)
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
 
