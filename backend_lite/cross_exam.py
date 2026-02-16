@@ -13,6 +13,7 @@ Uses contradiction_playbooks_v1.yaml patterns.
 import os
 import yaml
 import uuid
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -682,6 +683,202 @@ class CrossExamGenerator:
             self.generate(contr, max_questions_per)
             for contr in contradictions
         ]
+
+    # ========================================
+    # LLM-ENHANCED QUESTION GENERATION (V5)
+    # ========================================
+
+    async def generate_with_llm(
+        self,
+        contradiction: DetectedContradiction,
+        max_questions: int = 5
+    ) -> CrossExamSet:
+        """
+        Generate cross-examination questions with LLM enhancement.
+
+        First generates template-based questions, then uses Gemini
+        to produce context-aware, tailored questions. Falls back to
+        template questions on any LLM failure.
+
+        Args:
+            contradiction: The detected contradiction
+            max_questions: Maximum questions to generate
+
+        Returns:
+            CrossExamSet with LLM-enhanced or template-based questions
+        """
+        # Step 1: Generate template-based questions (always works)
+        template_result = self.generate(contradiction, max_questions)
+
+        # Step 2: Try LLM enhancement
+        try:
+            from .llm_questions import (
+                get_llm_question_generator,
+                build_contradiction_context,
+            )
+
+            generator = get_llm_question_generator()
+            if not generator.enabled:
+                logger.debug("LLM question generator not enabled, using templates")
+                return template_result
+
+            # Build context for LLM
+            ctx = build_contradiction_context(contradiction)
+
+            # Add strategic context from template generation
+            if template_result.strategic_approach:
+                ctx["strategic_approach"] = template_result.strategic_approach
+            if template_result.witness_profile:
+                ctx["witness_profile"] = template_result.witness_profile
+
+            # Extract template questions as reference
+            template_questions = [
+                {"question": q.question, "purpose": q.purpose}
+                for q in template_result.questions
+            ]
+
+            # Call LLM
+            llm_result = await generator.generate(
+                contradiction_context=ctx,
+                template_questions=template_questions,
+                max_questions=max_questions,
+            )
+
+            if not llm_result.success or not llm_result.questions:
+                logger.info(
+                    "LLM question generation failed/empty for %s, using templates: %s",
+                    contradiction.id, llm_result.error,
+                )
+                return template_result
+
+            # Step 3: Merge LLM questions into the CrossExamSet
+            return self._merge_llm_questions(
+                template_result=template_result,
+                llm_questions=llm_result.questions,
+                llm_strategy=llm_result.strategy_summary,
+                llm_objective=llm_result.key_objective,
+                llm_risk=llm_result.risk_warning,
+                contradiction=contradiction,
+            )
+
+        except Exception as e:
+            logger.warning(
+                "LLM question enhancement failed for %s (non-fatal): %s",
+                contradiction.id, e,
+            )
+            return template_result
+
+    async def generate_for_all_with_llm(
+        self,
+        contradictions: List[DetectedContradiction],
+        max_questions_per: int = 5
+    ) -> List[CrossExamSet]:
+        """
+        Generate LLM-enhanced questions for all contradictions.
+        Runs LLM calls concurrently for performance.
+        """
+        tasks = [
+            self.generate_with_llm(contr, max_questions_per)
+            for contr in contradictions
+        ]
+        return await asyncio.gather(*tasks)
+
+    def _merge_llm_questions(
+        self,
+        template_result: CrossExamSet,
+        llm_questions: List[Dict[str, Any]],
+        llm_strategy: str,
+        llm_objective: str,
+        llm_risk: str,
+        contradiction: DetectedContradiction,
+    ) -> CrossExamSet:
+        """
+        Merge LLM-generated questions into the template CrossExamSet.
+
+        Preserves strategic metadata from template generation while
+        replacing question text with LLM-generated versions.
+        """
+        template_qs = template_result.questions
+        merged_questions = []
+
+        for i, llm_q in enumerate(llm_questions):
+            # Use strategic metadata from template question if available
+            template_q = template_qs[i] if i < len(template_qs) else None
+
+            # Map LLM question types
+            q_type = llm_q.get("question_type", "leading")
+
+            # Build follow-up from LLM response
+            follow_up_yes = llm_q.get("follow_up_if_yes", "")
+            follow_up_no = llm_q.get("follow_up_if_no", "")
+            follow_up = f"אם כן: {follow_up_yes} | אם לא: {follow_up_no}" if (follow_up_yes or follow_up_no) else None
+
+            merged_questions.append(CrossExamQuestion(
+                id=f"q_{uuid.uuid4().hex[:6]}",
+                question=llm_q["question"],
+                purpose=llm_q.get("purpose", "שאלת חקירה"),
+                severity=contradiction.severity,
+                follow_up=follow_up or (template_q.follow_up if template_q else None),
+                trap_branch=llm_q.get("trap_branch") or (template_q.trap_branch if template_q else None),
+                # Strategic fields — preserve from template
+                question_type=q_type,
+                intent=template_q.intent if template_q else None,
+                position_pct=template_q.position_pct if template_q else (i / max(len(llm_questions) - 1, 1)) * 100,
+                time_allocation=template_q.time_allocation if template_q else 1.5,
+                risk_level=template_q.risk_level if template_q else 0.3,
+                reward_potential=template_q.reward_potential if template_q else 0.5,
+                predicted_responses=template_q.predicted_responses if template_q else {},
+                if_admit=template_q.if_admit if template_q else None,
+                if_deny=template_q.if_deny if template_q else None,
+                if_evade=template_q.if_evade if template_q else None,
+                psychological_notes=template_q.psychological_notes if template_q else None,
+                # Source references — preserve from template
+                source_reference=template_q.source_reference if template_q else None,
+                attribution_phrase=template_q.attribution_phrase if template_q else None,
+                confrontation_phrase=template_q.confrontation_phrase if template_q else None,
+                source_type=template_q.source_type if template_q else None,
+                strategic_approach=template_q.strategic_approach if template_q else None,
+                # Expert knowledge — preserve from template
+                expert_technique=template_q.expert_technique if template_q else None,
+                younger_commandment=template_q.younger_commandment if template_q else None,
+                psychological_basis=template_q.psychological_basis if template_q else None,
+                impeachment_type=template_q.impeachment_type if template_q else None,
+                cognitive_load_technique=template_q.cognitive_load_technique if template_q else None,
+                expert_tip=template_q.expert_tip if template_q else None,
+            ))
+
+        # Build enhanced strategy notes
+        strategy_notes = list(template_result.strategy_notes)
+        if llm_strategy:
+            strategy_notes.insert(0, f"[AI] {llm_strategy}")
+        if llm_risk:
+            strategy_notes.append(f"[AI אזהרה] {llm_risk}")
+
+        # Update key objectives
+        key_objectives = list(template_result.key_objectives)
+        if llm_objective:
+            key_objectives.insert(0, llm_objective)
+
+        return CrossExamSet(
+            contradiction_id=template_result.contradiction_id,
+            target_party=template_result.target_party,
+            questions=merged_questions,
+            strategy_notes=strategy_notes,
+            witness_profile=template_result.witness_profile,
+            total_time_minutes=template_result.total_time_minutes,
+            expected_value=template_result.expected_value,
+            risk_score=template_result.risk_score,
+            confidence_score=template_result.confidence_score,
+            strategy_summary=llm_strategy or template_result.strategy_summary,
+            key_objectives=key_objectives,
+            potential_pitfalls=template_result.potential_pitfalls,
+            decision_points=template_result.decision_points,
+            alternative_paths=template_result.alternative_paths,
+            source_context=template_result.source_context,
+            witness_claim_source=template_result.witness_claim_source,
+            opposing_claim_source=template_result.opposing_claim_source,
+            strategic_approach=template_result.strategic_approach,
+        )
 
     def _extract_variables(self, contradiction: DetectedContradiction) -> Dict[str, str]:
         """Extract template variables from contradiction"""
@@ -1443,3 +1640,25 @@ def generate_cross_exam_questions(
         List of CrossExamSet
     """
     return get_cross_exam_generator().generate_for_all(contradictions, max_questions_per)
+
+
+async def generate_cross_exam_questions_llm(
+    contradictions: List[DetectedContradiction],
+    max_questions_per: int = 5
+) -> List[CrossExamSet]:
+    """
+    Async convenience function to generate LLM-enhanced cross-exam questions.
+
+    Uses Gemini to generate context-aware, tailored questions.
+    Falls back to template-based questions on any LLM failure.
+
+    Args:
+        contradictions: List of detected contradictions
+        max_questions_per: Max questions per contradiction
+
+    Returns:
+        List of CrossExamSet (LLM-enhanced when available)
+    """
+    return await get_cross_exam_generator().generate_for_all_with_llm(
+        contradictions, max_questions_per
+    )

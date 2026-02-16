@@ -88,7 +88,7 @@ from .schemas import (
 from .extractor import extract_claims, ClaimExtractor
 from .expert_contradiction import build_expert_claims, analyze_expert_pairs
 from .detector import detect_contradictions, DetectedContradiction
-from .cross_exam import generate_cross_exam_questions, CrossExamSet
+from .cross_exam import generate_cross_exam_questions, generate_cross_exam_questions_llm, CrossExamSet
 from .llm_client import detect_with_llm, get_llm_client  # Legacy, kept for compatibility
 from .llm import get_analyzer, get_verifier  # New architecture
 from .dedup import deduplicate_contradictions
@@ -2353,7 +2353,12 @@ async def analyze_claims_internal(
     expert_notebook = _build_expert_notebook(all_contradictions, validation_flags)
 
     # 6. Generate cross-examination questions (only for true contradictions)
-    cross_exam_sets = generate_cross_exam_questions(true_contradictions)
+    #    V5: Use LLM-enhanced generation when Gemini is available
+    try:
+        cross_exam_sets = await generate_cross_exam_questions_llm(true_contradictions)
+    except Exception as e:
+        logger.warning("LLM cross-exam generation failed, falling back to templates: %s", e)
+        cross_exam_sets = generate_cross_exam_questions(true_contradictions)
 
     # 7. Convert to output format
     contradictions_output = [
