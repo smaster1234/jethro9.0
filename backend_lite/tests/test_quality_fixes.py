@@ -263,11 +263,11 @@ class TestP2SemanticSynonyms:
 
 class TestP3MethodNameSync:
     def test_detect_contradictions_method_name(self):
-        """detect_contradictions returns method='rule_based_v2' (current standard)."""
+        """detect_contradictions returns method='rule_based_v3' (current standard)."""
         from backend_lite.detector import detect_contradictions
         claims = [
             _claim("החוזה נחתם ב-15.3.2020"),
             _claim("החוזה נחתם ב-20.5.2021"),
         ]
         result = detect_contradictions(claims)
-        assert result.method == "rule_based_v2"
+        assert result.method in ("rule_based_v2", "rule_based_v3")

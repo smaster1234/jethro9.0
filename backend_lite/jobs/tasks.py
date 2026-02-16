@@ -987,11 +987,21 @@ async def task_analyze_case(
                 verifier_confidences = {}  # id(contr) -> verifier confidence
                 verifier_explanations = {}  # id(contr) -> verifier reason
 
+                # V3: Extract triplets for all claims (for verification prioritization)
+                triplet_map = {}
+                try:
+                    from ..triplet import extract_claim_triplets, triplet_relatedness as triplet_rel
+                    triplet_map = extract_claim_triplets(all_claims)
+                    logger.info("Triplets extracted for %d claims (verification scoring)", len(triplet_map))
+                except Exception as e:
+                    logger.warning("Triplet extraction for verification failed (non-fatal): %s", e)
+
                 if verifier.enabled and raw_candidates:
                     update_job_progress(65, "Verifying with LLM")
                     verifier.reset_stats()
 
                     # Smart prioritization: score candidates by verification value.
+                    # V3: incorporates triplet relatedness as a signal.
                     # High-value = uncertain candidates with strong evidence signals
                     # (verifier time is best spent on borderline cases, not obvious ones).
                     def _verification_priority(c):
@@ -1017,12 +1027,23 @@ async def task_analyze_case(
                         pair_key = tuple(sorted([c.claim1.id, c.claim2.id]))
                         agreement_bonus = 0.2 if engine_agreement.get(pair_key) == 'both' else 0.0
 
+                        # V3: Triplet relatedness bonus — higher relatedness
+                        # means the pair is more likely a real contradiction
+                        triplet_bonus = 0.0
+                        if triplet_map:
+                            id1 = getattr(c.claim1, 'id', None)
+                            id2 = getattr(c.claim2, 'id', None)
+                            if id1 in triplet_map and id2 in triplet_map:
+                                tr = triplet_rel(triplet_map[id1], triplet_map[id2])
+                                triplet_bonus = tr * 0.15  # Up to 0.15 bonus
+
                         return (
-                            sev_score * 0.30 +
-                            uncertainty * 0.30 +
-                            entity_score * 0.25 +
-                            c.confidence * 0.15 +  # slight boost for higher base confidence
-                            agreement_bonus
+                            sev_score * 0.25 +
+                            uncertainty * 0.25 +
+                            entity_score * 0.20 +
+                            c.confidence * 0.15 +
+                            agreement_bonus +
+                            triplet_bonus
                         )
 
                     sorted_candidates = sorted(
