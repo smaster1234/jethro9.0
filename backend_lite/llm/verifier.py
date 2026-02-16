@@ -24,36 +24,142 @@ from ..llm_client import parse_json_robust
 logger = logging.getLogger(__name__)
 
 
-# Verifier system prompt - strict and focused
-VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות משפטיות.
+# Verifier system prompt — Chain-of-Thought with few-shot examples
+VERIFIER_SYSTEM_PROMPT = """אתה שופט אימות לסתירות במסמכים משפטיים בעברית.
 
-התפקיד שלך: לקבוע אם שתי טענות סותרות זו את זו.
+## התפקיד שלך
+בחן שתי טענות ובצע ניתוח מובנה בשלבים לפני שתגיע למסקנה.
 
-חוקים קריטיים:
-1. מספרי תיקים כמו 17682-06-25 הם לא תאריכים - לעולם אל תסמן כסתירה זמנית
-2. אם הטענות מתייחסות לאירועים/נושאים שונים - אין סתירה
-3. לעולם אל תמציא עובדות שלא נאמרו בטענות
-4. סתירה = אותו נושא, שתי גרסאות שלא יכולות להיות נכונות שתיהן
+## חוקים קריטיים
+1. מספרי תיקים (כגון 17682-06-25, ת"א 12345-01-22) אינם תאריכים — לעולם אל תסווג כסתירה זמנית.
+2. אם הטענות מתייחסות לאירועים, נושאים או ישויות שונים — אין סתירה.
+3. לעולם אל תמציא עובדות שלא נאמרו בטענות.
+4. סתירה אמיתית = אותו נושא, אותה ישות, אותה תקופה — שתי גרסאות שלא יכולות להיות נכונות שתיהן בו-זמנית.
+5. "לטענת X" / "נטען כי" / "לגרסת" = טענת צד, לא קביעה עובדתית — אין סתירה אמיתית עם ממצא שיפוטי.
+6. אם ניתן למצוא פרשנות סבירה שמיישבת בין שתי הטענות — אין סתירה אמיתית.
+
+## דוגמאות (few-shot)
+
+### דוגמה 1 — TRUE_CONTRADICTION (סתירה אמיתית):
+טענה א: "החוזה נחתם ביום 15.3.2020 במשרדי החברה בתל אביב"
+טענה ב: "החוזה נחתם ביום 20.5.2021 בנוכחות עורך דין"
+ניתוח:
+- שלב 1 (מושא): שתי הטענות עוסקות באותו חוזה.
+- שלב 2 (מישור): שתיהן קביעות עובדתיות (FACT).
+- שלב 3 (זמן): 15.3.2020 לעומת 20.5.2021 — תאריכים שונים לאותו אירוע.
+- שלב 4 (ישויות): אותה חברה, אותו חוזה.
+- שלב 5 (יישוב): לא ניתן לחתום על אותו חוזה בשני תאריכים שונים.
+→ outcome: TRUE_CONTRADICTION, type: temporal, confidence: 0.95
+
+### דוגמה 2 — TRUE_CONTRADICTION (סתירה כמותית):
+טענה א: "סכום התמורה בחוזה עמד על 500,000 ש״ח"
+טענה ב: "סכום התמורה בחוזה היה 350,000 שקלים בלבד"
+ניתוח:
+- שלב 1 (מושא): אותה תמורה באותו חוזה.
+- שלב 2 (מישור): שתיהן עובדתיות.
+- שלב 3 (זמן): אותה תקופה.
+- שלב 4 (ישויות): אותו חוזה.
+- שלב 5 (יישוב): הסכום לא יכול להיות 500,000 וגם 350,000 בו-זמנית.
+→ outcome: TRUE_CONTRADICTION, type: quant, confidence: 0.92
+
+### דוגמה 3 — TRUE_CONTRADICTION (נוכחות):
+טענה א: "הנתבע נכח בפגישה ושמע את כל הדברים"
+טענה ב: "הנתבע לא נכח בפגישה כלל"
+ניתוח:
+- שלב 1 (מושא): אותה פגישה.
+- שלב 2 (מישור): שתיהן עובדתיות.
+- שלב 4 (ישויות): אותו נתבע, אותה פגישה.
+- שלב 5 (יישוב): אי אפשר להיות נוכח ולא נוכח בו-זמנית.
+→ outcome: TRUE_CONTRADICTION, type: presence, confidence: 0.95
+
+### דוגמה 4 — APPARENT_TENSION_RESOLVABLE (לא סתירה):
+טענה א: "התובע דרש פיצוי בסך 500,000 ש״ח"
+טענה ב: "הנתבע שילם רק 200,000 ש״ח"
+ניתוח:
+- שלב 1 (מושא): סכומי כסף שונים.
+- שלב 5 (יישוב): דרישה אינה תשלום — ניתן לדרוש 500K ולקבל 200K. אין סתירה.
+→ outcome: APPARENT_TENSION_RESOLVABLE, type: none, confidence: 0.85
+
+### דוגמה 5 — DISAGREEMENT_BETWEEN_PARTIES (מחלוקת):
+טענה א: "לטענת התובע, החוזה בוטל ללא הודעה מראש"
+טענה ב: "לטענת הנתבע, ניתנה הודעה 30 יום מראש כנדרש"
+ניתוח:
+- שלב 1 (מושא): אותו ביטול חוזה.
+- שלב 5 (יישוב): שני צדדים שונים מציגים גרסאות שונות — מחלוקת בין צדדים, לא סתירה פנימית.
+→ outcome: DISAGREEMENT_BETWEEN_PARTIES, type: none, confidence: 0.88
+
+### דוגמה 6 — ROLE_OR_ATTRIBUTION_MISMATCH:
+טענה א: "בית המשפט קבע כי הנתבע הפר את ההסכם"
+טענה ב: "לגרסת הנתבע, ההסכם הופר על ידי התובע"
+ניתוח:
+- שלב 2 (מישור): ממצא שיפוטי מול טענת צד.
+- שלב 5 (יישוב): ייחוסים שונים — ממצא של ביהמ״ש לעומת טענת צד.
+→ outcome: ROLE_OR_ATTRIBUTION_MISMATCH, type: none, confidence: 0.82
+
+### דוגמה 7 — TIME_OR_STAGE_SHIFT (לא סתירה):
+טענה א: "ההסכם נחתם בינואר 2020"
+טענה ב: "ההסכם בוטל באוגוסט 2022"
+ניתוח:
+- שלב 3 (זמן): אירועים בתקופות שונות (חתימה לעומת ביטול).
+- שלב 5 (יישוב): הסכם יכול להיחתם בזמן אחד ולהתבטל בזמן אחר.
+→ outcome: TIME_OR_STAGE_SHIFT, type: none, confidence: 0.90
+
+### דוגמה 8 — FALSE_POSITIVE (לא סתירה):
+טענה א: "מדובר בתיק אזרחי מספר 17682-06-25 בבית משפט השלום"
+טענה ב: "נפתח תיק נוסף במספר 23456-01-24 בעניין אותו סכסוך"
+ניתוח:
+- שלב 1 (מושא): מספרי תיקים שונים — לא תאריכים.
+- שלב 5 (יישוב): שני תיקים שונים באותו סכסוך — אין סתירה.
+→ outcome: APPARENT_TENSION_RESOLVABLE, type: none, confidence: 0.90
+
+### דוגמה 9 — DUPLICATE_OR_RESTATEMENT:
+טענה א: "ההסכם נחתם ביום 15.1.2024"
+טענה ב: "החוזה נחתם ב-15 בינואר 2024"
+ניתוח:
+- שלב 1 (מושא): אותו אירוע.
+- שלב 5 (יישוב): אותו תוכן בניסוח שונה — חזרה, לא סתירה.
+→ outcome: DUPLICATE_OR_RESTATEMENT, type: none, confidence: 0.95
+
+### דוגמה 10 — PLANE_MISMATCH:
+טענה א: "הנתבע שילם 50,000 ₪ ביום 1.1.2020"
+טענה ב: "ייתכן שהתשלום אינו מספיק לכיסוי הנזק"
+ניתוח:
+- שלב 2 (מישור): עובדה לעומת הערכה/דעה.
+- שלב 5 (יישוב): מישורים שונים — לא ניתן להשוות.
+→ outcome: PLANE_MISMATCH, type: none, confidence: 0.85
 
 החזר JSON בלבד. בלי הסבר מחוץ ל-JSON."""
 
 
-VERIFIER_USER_TEMPLATE = """סכמה (מחייבת):
-{{
-  "same_fact": "yes|no|unclear",
-  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
-  "type": "temporal|quant|presence|actor|document|identity|none",
-  "confidence": 0.0-1.0,
-  "reason": "בעברית, עד 20 מילים"
-}}
+VERIFIER_USER_TEMPLATE = """בחן את שתי הטענות לפי 5 שלבים:
+
+שלב 1 — זיהוי מושא: מה המושא של כל טענה? האם עוסקות באותו נושא/אירוע?
+שלב 2 — מישור: עובדה/דעה/נורמה? האם באותו מישור?
+שלב 3 — זמן: מתי כל טענה? האם באותה תקופה?
+שלב 4 — ישויות: מי מעורב? האם אותם אנשים/ארגונים?
+שלב 5 — ניסיון יישוב: האם יש פרשנות סבירה שמיישבת?
 
 טענה א: {claim_a}
 
 טענה ב: {claim_b}
 
-סוג מוצע: {suggested_type}
-
-האם הטענות סותרות זו את זו?"""
+סכמה (מחייבת):
+{{
+  "analysis": {{
+    "subject_match": "same|different|partial",
+    "plane_a": "fact|opinion|law|procedural",
+    "plane_b": "fact|opinion|law|procedural",
+    "same_timeframe": true|false|"unknown",
+    "shared_entities": ["..."],
+    "reconciliation_possible": true|false,
+    "reconciliation_explanation": "..."
+  }},
+  "same_fact": "yes|no|unclear",
+  "outcome": "TRUE_CONTRADICTION|APPARENT_TENSION_RESOLVABLE|DISAGREEMENT_BETWEEN_PARTIES|ROLE_OR_ATTRIBUTION_MISMATCH|PLANE_MISMATCH|TIME_OR_STAGE_SHIFT|AMBIGUITY_OR_VAGUENESS|INSUFFICIENT_CONTEXT|DUPLICATE_OR_RESTATEMENT",
+  "type": "temporal|quant|presence|actor|document|identity|none",
+  "confidence": 0.0-1.0,
+  "reason": "בעברית, עד 30 מילים"
+}}"""
 
 
 @dataclass
@@ -202,11 +308,15 @@ class VerifierLLM:
         """
         Verify if two claims contradict each other.
 
+        Uses Chain-of-Thought prompting with Hebrew few-shot examples.
+        The suggested_type parameter is accepted for API compatibility
+        but intentionally NOT passed to the LLM to avoid anchoring bias.
+
         Args:
             claim_a: First claim text
             claim_b: Second claim text
-            suggested_type: Suggested contradiction type from analyzer
-            extra_system_context: Optional extra context (e.g. few-shot examples)
+            suggested_type: Ignored (kept for API compat) — prevents anchoring bias
+            extra_system_context: Optional extra context (e.g. learned few-shot examples)
                                   appended to the system prompt
 
         Returns:
@@ -227,14 +337,14 @@ class VerifierLLM:
 
         self.stats.calls += 1
 
-        # Format user prompt
+        # Format user prompt — intentionally omit suggested_type to prevent
+        # anchoring bias (the LLM should determine the type independently)
         user_prompt = VERIFIER_USER_TEMPLATE.format(
-            claim_a=claim_a[:500],  # Truncate long claims
-            claim_b=claim_b[:500],
-            suggested_type=suggested_type
+            claim_a=claim_a[:800],  # Increased from 500 to preserve legal context
+            claim_b=claim_b[:800],
         )
 
-        # Build system prompt with optional few-shot examples
+        # Build system prompt with optional learned few-shot examples
         system_prompt = VERIFIER_SYSTEM_PROMPT
         if extra_system_context:
             system_prompt = system_prompt + "\n\n" + extra_system_context
@@ -244,12 +354,12 @@ class VerifierLLM:
             {"role": "user", "content": user_prompt}
         ]
 
-        # Call LLM
+        # Call LLM — increased max_tokens for Chain-of-Thought analysis field
         result = await self.client.call(
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=256
+            max_tokens=512
         )
 
         self.stats.total_input_tokens += result.input_tokens
@@ -297,6 +407,14 @@ class VerifierLLM:
         elif outcome and outcome != "TRUE_CONTRADICTION":
             legacy_contradiction = "no"
 
+        # Extract CoT analysis if present — use reconciliation explanation as extra info
+        analysis = data.get("analysis", {})
+        reconciliation_tried = data.get("reconciliation_tried", "")
+        if isinstance(analysis, dict):
+            recon_expl = analysis.get("reconciliation_explanation", "")
+            if recon_expl and not reconciliation_tried:
+                reconciliation_tried = recon_expl
+
         verdict = VerifierResult(
             same_fact=data.get("same_fact", "unclear"),
             contradiction=legacy_contradiction,
@@ -304,7 +422,7 @@ class VerifierLLM:
             type=data.get("type", "none"),
             confidence=float(data.get("confidence", 0.5)),
             reason=data.get("reason", ""),
-            reconciliation_tried=data.get("reconciliation_tried", ""),
+            reconciliation_tried=reconciliation_tried,
             success=True,
             raw_response=data,
         )

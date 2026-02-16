@@ -201,20 +201,22 @@ class RuleBasedDetector:
         ]
 
         # Attribution patterns with subtypes
+        # Fixed: Use (\S+(?:\s+\S+)?) to capture up to 2-word names (e.g., "יוסי כהן")
+        # while avoiding over-matching entire sentences.
         self.attribution_patterns = [
             # Signer patterns
-            (r'(\S+)\s+(?:חתם|חתמה|חותם)', ContradictionSubtype.SIGNER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:חתם|חתמה|חותם)', ContradictionSubtype.SIGNER),
             # Sender patterns
-            (r'(\S+)\s+(?:שלח|שלחה|שולח|מסר|מסרה)', ContradictionSubtype.SENDER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:שלח|שלחה|שולח|מסר|מסרה)', ContradictionSubtype.SENDER),
             # Payer patterns
-            (r'(\S+)\s+(?:שילם|שילמה|משלם|העביר|העבירה)', ContradictionSubtype.PAYER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:שילם|שילמה|משלם|העביר|העבירה)', ContradictionSubtype.PAYER),
             # Decision maker patterns
-            (r'(\S+)\s+(?:החליט|החליטה|קבע|קבעה|אישר|אישרה)', ContradictionSubtype.DECISION_MAKER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:החליט|החליטה|קבע|קבעה|אישר|אישרה)', ContradictionSubtype.DECISION_MAKER),
             # Receiver patterns
-            (r'(\S+)\s+(?:קיבל|קיבלה|מקבל)', ContradictionSubtype.RECEIVER),
-            # General action
-            (r'(?:על ידי|ע"י|באמצעות)\s+(\S+)', ContradictionSubtype.OTHER),
-            (r'(\S+)\s+(?:עשה|ביצע|ביצעה|אמר|אמרה|כתב|כתבה)', ContradictionSubtype.OTHER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:קיבל|קיבלה|מקבל)', ContradictionSubtype.RECEIVER),
+            # General action — "על ידי" captures up to 2 words after
+            (r'(?:על ידי|ע"י|באמצעות)\s+(\S+(?:\s+\S+)?)', ContradictionSubtype.OTHER),
+            (r'(\S+(?:\s+\S+)?)\s+(?:עשה|ביצע|ביצעה|אמר|אמרה|כתב|כתבה)', ContradictionSubtype.OTHER),
         ]
 
         # Presence/participation patterns (positive and negative)
@@ -484,29 +486,49 @@ class RuleBasedDetector:
         return dates
 
     def _is_case_number(self, text: str, start: int, end: int) -> bool:
-        """Check if the match at position is actually a case number, not a date."""
-        # Check surrounding context (50 chars before)
-        context_start = max(0, start - 50)
-        context = text[context_start:start]
+        """Check if the match at position is actually a case number, not a date.
 
-        # Check for case number indicators in context
+        Enhanced: also checks context after the match and looks for case-number
+        format patterns beyond just first_num > 31.
+        """
+        match_text = text[start:end]
+
+        # Check surrounding context (50 chars before AND after)
+        context_before_start = max(0, start - 50)
+        context_before = text[context_before_start:start]
+        context_after_end = min(len(text), end + 50)
+        context_after = text[end:context_after_end]
+
+        # Check for case number indicators in nearby context
         for word in self.case_context_words:
-            if word in context:
+            if word in context_before or word in context_after:
                 return True
 
         # Check if match follows case number format (NNNNN-NN-NN)
-        match_text = text[start:end]
         if re.match(r'^\d{3,6}-\d{2}-\d{2}$', match_text):
             return True
 
-        # Additional check: if the format is NN-NN-NN with first part > 31, it's likely a case
+        # Check if the format is NN-NN-NN where parts don't make sense as dates
         parts = match_text.split('-')
         if len(parts) == 3:
             try:
                 first_num = int(parts[0])
+                second_num = int(parts[1])
+                third_num = int(parts[2])
+
                 # If first number > 31 (max days), it's a case number
                 if first_num > 31:
                     return True
+
+                # If second number > 12 (max months), not a valid date
+                if second_num > 12:
+                    return True
+
+                # If third part is 2 digits and <= 31, and first part also
+                # looks like a case (3+ digits), treat as case number
+                if first_num >= 100:
+                    return True
+
             except ValueError:
                 pass
 
@@ -655,37 +677,67 @@ class RuleBasedDetector:
         return times
 
     def _normalize_time(self, match: Any, time_type: str, full_text: str = "") -> Optional[Tuple[int, int]]:
-        """Normalize time to (hour, minute) tuple in 24-hour format"""
+        """Normalize time to (hour, minute) tuple in 24-hour format.
+
+        Fixed: Only apply AM/PM period offset when the time expression itself
+        is adjacent to the period modifier (within ~20 chars), not when
+        the modifier appears anywhere in the full text. Also guard against
+        producing hours > 23.
+        """
         try:
             if time_type == 'time_hhmm':
                 hour = int(match[0])
                 minute = int(match[1]) if match[1] else 0
-                # Check for period modifier in context
-                for period, offset in self.time_period_map.items():
-                    if period in full_text and hour < 12 and offset > 0:
-                        hour += offset
-                        break
+                # Only apply period offset for ambiguous hours (1-12) when the
+                # period modifier appears near the matched time expression
+                if hour < 12 and hour > 0:
+                    matched_text = f"{match[0]}:{match[1]}" if match[1] else str(match[0])
+                    nearby_context = self._get_nearby_context(full_text, matched_text)
+                    for period, offset in self.time_period_map.items():
+                        if period in nearby_context and offset > 0:
+                            hour += offset
+                            break
+                # Guard: ensure valid 24h range
+                if hour > 23:
+                    hour = hour - 12 if hour > 12 else hour
                 return (hour, minute)
 
             elif time_type == 'time_hour':
                 hour = int(match[0])
                 minute = 0
-                # Check for period modifier
-                for period, offset in self.time_period_map.items():
-                    if period in full_text and hour < 12 and offset > 0:
-                        hour += offset
-                        break
+                # Same nearby-context check for period modifiers
+                if hour < 12 and hour > 0:
+                    matched_text = str(match[0])
+                    nearby_context = self._get_nearby_context(full_text, matched_text)
+                    for period, offset in self.time_period_map.items():
+                        if period in nearby_context and offset > 0:
+                            hour += offset
+                            break
+                if hour > 23:
+                    hour = hour - 12 if hour > 12 else hour
                 return (hour, minute)
 
             elif time_type == 'time_period':
                 hour = int(match[0]) if match[0] else 12
                 minute = int(match[1]) if len(match) > 1 and match[1] else 0
+                if hour > 23:
+                    hour = hour - 12 if hour > 12 else hour
                 return (hour, minute)
 
         except (ValueError, IndexError):
             pass
 
         return None
+
+    @staticmethod
+    def _get_nearby_context(full_text: str, target: str, window: int = 30) -> str:
+        """Get text surrounding a target string for local context checks."""
+        idx = full_text.find(target)
+        if idx == -1:
+            return ""
+        start = max(0, idx - window)
+        end = min(len(full_text), idx + len(target) + window)
+        return full_text[start:end]
 
     def _times_conflict(
         self,
@@ -906,16 +958,31 @@ class RuleBasedDetector:
         return contradictions
 
     def _extract_attributions(self, text: str) -> List[Tuple[str, ContradictionSubtype]]:
-        """Extract attributions (who did what) from text"""
+        """Extract attributions (who did what) from text.
+
+        Enhanced: handles multi-word name captures and filters out
+        stopword-only matches and common legal boilerplate prefixes.
+        """
         attributions = []
+
+        # Common prefixes that should be stripped from extracted names
+        _name_prefix_strip = re.compile(
+            r'^(?:כי|אשר|כאשר|אז|כן|לאחר|לפני|בעת|בזמן)\s+',
+            re.UNICODE,
+        )
 
         for pattern, subtype in self.attribution_patterns:
             matches = re.findall(pattern, text)
             for match in matches:
                 name = match.strip() if isinstance(match, str) else match[0].strip()
 
-                # Filter out stopwords and short matches
-                if name and len(name) > 2 and name.lower() not in self.stopwords:
+                # Strip leading connective words that may have been captured
+                name = _name_prefix_strip.sub('', name).strip()
+
+                # Filter: must have at least one meaningful word (non-stopword, len > 2)
+                words = name.split()
+                meaningful = [w for w in words if len(w) > 2 and w.lower() not in self.stopwords]
+                if meaningful and len(name) > 2:
                     attributions.append((name, subtype))
 
         return attributions
