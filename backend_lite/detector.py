@@ -324,6 +324,23 @@ class RuleBasedDetector:
             except Exception as e:
                 logger.warning(f"Claim enrichment failed (non-fatal): {e}")
 
+        # --- V2.5: Coreference resolution ---
+        try:
+            from .coreference import resolve_coreferences
+            coref = resolve_coreferences(claims, full_text)
+            coref_stats = coref.get_stats()
+            if coref_stats["bindings_found"] > 0:
+                # Feed aliases into entity graph for cross-type merging
+                from .entity_graph import get_entity_graph
+                graph = get_entity_graph()
+                graph.set_coreference_aliases(coref.alias_map)
+                logger.info(
+                    "Coreference: %d bindings, %d role→name mappings",
+                    coref_stats["bindings_found"], coref_stats["role_to_name"],
+                )
+        except Exception as e:
+            logger.warning(f"Coreference resolution failed (non-fatal): {e}")
+
         # --- V3: Extract semantic triplets (WHO/WHAT/TOPIC/WHEN) ---
         try:
             self._triplets = extract_claim_triplets(claims)
@@ -1366,17 +1383,30 @@ class RuleBasedDetector:
         except Exception:
             semantic_score = word_score  # Fallback to word overlap
 
-        # Entity overlap (if graph is built)
+        # Entity overlap — use graph's same_subject_score when available
+        # (includes coreference-resolved entities for "הנתבע" = "מר כהן")
         entity_score = 0.0
         try:
             from .entity_graph import get_entity_graph
             graph = get_entity_graph()
-            if graph._built:
+            if graph._built and claim1 is not None and claim2 is not None:
+                # Use the graph's proper same_subject_score with merged clusters
+                entity_score = graph.same_subject_score(claim1, claim2)
+            elif graph._built:
+                # Fallback: ad-hoc extraction for text-only calls
                 ents1 = set(e[0] for e in graph._extract_entities(text1))
                 ents2 = set(e[0] for e in graph._extract_entities(text2))
                 if ents1 and ents2:
-                    intersection = ents1 & ents2
-                    union = ents1 | ents2
+                    # Check coreference aliases for cross-entity matching
+                    coref = graph._coref_aliases
+                    if coref:
+                        resolved1 = {coref.get(e, e) for e in ents1}
+                        resolved2 = {coref.get(e, e) for e in ents2}
+                        intersection = resolved1 & resolved2
+                        union = resolved1 | resolved2
+                    else:
+                        intersection = ents1 & ents2
+                        union = ents1 | ents2
                     entity_score = len(intersection) / len(union) if union else 0.0
                 elif not ents1 and not ents2:
                     entity_score = 0.3  # Unknown

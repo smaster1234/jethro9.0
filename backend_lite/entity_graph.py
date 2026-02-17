@@ -153,6 +153,21 @@ class EntityGraph:
         self._entities: Dict[str, Entity] = {}  # canonical -> Entity
         self._claim_entities: Dict[str, Set[str]] = defaultdict(set)  # claim_id -> set of entity canonicals
         self._built = False
+        # Coreference alias map (set externally before build)
+        self._coref_aliases: Dict[str, str] = {}
+
+    def set_coreference_aliases(self, aliases: Dict[str, str]) -> None:
+        """
+        Set coreference alias map for enhanced entity clustering.
+
+        When set before build(), role references like "הנתבע" will be
+        merged with their person name "מר כהן" during clustering.
+
+        Args:
+            aliases: Dict mapping surface form → canonical name
+        """
+        self._coref_aliases = dict(aliases)
+        logger.info("Entity graph received %d coreference aliases", len(aliases))
 
     def build(self, claims: list) -> None:
         """
@@ -350,6 +365,9 @@ class EntityGraph:
     def _cluster_entities(self, raw_entities: List[Tuple[str, str, str, str]]) -> None:
         """
         Cluster raw entity mentions into canonical entities using fuzzy matching.
+
+        When coreference aliases are set, also merges entities that resolve
+        to the same canonical name (e.g., "הנתבע" and "מר כהן" → same entity).
         """
         # Group by entity type first (only merge within same type)
         by_type: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
@@ -375,6 +393,24 @@ class EntityGraph:
                         merged = True
                         break
 
+                    # Check coreference aliases: if both map to the same canonical
+                    if self._coref_aliases:
+                        coref_a = self._coref_aliases.get(normalized) or self._coref_aliases.get(text)
+                        coref_b = self._coref_aliases.get(representative) or self._coref_aliases.get(cluster[0][2])
+                        if coref_a and coref_b and coref_a == coref_b:
+                            cluster.append(mention)
+                            merged = True
+                            break
+                        # Also merge if one resolves to the other
+                        if coref_a and coref_a == representative:
+                            cluster.append(mention)
+                            merged = True
+                            break
+                        if coref_b and coref_b == normalized:
+                            cluster.append(mention)
+                            merged = True
+                            break
+
                 if not merged:
                     clusters.append([mention])
 
@@ -399,6 +435,11 @@ class EntityGraph:
                     entity.claim_ids.add(cid)
                     if doc_id:
                         entity.doc_ids.add(doc_id)
+
+        # Post-clustering: merge entities across types via coreference
+        # (e.g., ROLE "הנתבע" + PERSON "דוד כהן" → same entity)
+        if self._coref_aliases:
+            self._merge_cross_type_coreferences()
 
     def _normalize_entity(self, text: str, entity_type: str) -> str:
         """Normalize entity text for comparison."""
@@ -500,6 +541,85 @@ class EntityGraph:
             return 0.0  # Different amounts are different entities
         except ValueError:
             return SequenceMatcher(None, a, b).ratio()
+
+    def _merge_cross_type_coreferences(self) -> None:
+        """
+        Merge entities across types via coreference aliases.
+
+        When coreference tells us that "הנתבע" (ROLE) = "דוד כהן" (PERSON),
+        merge their claim_ids and doc_ids so both entity nodes share
+        the same set of claims. This makes entity_overlap() and
+        same_subject_score() work correctly for coreferent entities.
+
+        Uses fuzzy matching for mention → alias lookup because entity
+        extraction patterns may capture trailing words
+        (e.g., "דוד כהן לא" instead of "דוד כהן").
+        """
+        merged_count = 0
+        # Build reverse map: canonical_name → list of entity keys that map to it
+        coref_groups: Dict[str, List[str]] = defaultdict(list)
+
+        # Collect all alias targets for fuzzy matching
+        alias_targets = set(self._coref_aliases.values())
+
+        for entity_key, entity in self._entities.items():
+            # Check all mentions and the canonical itself
+            for mention in entity.mentions | {entity.canonical}:
+                # Exact alias lookup
+                resolved = self._coref_aliases.get(mention)
+                if resolved:
+                    coref_groups[resolved].append(entity_key)
+                    continue
+
+                # Fuzzy: check if mention starts with an alias target
+                # (handles "דוד כהן לא" → "דוד כהן")
+                for target in alias_targets:
+                    if mention.startswith(target) and len(mention) > len(target):
+                        # The mention starts with the target name — likely
+                        # the extraction grabbed trailing words
+                        coref_groups[target].append(entity_key)
+                        break
+                    if target.startswith(mention) and len(target) > len(mention):
+                        # The mention is a prefix of the target
+                        coref_groups[target].append(entity_key)
+                        break
+
+        # Merge entities within each coreference group
+        for canonical_name, entity_keys in coref_groups.items():
+            unique_keys = list(dict.fromkeys(entity_keys))
+            if len(unique_keys) < 2:
+                continue
+
+            # Keep the entity with the most claims as the primary
+            primary_key = max(unique_keys, key=lambda k: len(self._entities[k].claim_ids))
+            primary = self._entities[primary_key]
+
+            for other_key in unique_keys:
+                if other_key == primary_key:
+                    continue
+                other = self._entities.get(other_key)
+                if not other:
+                    continue
+
+                # Merge claim_ids and doc_ids
+                primary.claim_ids.update(other.claim_ids)
+                primary.doc_ids.update(other.doc_ids)
+                primary.mentions.update(other.mentions)
+
+                # Update claim -> entity mapping to point to primary
+                for cid in other.claim_ids:
+                    self._claim_entities[cid].discard(other_key)
+                    self._claim_entities[cid].add(primary_key)
+
+                merged_count += 1
+
+            # Also add canonical_name as mention
+            primary.mentions.add(canonical_name)
+
+        if merged_count > 0:
+            logger.info(
+                "Cross-type coreference merge: %d entity pairs merged", merged_count
+            )
 
 
 # =============================================================================

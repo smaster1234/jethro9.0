@@ -865,6 +865,22 @@ async def task_analyze_case(
                 except Exception as e:
                     logger.warning("Semantic indexing failed (non-fatal): %s", e)
 
+                # Coreference resolution — scan before entity graph build
+                try:
+                    from ..coreference import resolve_coreferences, reset_coreference_resolver
+                    reset_coreference_resolver()
+                    coref = resolve_coreferences(all_claims)
+                    coref_stats = coref.get_stats()
+                    if coref_stats["bindings_found"] > 0:
+                        # Feed aliases into entity graph before building
+                        entity_graph.set_coreference_aliases(coref.alias_map)
+                        logger.info(
+                            "Coreference: %d bindings, %d role→name",
+                            coref_stats["bindings_found"], coref_stats["role_to_name"],
+                        )
+                except Exception as e:
+                    logger.warning("Coreference resolution failed (non-fatal): %s", e)
+
                 try:
                     reset_entity_graph()
                     entity_graph.build(all_claims)
