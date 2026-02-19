@@ -2,14 +2,14 @@
 Extended Logical Tests — Cross-Examination, Insights & Integration
 ===================================================================
 
-~80 tests covering:
-- Cross-examination question generation
-- Question types and variants
-- Insight engine (scoring)
-- Source classification
+~120 tests covering:
+- QuestionTypeSelector logic (select_type, get_question_prefix, transform_to_type)
+- PlaybookLoader (embedded playbooks, caching)
+- DocumentSourceClassifier (classify_claim_source, _detect_document_type, etc.)
+- CrossExamSourceContext (strategic approach, question phrasing)
+- create_source_classifier / classify_contradiction_sources helpers
 - Deduplication logic
 - Entity graph extraction
-- Witness diff utilities
 - End-to-end detection pipeline
 - Full integration scenarios
 """
@@ -32,6 +32,17 @@ from backend_lite.reconciler import (
     _normalize_entity,
     _entities_match,
 )
+from backend_lite.cross_exam import QuestionType, QuestionTypeSelector, PlaybookLoader
+from backend_lite.source_classifier import (
+    DocumentSourceClassifier,
+    SourceType,
+    PartyRole,
+    DocumentMetadata,
+    SourceClassification,
+    CrossExamSourceContext,
+    create_source_classifier,
+    classify_contradiction_sources,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,68 +56,1066 @@ def _claim(text: str, **kwargs) -> Claim:
 
 
 # ===================================================================
-# 1. Cross-Examination Question Generation Logic
+# 1. QuestionTypeSelector — select_type
 # ===================================================================
 
-class TestCrossExamLogic:
-    """Test question generation logic patterns."""
+class TestQuestionTypeSelectorSelectType:
+    """Test QuestionTypeSelector.select_type for all positions and branches."""
 
-    def test_temporal_contradiction_generates_date_question(self):
-        """When dates conflict, a question about the exact date should be possible."""
-        text1 = "ההסכם נחתם ביום 15/01/2024"
-        text2 = "ההסכם נחתם ביום 20/03/2024"
-        # The contradiction involves dates → question should reference dates
-        assert "15" in text1
-        assert "20" in text2
+    def test_position_0_always_open(self):
+        """Position 0 always returns OPEN regardless of other params."""
+        result = QuestionTypeSelector.select_type(
+            position=0, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.OPEN
 
-    def test_presence_contradiction_generates_attendance_question(self):
-        """When presence conflicts, question about attendance should be formed."""
-        positive = "הייתי נוכח בפגישה"
-        negative = "לא הייתי נוכח בפגישה"
-        assert "נוכח" in positive
-        assert "לא" in negative
+    def test_position_0_open_with_critical_severity(self):
+        result = QuestionTypeSelector.select_type(
+            position=0, total_questions=5,
+            severity=Severity.CRITICAL,
+            contradiction_type=ContradictionType.FACTUAL,
+        )
+        assert result == QuestionType.OPEN
 
-    def test_amount_contradiction_generates_financial_question(self):
-        """When amounts conflict, financial details should be askable."""
-        claim1 = "שולם סכום של ₪50,000"
-        claim2 = "שולם סכום של ₪100,000"
-        assert "50,000" in claim1
-        assert "100,000" in claim2
+    def test_position_0_open_with_quantitative(self):
+        result = QuestionTypeSelector.select_type(
+            position=0, total_questions=5,
+            severity=Severity.LOW,
+            contradiction_type=ContradictionType.QUANTITATIVE,
+        )
+        assert result == QuestionType.OPEN
 
-    def test_identity_contradiction_generates_id_question(self):
-        """When ID numbers conflict, identification question should be formed."""
-        claim1 = "ת.ז. 123456789"
-        claim2 = "ת.ז. 987654321"
-        assert "123456789" in claim1
-        assert "987654321" in claim2
+    def test_position_1_temporal_returns_yes_no(self):
+        """Position 1 with TEMPORAL contradiction returns YES_NO."""
+        result = QuestionTypeSelector.select_type(
+            position=1, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.YES_NO
+
+    def test_position_1_quantitative_returns_yes_no(self):
+        """Position 1 with QUANTITATIVE contradiction returns YES_NO."""
+        result = QuestionTypeSelector.select_type(
+            position=1, total_questions=5,
+            severity=Severity.MEDIUM,
+            contradiction_type=ContradictionType.QUANTITATIVE,
+        )
+        assert result == QuestionType.YES_NO
+
+    def test_position_1_factual_returns_open(self):
+        """Position 1 with FACTUAL contradiction returns OPEN."""
+        result = QuestionTypeSelector.select_type(
+            position=1, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.FACTUAL,
+        )
+        assert result == QuestionType.OPEN
+
+    def test_position_1_attribution_returns_open(self):
+        """Position 1 with ATTRIBUTION contradiction returns OPEN."""
+        result = QuestionTypeSelector.select_type(
+            position=1, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.ATTRIBUTION,
+        )
+        assert result == QuestionType.OPEN
+
+    def test_position_1_witness_returns_open(self):
+        result = QuestionTypeSelector.select_type(
+            position=1, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.WITNESS,
+        )
+        assert result == QuestionType.OPEN
+
+    def test_position_2_high_confidence_returns_confrontation(self):
+        """Position 2 with confidence >= 0.85 returns CONFRONTATION."""
+        result = QuestionTypeSelector.select_type(
+            position=2, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+            confidence=0.9,
+        )
+        assert result == QuestionType.CONFRONTATION
+
+    def test_position_2_exactly_085_returns_confrontation(self):
+        result = QuestionTypeSelector.select_type(
+            position=2, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+            confidence=0.85,
+        )
+        assert result == QuestionType.CONFRONTATION
+
+    def test_position_2_low_confidence_returns_clarification(self):
+        """Position 2 with confidence < 0.85 returns CLARIFICATION."""
+        result = QuestionTypeSelector.select_type(
+            position=2, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+            confidence=0.7,
+        )
+        assert result == QuestionType.CLARIFICATION
+
+    def test_position_2_confidence_084_returns_clarification(self):
+        result = QuestionTypeSelector.select_type(
+            position=2, total_questions=5,
+            severity=Severity.MEDIUM,
+            contradiction_type=ContradictionType.FACTUAL,
+            confidence=0.84,
+        )
+        assert result == QuestionType.CLARIFICATION
+
+    def test_position_3_critical_severity_returns_trap(self):
+        """Position 3 with CRITICAL severity returns TRAP."""
+        result = QuestionTypeSelector.select_type(
+            position=3, total_questions=5,
+            severity=Severity.CRITICAL,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.TRAP
+
+    def test_position_3_high_severity_returns_trap(self):
+        """Position 3 with HIGH severity returns TRAP."""
+        result = QuestionTypeSelector.select_type(
+            position=3, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.FACTUAL,
+        )
+        assert result == QuestionType.TRAP
+
+    def test_position_3_medium_severity_returns_leading(self):
+        """Position 3 with MEDIUM severity returns LEADING."""
+        result = QuestionTypeSelector.select_type(
+            position=3, total_questions=5,
+            severity=Severity.MEDIUM,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.LEADING
+
+    def test_position_3_low_severity_returns_leading(self):
+        """Position 3 with LOW severity returns LEADING."""
+        result = QuestionTypeSelector.select_type(
+            position=3, total_questions=5,
+            severity=Severity.LOW,
+            contradiction_type=ContradictionType.FACTUAL,
+        )
+        assert result == QuestionType.LEADING
+
+    def test_position_4_returns_open(self):
+        """Position >= 4 (beyond special positions) returns OPEN."""
+        result = QuestionTypeSelector.select_type(
+            position=4, total_questions=5,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.OPEN
+
+    def test_position_5_returns_open(self):
+        """Position 5 (last question) returns OPEN."""
+        result = QuestionTypeSelector.select_type(
+            position=5, total_questions=6,
+            severity=Severity.CRITICAL,
+            contradiction_type=ContradictionType.FACTUAL,
+        )
+        assert result == QuestionType.OPEN
+
+    def test_position_10_returns_open(self):
+        result = QuestionTypeSelector.select_type(
+            position=10, total_questions=15,
+            severity=Severity.HIGH,
+            contradiction_type=ContradictionType.TEMPORAL,
+        )
+        assert result == QuestionType.OPEN
 
 
 # ===================================================================
-# 2. Source Classification Logic
+# 2. QuestionTypeSelector — get_question_prefix
 # ===================================================================
 
-class TestSourceClassificationLogic:
-    """Test source type classification patterns."""
+class TestQuestionTypeSelectorPrefix:
+    """Test get_question_prefix for all question types."""
 
-    def test_witness_statement_pattern(self):
-        text = "אני מצהיר כי ראיתי את האירוע במו עיניי"
-        assert "מצהיר" in text
+    def test_leading_prefix(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.LEADING)
+        assert result == "נכון לומר ש"
 
-    def test_party_pleading_pattern(self):
-        text = "התובע טוען כי הנתבע הפר את ההסכם"
-        assert "טוען" in text
+    def test_clarification_prefix(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.CLARIFICATION)
+        assert result == "תוכל להבהיר "
 
-    def test_court_finding_pattern(self):
-        text = "בית המשפט קבע כי התביעה מוצדקת"
-        assert "קבע" in text
+    def test_yes_no_prefix_empty(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.YES_NO)
+        assert result == ""
 
-    def test_external_document_pattern(self):
-        text = "מצורף דו\"ח שמאי מיום 15/01/2024"
-        assert "דו\"ח" in text
+    def test_open_prefix_empty(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.OPEN)
+        assert result == ""
+
+    def test_confrontation_prefix_empty(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.CONFRONTATION)
+        assert result == ""
+
+    def test_trap_prefix_empty(self):
+        result = QuestionTypeSelector.get_question_prefix(QuestionType.TRAP)
+        assert result == ""
+
+    def test_unknown_type_returns_empty(self):
+        result = QuestionTypeSelector.get_question_prefix("nonexistent_type")
+        assert result == ""
 
 
 # ===================================================================
-# 3. Deduplication Logic
+# 3. QuestionTypeSelector — transform_to_type
+# ===================================================================
+
+class TestQuestionTypeSelectorTransform:
+    """Test transform_to_type for all question types."""
+
+    def test_transform_to_yes_no_adds_nachon(self):
+        """YES_NO transform adds ', נכון?' suffix."""
+        question = "ההסכם נחתם ביום 15/01/2024"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.YES_NO, {})
+        assert result.endswith(", נכון?")
+
+    def test_transform_to_yes_no_already_has_nachon(self):
+        """YES_NO transform does not double-add ', נכון?' if already present."""
+        question = "ההסכם נחתם ביום 15/01/2024, נכון?"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.YES_NO, {})
+        assert result.count("נכון?") == 1
+
+    def test_transform_to_yes_no_adds_question_mark(self):
+        question = "ההסכם נחתם"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.YES_NO, {})
+        assert "?" in result
+
+    def test_transform_to_leading_adds_prefix(self):
+        """LEADING transform adds 'נכון לומר ש' prefix."""
+        question = "ההסכם נחתם ביום 15/01/2024"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.LEADING, {})
+        assert result.startswith("נכון לומר ש")
+
+    def test_transform_to_leading_removes_ha_im(self):
+        """LEADING transform removes 'האם' from the question."""
+        question = "האם ההסכם נחתם ביום 15/01/2024?"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.LEADING, {})
+        assert "נכון לומר ש" in result
+        assert "האם" not in result
+
+    def test_transform_to_leading_already_has_prefix(self):
+        """LEADING transform does not double-add prefix."""
+        question = "נכון לומר שההסכם נחתם?"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.LEADING, {})
+        assert result.count("נכון לומר ש") == 1
+
+    def test_transform_to_open_keeps_open_question(self):
+        """OPEN transform leaves an already-open question unchanged."""
+        question = "ספר לי על מה שקרה ביום 15/01/2024"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.OPEN, {})
+        assert result == question
+
+    def test_transform_to_open_keeps_descriptive_question(self):
+        question = "תאר את מה שראית"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.OPEN, {})
+        assert result == question
+
+    def test_transform_to_confrontation_returns_unchanged(self):
+        """CONFRONTATION transform returns question unchanged."""
+        question = "בתצהיר שלך כתבת X אבל במסמך אחר כתוב Y"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.CONFRONTATION, {})
+        assert result == question
+
+    def test_transform_to_clarification_adds_prefix(self):
+        """CLARIFICATION transform adds 'תוכל להבהיר ' prefix."""
+        question = "מה קרה ביום 15/01/2024?"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.CLARIFICATION, {})
+        assert "תוכל" in result
+
+    def test_transform_to_trap_returns_trap_question(self):
+        """TRAP transform returns one of the predefined trap questions."""
+        question = "כלשהי"
+        result = QuestionTypeSelector.transform_to_type(question, QuestionType.TRAP, {})
+        trap_options = [
+            "האם יש סיבה כלשהי לכך שהגרסה השתנתה?",
+            "האם אתה זוכר בדיוק מה אמרת קודם?",
+            "האם יש מסמך שתומך בגרסה הנוכחית?",
+        ]
+        assert result in trap_options
+
+
+# ===================================================================
+# 4. PlaybookLoader
+# ===================================================================
+
+class TestPlaybookLoader:
+    """Test PlaybookLoader loading and cache behavior."""
+
+    def test_load_returns_dict(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert isinstance(result, dict)
+
+    def test_embedded_playbooks_contain_temporal(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "temporal" in result
+
+    def test_embedded_playbooks_contain_quantitative(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "quantitative" in result
+
+    def test_embedded_playbooks_contain_attribution(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "attribution" in result
+
+    def test_embedded_playbooks_contain_factual(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "factual" in result
+
+    def test_embedded_playbooks_contain_version(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "version" in result
+
+    def test_embedded_playbooks_contain_witness(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "witness" in result
+
+    def test_embedded_playbooks_contain_cross_party(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "cross_party" in result
+
+    def test_embedded_playbooks_contain_internal(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        assert "internal" in result
+
+    def test_temporal_has_question_set(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        temporal = result["temporal"]
+        assert "cross_examination" in temporal
+        assert "question_set" in temporal["cross_examination"]
+        assert isinstance(temporal["cross_examination"]["question_set"], list)
+        assert len(temporal["cross_examination"]["question_set"]) > 0
+
+    def test_temporal_has_trap_branches(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        temporal = result["temporal"]
+        assert "trap_branches" in temporal["cross_examination"]
+        assert isinstance(temporal["cross_examination"]["trap_branches"], list)
+
+    def test_all_playbooks_have_cross_examination_structure(self):
+        PlaybookLoader._playbooks = None
+        result = PlaybookLoader.load()
+        required_keys = [
+            "temporal", "quantitative", "attribution", "factual",
+            "version", "witness", "cross_party", "internal",
+        ]
+        for key in required_keys:
+            assert key in result, f"Missing playbook: {key}"
+            playbook = result[key]
+            assert "cross_examination" in playbook, f"{key} missing cross_examination"
+            ce = playbook["cross_examination"]
+            assert "question_set" in ce, f"{key} missing question_set"
+            assert "trap_branches" in ce, f"{key} missing trap_branches"
+
+    def test_cache_reset_and_reload(self):
+        """Setting _playbooks = None forces reload."""
+        PlaybookLoader._playbooks = None
+        first = PlaybookLoader.load()
+        assert PlaybookLoader._playbooks is not None
+        PlaybookLoader._playbooks = None
+        assert PlaybookLoader._playbooks is None
+        second = PlaybookLoader.load()
+        assert PlaybookLoader._playbooks is not None
+        assert set(first.keys()) == set(second.keys())
+
+    def test_caching_returns_same_object(self):
+        """Second call returns same cached dict without resetting."""
+        PlaybookLoader._playbooks = None
+        first = PlaybookLoader.load()
+        second = PlaybookLoader.load()
+        assert first is second
+
+
+# ===================================================================
+# 5. DocumentSourceClassifier — classify_claim_source
+# ===================================================================
+
+class TestDocumentSourceClassifierBasic:
+    """Test classify_claim_source with different inputs."""
+
+    def test_classify_from_metadata_examined_witness(self):
+        """When doc_id matches metadata with is_examined_witness, returns WITNESS_OWN_STATEMENT."""
+        meta = DocumentMetadata(
+            doc_id="doc1", doc_name="תצהיר של מר כהן",
+            doc_type="תצהיר", party_role=PartyRole.DEFENDANT,
+            witness_name="כהן", is_examined_witness=True,
+        )
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            documents_metadata=[meta],
+        )
+        result = classifier.classify_claim_source("טענה כלשהי", doc_id="doc1")
+        assert result.source_type == SourceType.WITNESS_OWN_STATEMENT
+
+    def test_classify_from_metadata_supporting_witness(self):
+        """Affidavit from same party but different witness -> SUPPORTING_WITNESS."""
+        meta = DocumentMetadata(
+            doc_id="doc2", doc_name="תצהיר של מר לוי",
+            doc_type="תצהיר", party_role=PartyRole.DEFENDANT,
+            witness_name="לוי", is_examined_witness=False,
+        )
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            documents_metadata=[meta],
+        )
+        result = classifier.classify_claim_source("טענה כלשהי", doc_id="doc2")
+        assert result.source_type == SourceType.SUPPORTING_WITNESS
+
+    def test_classify_tatzir_doc_name(self):
+        """Doc name with 'תצהיר של מר כהן' and matching witness name -> WITNESS_OWN_STATEMENT."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה כלשהי", doc_name="תצהיר של מר כהן",
+        )
+        assert result.source_type == SourceType.WITNESS_OWN_STATEMENT
+
+    def test_classify_ktav_hagana(self):
+        """Doc name with 'כתב הגנה' from same party -> PARTY_PLEADING."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", doc_name="כתב הגנה מטעם ההגנה",
+        )
+        assert result.source_type == SourceType.PARTY_PLEADING
+
+    def test_classify_ktav_tvia_from_opposing(self):
+        """Doc name 'כתב תביעה' from the plaintiff when witness is defendant -> OPPOSING_EVIDENCE."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", doc_name="כתב תביעה מטעם התביעה",
+        )
+        # plaintiff party detected, but witness is defendant -> opposing
+        assert result.source_type == SourceType.OPPOSING_EVIDENCE
+
+    def test_classify_psak_din(self):
+        """Doc name with 'פסק דין' returns COURT_FINDING."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source("טענה", doc_name="פסק דין חלקי")
+        assert result.source_type == SourceType.COURT_FINDING
+
+    def test_classify_speaker_mode_finding(self):
+        """speaker_mode='finding' returns COURT_FINDING even without doc info."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source("טענה", speaker_mode="finding")
+        assert result.source_type == SourceType.COURT_FINDING
+
+    def test_classify_speaker_mode_party_claim_same_party(self):
+        """speaker_mode='party_claim' from same party -> PARTY_PLEADING."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", speaker_mode="party_claim", speaker_role="defendant",
+        )
+        assert result.source_type == SourceType.PARTY_PLEADING
+
+    def test_classify_speaker_mode_party_claim_opposing_party(self):
+        """speaker_mode='party_claim' from opposing party -> OPPOSING_EVIDENCE."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", speaker_mode="party_claim", speaker_role="plaintiff",
+        )
+        assert result.source_type == SourceType.OPPOSING_EVIDENCE
+
+    def test_classify_no_info_returns_unknown(self):
+        """No doc info and no speaker mode -> UNKNOWN."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source("טענה כלשהי")
+        assert result.source_type == SourceType.UNKNOWN
+
+    def test_classification_has_reference_phrase(self):
+        """Classified witness_own_statement has a non-empty reference_phrase."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", doc_name="תצהיר של מר כהן",
+        )
+        assert result.reference_phrase  # non-empty
+        assert "תצהיר" in result.reference_phrase
+
+    def test_classification_has_attribution_phrase(self):
+        """Classified witness_own_statement has a non-empty attribution_phrase."""
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        result = classifier.classify_claim_source(
+            "טענה", doc_name="תצהיר של מר כהן",
+        )
+        assert result.attribution_phrase  # non-empty
+
+    def test_court_finding_metadata(self):
+        """Court finding from metadata with COURT party_role."""
+        meta = DocumentMetadata(
+            doc_id="court1", doc_name="פסק דין",
+            doc_type="פסק_דין", party_role=PartyRole.COURT,
+        )
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            documents_metadata=[meta],
+        )
+        result = classifier.classify_claim_source("טענה", doc_id="court1")
+        assert result.source_type == SourceType.COURT_FINDING
+
+
+# ===================================================================
+# 6. DocumentSourceClassifier — _detect_document_type
+# ===================================================================
+
+class TestDetectDocumentType:
+    """Test _detect_document_type for various Hebrew document names."""
+
+    def setup_method(self):
+        self.classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+
+    def test_detect_tatzir(self):
+        assert self.classifier._detect_document_type("תצהיר של מר כהן") == "תצהיר"
+
+    def test_detect_tatzir_edut(self):
+        assert self.classifier._detect_document_type("תצהיר עדות ראשית של מר לוי") == "תצהיר"
+
+    def test_detect_ktav_hagana(self):
+        assert self.classifier._detect_document_type("כתב הגנה") == "כתב_הגנה"
+
+    def test_detect_ktav_hagana_metukan(self):
+        assert self.classifier._detect_document_type("כתב הגנה מתוקן") == "כתב_הגנה"
+
+    def test_detect_ktav_tvia(self):
+        assert self.classifier._detect_document_type("כתב תביעה") == "כתב_תביעה"
+
+    def test_detect_psak_din(self):
+        assert self.classifier._detect_document_type("פסק דין") == "פסק_דין"
+
+    def test_detect_hachlata(self):
+        assert self.classifier._detect_document_type("החלטה מיום 15/01/2024") == "פסק_דין"
+
+    def test_detect_protocol(self):
+        assert self.classifier._detect_document_type("פרוטוקול דיון מיום 10/03/2024") == "פרוטוקול"
+
+    def test_detect_havat_daat(self):
+        assert self.classifier._detect_document_type("חוות דעת מומחה") == "חוות_דעת"
+
+    def test_detect_unknown(self):
+        assert self.classifier._detect_document_type("מכתב כלשהו") == "מסמך"
+
+
+# ===================================================================
+# 7. DocumentSourceClassifier — _detect_party_from_doc_name
+# ===================================================================
+
+class TestDetectPartyFromDocName:
+    """Test _detect_party_from_doc_name for various document name patterns."""
+
+    def setup_method(self):
+        self.classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+
+    def test_detect_plaintiff(self):
+        result = self.classifier._detect_party_from_doc_name("תצהיר התובע")
+        assert result == PartyRole.PLAINTIFF
+
+    def test_detect_defendant(self):
+        result = self.classifier._detect_party_from_doc_name("תצהיר הנתבע")
+        assert result == PartyRole.DEFENDANT
+
+    def test_detect_witness(self):
+        result = self.classifier._detect_party_from_doc_name("העד יוסי")
+        assert result == PartyRole.WITNESS
+
+    def test_detect_court(self):
+        result = self.classifier._detect_party_from_doc_name("בית המשפט קבע")
+        assert result == PartyRole.COURT
+
+    def test_detect_unknown(self):
+        result = self.classifier._detect_party_from_doc_name("מסמך כלשהו")
+        assert result == PartyRole.UNKNOWN
+
+    def test_detect_meshiv(self):
+        result = self.classifier._detect_party_from_doc_name("תצהיר המשיבה")
+        assert result == PartyRole.DEFENDANT
+
+    def test_detect_mevaresh(self):
+        result = self.classifier._detect_party_from_doc_name("תצהיר המבקשת")
+        assert result == PartyRole.PLAINTIFF
+
+
+# ===================================================================
+# 8. DocumentSourceClassifier — _is_examined_witness_document
+# ===================================================================
+
+class TestIsExaminedWitnessDocument:
+    """Test _is_examined_witness_document with various inputs."""
+
+    def test_match_by_doc_name(self):
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        assert classifier._is_examined_witness_document("תצהיר של מר כהן") is True
+
+    def test_no_match_different_name(self):
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        assert classifier._is_examined_witness_document("תצהיר של מר לוי") is False
+
+    def test_match_by_speaker(self):
+        classifier = DocumentSourceClassifier(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        assert classifier._is_examined_witness_document("תצהיר כלשהו", speaker="מר כהן") is True
+
+    def test_no_witness_name_returns_false(self):
+        classifier = DocumentSourceClassifier(
+            examined_witness_name=None,
+            examined_witness_party=PartyRole.DEFENDANT,
+        )
+        assert classifier._is_examined_witness_document("תצהיר כהן") is False
+
+
+# ===================================================================
+# 9. CrossExamSourceContext
+# ===================================================================
+
+class TestCrossExamSourceContext:
+    """Test CrossExamSourceContext strategic logic."""
+
+    def _make_classification(self, source_type, ref="", attr="", confront=""):
+        return SourceClassification(
+            source_type=source_type,
+            reference_phrase=ref,
+            attribution_phrase=attr,
+            confrontation_phrase=confront,
+        )
+
+    def test_is_internal_contradiction_both_own(self):
+        """Both claims from WITNESS_OWN_STATEMENT -> internal contradiction."""
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+        )
+        assert ctx.is_internal_contradiction() is True
+        assert ctx.is_supporting_witness_contradiction() is False
+
+    def test_not_internal_when_different_sources(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.OPPOSING_EVIDENCE),
+        )
+        assert ctx.is_internal_contradiction() is False
+
+    def test_is_supporting_witness_contradiction(self):
+        """One WITNESS_OWN_STATEMENT and one SUPPORTING_WITNESS -> supporting witness contradiction."""
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.SUPPORTING_WITNESS),
+        )
+        assert ctx.is_supporting_witness_contradiction() is True
+
+    def test_supporting_witness_contradiction_reversed_order(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.SUPPORTING_WITNESS),
+            contradiction_claim2_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+        )
+        assert ctx.is_supporting_witness_contradiction() is True
+
+    def test_strategic_approach_internal(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+        )
+        assert ctx.get_strategic_approach() == "internal_contradiction"
+
+    def test_strategic_approach_cross_party(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.OPPOSING_EVIDENCE),
+        )
+        assert ctx.get_strategic_approach() == "cross_party_conflict"
+
+    def test_strategic_approach_court_finding(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.COURT_FINDING),
+        )
+        assert ctx.get_strategic_approach() == "contradict_court_finding"
+
+    def test_strategic_approach_supporting_witness(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.SUPPORTING_WITNESS),
+        )
+        assert ctx.get_strategic_approach() == "supporting_witness_conflict"
+
+    def test_strategic_approach_external_document(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.WITNESS_OWN_STATEMENT),
+            contradiction_claim2_source=self._make_classification(SourceType.EXTERNAL_DOCUMENT),
+        )
+        assert ctx.get_strategic_approach() == "contradict_document"
+
+    def test_strategic_approach_general_fallback(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(SourceType.PARTY_PLEADING),
+            contradiction_claim2_source=self._make_classification(SourceType.EXTERNAL_DOCUMENT),
+        )
+        assert ctx.get_strategic_approach() == "general_contradiction"
+
+    def test_get_question_phrasing_returns_required_keys(self):
+        """get_question_phrasing always returns dict with opening, confrontation, closing, strategy_note, approach."""
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך", attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.OPPOSING_EVIDENCE,
+                confront="הצד השני מציג ראיה ש",
+            ),
+        )
+        phrasing = ctx.get_question_phrasing()
+        assert "opening" in phrasing
+        assert "confrontation" in phrasing
+        assert "closing" in phrasing
+        assert "strategy_note" in phrasing
+        assert "approach" in phrasing
+
+    def test_phrasing_internal_contains_closing(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך", attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך", attr="אתה כתבת ש",
+            ),
+        )
+        phrasing = ctx.get_question_phrasing()
+        assert phrasing["approach"] == "internal_contradiction"
+        assert "נכונה" in phrasing["closing"]
+
+    def test_phrasing_court_finding_closing(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT, attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.COURT_FINDING, confront="אבל בית המשפט כבר קבע ש",
+            ),
+        )
+        phrasing = ctx.get_question_phrasing()
+        assert phrasing["approach"] == "contradict_court_finding"
+        assert "בית המשפט" in phrasing["closing"]
+
+    def test_generate_source_aware_question_confrontation(self):
+        """generate_source_aware_question produces question with both quotes and references."""
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך", attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.OPPOSING_EVIDENCE,
+                confront="הצד השני מציג ראיה ש",
+            ),
+        )
+        question = ctx.generate_source_aware_question(
+            quote_a="שילמתי 50,000 שקלים",
+            quote_b="לא שולם דבר",
+            question_type="confrontation",
+        )
+        assert "שילמתי 50,000" in question
+        assert "לא שולם" in question
+
+    def test_generate_source_aware_question_internal(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT,
+                ref="בתצהיר שלך",
+            ),
+        )
+        question = ctx.generate_source_aware_question(
+            quote_a="ההסכם נחתם ב-15/01",
+            quote_b="ההסכם נחתם ב-20/03",
+            question_type="confrontation",
+        )
+        assert "15/01" in question
+        assert "20/03" in question
+
+    def test_generate_source_aware_question_clarification(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT, attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.OPPOSING_EVIDENCE,
+            ),
+        )
+        question = ctx.generate_source_aware_question(
+            quote_a="שילמתי את הכל",
+            quote_b="לא שולם",
+            question_type="clarification",
+        )
+        assert "שילמתי" in question
+        assert "הבהיר" in question
+
+    def test_generate_source_aware_question_trap(self):
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=self._make_classification(
+                SourceType.WITNESS_OWN_STATEMENT, attr="אתה כתבת ש",
+            ),
+            contradiction_claim2_source=self._make_classification(
+                SourceType.OPPOSING_EVIDENCE,
+            ),
+        )
+        question = ctx.generate_source_aware_question(
+            quote_a="הגעתי לפגישה",
+            quote_b="לא הגעת",
+            question_type="trap",
+        )
+        assert "הגעתי" in question
+
+    def test_get_witness_own_claim_claim1(self):
+        own = self._make_classification(SourceType.WITNESS_OWN_STATEMENT)
+        opp = self._make_classification(SourceType.OPPOSING_EVIDENCE)
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=own,
+            contradiction_claim2_source=opp,
+        )
+        assert ctx.get_witness_own_claim() is own
+
+    def test_get_witness_own_claim_claim2(self):
+        opp = self._make_classification(SourceType.OPPOSING_EVIDENCE)
+        own = self._make_classification(SourceType.WITNESS_OWN_STATEMENT)
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=opp,
+            contradiction_claim2_source=own,
+        )
+        assert ctx.get_witness_own_claim() is own
+
+    def test_get_opposing_claim(self):
+        own = self._make_classification(SourceType.WITNESS_OWN_STATEMENT)
+        opp = self._make_classification(SourceType.OPPOSING_EVIDENCE)
+        ctx = CrossExamSourceContext(
+            examined_witness_name="כהן",
+            examined_witness_party=PartyRole.DEFENDANT,
+            contradiction_claim1_source=own,
+            contradiction_claim2_source=opp,
+        )
+        assert ctx.get_opposing_claim() is opp
+
+
+# ===================================================================
+# 10. create_source_classifier and classify_contradiction_sources
+# ===================================================================
+
+class TestCreateSourceClassifier:
+    """Test helper functions for creating classifiers and classifying contradictions."""
+
+    def test_create_classifier_plaintiff(self):
+        classifier = create_source_classifier(
+            examined_witness_name="כהן",
+            examined_witness_party="plaintiff",
+        )
+        assert classifier.examined_witness_party == PartyRole.PLAINTIFF
+        assert classifier.examined_witness_name == "כהן"
+
+    def test_create_classifier_defendant(self):
+        classifier = create_source_classifier(
+            examined_witness_name="לוי",
+            examined_witness_party="defendant",
+        )
+        assert classifier.examined_witness_party == PartyRole.DEFENDANT
+        assert classifier.examined_witness_name == "לוי"
+
+    def test_create_classifier_with_documents(self):
+        docs = [
+            {
+                "id": "doc1",
+                "name": "תצהיר כהן",
+                "type": "תצהיר",
+                "party": "defendant",
+                "witness_name": "כהן",
+                "is_examined_witness": True,
+            },
+        ]
+        classifier = create_source_classifier(
+            examined_witness_name="כהן",
+            examined_witness_party="defendant",
+            documents=docs,
+        )
+        assert "doc1" in classifier.documents_metadata
+        meta = classifier.documents_metadata["doc1"]
+        assert meta.is_examined_witness is True
+        assert meta.witness_name == "כהן"
+
+    def test_classify_contradiction_sources_returns_context(self):
+        classifier = create_source_classifier(
+            examined_witness_name="כהן",
+            examined_witness_party="defendant",
+        )
+        ctx = classify_contradiction_sources(
+            classifier=classifier,
+            claim1_doc_id=None,
+            claim1_doc_name="תצהיר של מר כהן",
+            claim1_speaker=None,
+            claim1_speaker_role=None,
+            claim1_speaker_mode=None,
+            claim2_doc_id=None,
+            claim2_doc_name=None,
+            claim2_speaker=None,
+            claim2_speaker_role="plaintiff",
+            claim2_speaker_mode="party_claim",
+        )
+        assert isinstance(ctx, CrossExamSourceContext)
+        assert ctx.claim1_source.source_type == SourceType.WITNESS_OWN_STATEMENT
+        assert ctx.claim2_source.source_type == SourceType.OPPOSING_EVIDENCE
+
+    def test_classify_contradiction_sources_internal(self):
+        """Both claims from witness's own documents -> internal contradiction."""
+        classifier = create_source_classifier(
+            examined_witness_name="כהן",
+            examined_witness_party="defendant",
+        )
+        ctx = classify_contradiction_sources(
+            classifier=classifier,
+            claim1_doc_id=None,
+            claim1_doc_name="תצהיר של מר כהן",
+            claim1_speaker=None,
+            claim1_speaker_role=None,
+            claim1_speaker_mode=None,
+            claim2_doc_id=None,
+            claim2_doc_name="תצהיר של מר כהן מיום 20/03",
+            claim2_speaker=None,
+            claim2_speaker_role=None,
+            claim2_speaker_mode=None,
+        )
+        assert ctx.is_internal_contradiction() is True
+        assert ctx.get_strategic_approach() == "internal_contradiction"
+
+    def test_classify_contradiction_sources_court_finding(self):
+        """One claim from witness, one from court -> contradict_court_finding."""
+        classifier = create_source_classifier(
+            examined_witness_name="כהן",
+            examined_witness_party="defendant",
+        )
+        ctx = classify_contradiction_sources(
+            classifier=classifier,
+            claim1_doc_id=None,
+            claim1_doc_name="תצהיר של מר כהן",
+            claim1_speaker=None,
+            claim1_speaker_role=None,
+            claim1_speaker_mode=None,
+            claim2_doc_id=None,
+            claim2_doc_name=None,
+            claim2_speaker=None,
+            claim2_speaker_role=None,
+            claim2_speaker_mode="finding",
+        )
+        assert ctx.claim2_source.source_type == SourceType.COURT_FINDING
+        assert ctx.get_strategic_approach() == "contradict_court_finding"
+
+
+# ===================================================================
+# 11. Deduplication Logic
 # ===================================================================
 
 class TestDeduplicationLogic:
@@ -164,7 +1173,7 @@ class TestDeduplicationLogic:
 
 
 # ===================================================================
-# 4. Entity Graph Logic
+# 12. Entity Graph Logic
 # ===================================================================
 
 class TestEntityGraphLogic:
@@ -206,7 +1215,7 @@ class TestEntityGraphLogic:
 
 
 # ===================================================================
-# 5. End-to-End Detection Pipeline
+# 13. End-to-End Detection Pipeline
 # ===================================================================
 
 class TestEndToEndPipeline:
@@ -291,7 +1300,7 @@ class TestEndToEndPipeline:
 
 
 # ===================================================================
-# 6. Extractor + Detector Integration
+# 14. Extractor + Detector Integration
 # ===================================================================
 
 class TestExtractorDetectorIntegration:
@@ -328,7 +1337,7 @@ class TestExtractorDetectorIntegration:
 
 
 # ===================================================================
-# 7. Reconciler Integration Scenarios
+# 15. Reconciler Integration Scenarios
 # ===================================================================
 
 class TestReconcilerIntegrationScenarios:
@@ -392,7 +1401,7 @@ class TestReconcilerIntegrationScenarios:
 
 
 # ===================================================================
-# 8. Detection with Multiple Contradiction Types
+# 16. Detection with Multiple Contradiction Types
 # ===================================================================
 
 class TestMultipleContradictionTypes:
@@ -420,7 +1429,7 @@ class TestMultipleContradictionTypes:
 
 
 # ===================================================================
-# 9. Contradiction Properties
+# 17. Contradiction Properties
 # ===================================================================
 
 class TestContradictionProperties:
@@ -501,7 +1510,7 @@ class TestContradictionProperties:
 
 
 # ===================================================================
-# 10. Detection Result Properties
+# 18. Detection Result Properties
 # ===================================================================
 
 class TestDetectionResultProperties:
@@ -540,7 +1549,7 @@ class TestDetectionResultProperties:
 
 
 # ===================================================================
-# 11. Claim Evidence Conversion
+# 19. Claim Evidence Conversion
 # ===================================================================
 
 class TestClaimEvidenceConversion:
@@ -571,37 +1580,3 @@ class TestClaimEvidenceConversion:
         )
         evidence = contr.to_claim_evidence(claim, "quote", None)
         assert evidence.locator is None
-
-
-# ===================================================================
-# 12. Insight Scoring Logic
-# ===================================================================
-
-class TestInsightScoringLogic:
-    """Test the scoring logic patterns used by the insight engine."""
-
-    def test_verified_higher_than_likely(self):
-        """VERIFIED status should indicate higher certainty."""
-        assert ContradictionStatus.VERIFIED.value == "verified"
-        assert ContradictionStatus.LIKELY.value == "likely"
-
-    def test_critical_severity_highest(self):
-        """CRITICAL is the highest severity."""
-        severities = {
-            Severity.CRITICAL: 4,
-            Severity.HIGH: 3,
-            Severity.MEDIUM: 2,
-            Severity.LOW: 1,
-        }
-        assert severities[Severity.CRITICAL] > severities[Severity.HIGH]
-        assert severities[Severity.HIGH] > severities[Severity.MEDIUM]
-        assert severities[Severity.MEDIUM] > severities[Severity.LOW]
-
-    def test_hard_contradiction_most_important(self):
-        """Hard contradiction should be most important for litigation."""
-        assert ContradictionCategory.HARD_CONTRADICTION.value == "hard_contradiction"
-        assert ContradictionCategory.TRUE_CONTRADICTION.value == "TRUE_CONTRADICTION"
-
-    def test_narrative_ambiguity_less_important(self):
-        """Narrative ambiguity is less critical than hard contradiction."""
-        assert ContradictionCategory.NARRATIVE_AMBIGUITY.value == "narrative_ambiguity"
