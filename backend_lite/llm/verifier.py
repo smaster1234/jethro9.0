@@ -1,13 +1,13 @@
 """
-Verifier LLM Client (Gemini / Qwen via OpenRouter)
-===================================================
+Verifier LLM Client (Claude / Gemini)
+======================================
 
 Second opinion verifier for contradiction validation.
-Uses Gemini (primary) or Qwen via OpenRouter (fallback).
+Uses Claude Sonnet (when LLM_MODE=claude) or Gemini (default).
 
 Role:
-- Binary decision only (yes/no/unclear)
-- Minimal JSON output
+- Structured 5-step analysis
+- 9-category outcome classification
 - Optimized for Precision (filter false positives)
 """
 
@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from .gemini_client import GeminiBaseClient
+from .claude_client import ClaudeBaseClient
 from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
@@ -189,36 +190,49 @@ class VerifierResult:
 
 def _detect_verifier_backend() -> str:
     """
-    Detect which Gemini model to use for the verifier.
-
-    Privacy-first: Only Google Gemini is supported — no third-party proxies.
-    All data goes directly to generativelanguage.googleapis.com.
+    Detect which LLM backend to use for the verifier.
 
     Priority:
-    1. GEMINI_API_KEY set -> use Gemini
-    2. None -> disabled
+    1. LLM_MODE=claude + ANTHROPIC_API_KEY -> Claude Sonnet
+    2. LLM_MODE=gemini + GEMINI_API_KEY -> Gemini
+    3. ANTHROPIC_API_KEY set -> Claude (auto-detect)
+    4. GEMINI_API_KEY set -> Gemini (auto-detect)
+    5. None -> disabled
     """
+    llm_mode = os.getenv("LLM_MODE", "").lower()
+    if llm_mode == "claude" and os.getenv("ANTHROPIC_API_KEY"):
+        return "claude"
+    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    if os.getenv("ANTHROPIC_API_KEY") and llm_mode == "claude":
+        return "claude"
     if os.getenv("GEMINI_API_KEY"):
         return "gemini"
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "claude"
     return "none"
 
 
 class VerifierLLM:
     """
-    Verifier LLM — Gemini only (privacy-first).
+    Verifier LLM — Claude Sonnet or Gemini.
 
-    Primary: Gemini 3 Flash Preview (with thinking_level=medium for CoT)
-    Fallback: Gemini 2.5 Flash (if primary fails)
+    When LLM_MODE=claude:
+    - Primary: Claude Sonnet 4.5 (superior precision for Hebrew legal verification)
+    - Fallback: Gemini 2.5 Flash (if Claude unavailable)
 
-    All data goes directly to Google — no third-party proxies.
+    When LLM_MODE=gemini:
+    - Primary: Gemini 3 Flash Preview (with thinking_level=medium)
+    - Fallback: Gemini 2.5 Flash
+
     Provides second opinion on contradiction candidates.
     Optimized for precision — filters false positives.
     """
 
     # Default models
-    PRIMARY_MODEL = "gemini-3-flash-preview"
-    FALLBACK_MODEL = "gemini-2.5-flash"
-    # Thinking level for verification — medium balances quality vs latency
+    GEMINI_PRIMARY = "gemini-3-flash-preview"
+    GEMINI_FALLBACK = "gemini-2.5-flash"
+    CLAUDE_PRIMARY = "claude-sonnet-4-5-20250929"
     THINKING_LEVEL = "medium"
 
     def __init__(self):
@@ -238,24 +252,54 @@ class VerifierLLM:
             logger.info("Verifier disabled via VERIFIER_ENABLED=false")
             return
 
-        if backend == "gemini":
+        if backend == "claude":
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            model = os.getenv("CLAUDE_VERIFIER_MODEL", self.CLAUDE_PRIMARY)
+            self.model = model
+            self.enabled = True
+            self.client = ClaudeBaseClient(
+                api_key=api_key,
+                model=model,
+                timeout=90,
+                app_name="JETHRO Verifier",
+            )
+
+            # Fallback: Gemini if available
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key:
+                fallback_model = os.getenv("GEMINI_VERIFIER_FALLBACK", self.GEMINI_FALLBACK)
+                self.fallback_model = fallback_model
+                self.fallback_client = GeminiBaseClient(
+                    api_key=gemini_key,
+                    model=fallback_model,
+                    timeout=30,
+                    app_name="JETHRO Verifier Fallback",
+                )
+            else:
+                self.fallback_model = "none"
+                self.fallback_client = None
+
+            logger.info(
+                "Verifier initialized: primary=Claude %s, fallback=%s",
+                model, self.fallback_model,
+            )
+
+        elif backend == "gemini":
             api_key = os.getenv("GEMINI_API_KEY")
 
-            # Primary: Gemini 3 Flash Preview with thinking
-            model = os.getenv("GEMINI_VERIFIER_MODEL", self.PRIMARY_MODEL)
+            model = os.getenv("GEMINI_VERIFIER_MODEL", self.GEMINI_PRIMARY)
             thinking = os.getenv("GEMINI_VERIFIER_THINKING", self.THINKING_LEVEL)
             self.model = model
             self.enabled = True
             self.client = GeminiBaseClient(
                 api_key=api_key,
                 model=model,
-                timeout=45,  # Longer timeout for thinking model
+                timeout=45,
                 app_name="JETHRO Verifier",
                 thinking_level=thinking,
             )
 
-            # Fallback: Gemini 2.5 Flash (no thinking, faster)
-            fallback_model = os.getenv("GEMINI_VERIFIER_FALLBACK", self.FALLBACK_MODEL)
+            fallback_model = os.getenv("GEMINI_VERIFIER_FALLBACK", self.GEMINI_FALLBACK)
             self.fallback_model = fallback_model
             self.fallback_client = GeminiBaseClient(
                 api_key=api_key,
@@ -264,7 +308,7 @@ class VerifierLLM:
                 app_name="JETHRO Verifier Fallback",
             )
             logger.info(
-                "Verifier initialized: primary=%s (thinking=%s), fallback=%s",
+                "Verifier initialized: primary=Gemini %s (thinking=%s), fallback=%s",
                 model, thinking, fallback_model,
             )
 
@@ -274,7 +318,7 @@ class VerifierLLM:
             self.enabled = False
             self.client = None
             self.fallback_client = None
-            logger.warning("Verifier disabled: GEMINI_API_KEY not configured")
+            logger.warning("Verifier disabled: no LLM API key configured")
 
     async def close(self):
         """Close primary and fallback clients"""

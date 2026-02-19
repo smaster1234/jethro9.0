@@ -195,6 +195,13 @@ class ClaimExtractor:
         # Hebrew sentence endings (including Hebrew period maqaf)
         self.sentence_pattern = re.compile(r'[.!?:](?:\s|$)')
 
+        # Case number pattern — must NOT be split as sentence boundary
+        # Matches: 17682-06-25, ת"א 12345-01-22, ע"א 5678/20
+        self._case_number_re = re.compile(
+            r'(?:ת"א|רמ"ש|תמ"ש|רע"א|ע"א|ה"פ|בש"א|ע"ע|ת"ע|ע"מ|תיק)\s*'
+            r'(?:\d{3,6}[-/]\d{2}[-/]\d{2}|\d{3,6}/\d{2,4})'
+        )
+
         # Numbered clause pattern (e.g., "1.", "1.1", "א.", "א.1")
         self.clause_pattern = re.compile(
             r'^[\s]*'
@@ -397,20 +404,148 @@ class ClaimExtractor:
         return [p.strip() for p in self.paragraph_pattern.split(text) if p.strip()]
 
     def _split_by_sentences(self, text: str) -> List[str]:
-        """Split text by sentences"""
-        # First split by paragraphs to maintain structure
+        """
+        Split text by sentences — quote/parenthesis/case-number aware.
+
+        Improvements over naive regex split:
+        1. Does NOT break inside quotes ("..." or «...»)
+        2. Does NOT break inside parentheses (...)
+        3. Does NOT break on periods in case numbers (ת"א 12345-01-22)
+        4. Does NOT break on decimal numbers (5.5, 3.14)
+        5. Preserves section references (סעיף 5. לעיל)
+        """
         paragraphs = self._split_by_paragraphs(text)
 
         sentences = []
         for para in paragraphs:
-            # Split paragraph into sentences
-            parts = self.sentence_pattern.split(para)
+            parts = self._smart_sentence_split(para)
             for part in parts:
                 part = part.strip()
                 if part:
                     sentences.append(part)
 
         return sentences
+
+    def _smart_sentence_split(self, text: str) -> List[str]:
+        """
+        Context-aware sentence splitter for Hebrew legal text.
+
+        Tracks quote depth and parenthesis depth to avoid splitting
+        inside quoted text or parenthetical expressions.
+        """
+        if not text or len(text) < 10:
+            return [text] if text else []
+
+        # Protect case numbers from being split
+        protected = text
+        case_placeholders = {}
+        for i, m in enumerate(self._case_number_re.finditer(text)):
+            placeholder = f"\x00CASE{i}\x00"
+            case_placeholders[placeholder] = m.group()
+            protected = protected.replace(m.group(), placeholder, 1)
+
+        sentences = []
+        current = []
+        quote_depth = 0  # Inside "..." or «...»
+        paren_depth = 0  # Inside (...)
+
+        i = 0
+        chars = protected
+        while i < len(chars):
+            ch = chars[i]
+
+            # Track quote depth
+            if ch in '"«':
+                quote_depth += 1
+            elif ch in '"»' and quote_depth > 0:
+                quote_depth -= 1
+            # Track parenthesis depth
+            elif ch == '(':
+                paren_depth += 1
+            elif ch == ')' and paren_depth > 0:
+                paren_depth -= 1
+
+            # Only split on sentence-ending punctuation when NOT inside
+            # quotes or parentheses
+            if ch in '.!?:' and quote_depth == 0 and paren_depth == 0:
+                # Check: is this actually a sentence boundary?
+                is_boundary = False
+
+                if ch in '!?':
+                    # Exclamation and question marks are always boundaries
+                    is_boundary = True
+                elif ch == ':':
+                    # Colon: boundary only if followed by whitespace+newline
+                    # or end of text
+                    next_pos = i + 1
+                    if next_pos >= len(chars) or chars[next_pos] in '\n\r':
+                        is_boundary = True
+                elif ch == '.':
+                    # Period: check it's not part of a number, abbreviation,
+                    # or section reference
+                    is_boundary = self._is_sentence_boundary(chars, i)
+
+                if is_boundary:
+                    current.append(ch)
+                    sentence = ''.join(current).strip()
+                    if sentence:
+                        # Restore case number placeholders
+                        for ph, orig in case_placeholders.items():
+                            sentence = sentence.replace(ph, orig)
+                        sentences.append(sentence)
+                    current = []
+                    i += 1
+                    # Skip trailing whitespace
+                    while i < len(chars) and chars[i] in ' \t':
+                        i += 1
+                    continue
+
+            current.append(ch)
+            i += 1
+
+        # Flush remaining text
+        remainder = ''.join(current).strip()
+        if remainder:
+            for ph, orig in case_placeholders.items():
+                remainder = remainder.replace(ph, orig)
+            sentences.append(remainder)
+
+        return sentences
+
+    def _is_sentence_boundary(self, text: str, pos: int) -> bool:
+        """
+        Determine if period at `pos` is a real sentence boundary.
+
+        Returns False for:
+        - Decimal numbers: 5.5, 3.14
+        - Section refs: סעיף 5.
+        - Abbreviations: ד"ר, עו"ד, בע"מ
+        - Continuation periods inside abbreviations
+        """
+        # Must be followed by whitespace or end-of-string to be a boundary
+        next_pos = pos + 1
+        if next_pos < len(text) and text[next_pos] not in ' \t\n\r':
+            # Period followed by a digit = decimal number (e.g. 5.5)
+            if text[next_pos].isdigit():
+                return False
+            # Period followed by a letter = likely abbreviation continuation
+            return False
+
+        # Check if preceded by a single digit (section ref like "סעיף 5.")
+        if pos > 0 and text[pos - 1].isdigit():
+            # Look further back: if there's "סעיף" or "סעיפים" → not a boundary
+            lookback = text[max(0, pos - 15):pos].strip()
+            section_words = ['סעיף', 'סעיפים', 'פסקה', 'פרק', 'חלק', 'נספח', 'עמוד', 'עמ']
+            for sw in section_words:
+                if lookback.endswith(sw) or sw in lookback:
+                    return False
+
+        # End of text = always a boundary
+        if next_pos >= len(text):
+            return True
+
+        # Followed by whitespace = boundary
+        return True
 
     def _split_by_clauses(self, text: str) -> List[str]:
         """Split text by numbered clauses"""

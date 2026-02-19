@@ -1,9 +1,9 @@
 """
-Analyzer LLM Client (Gemini / DeepSeek via OpenRouter)
-======================================================
+Analyzer LLM Client (Claude / Gemini)
+======================================
 
 Primary analyzer for contradiction detection.
-Uses Gemini (default) or DeepSeek via OpenRouter as fallback.
+Uses Claude Sonnet (when LLM_MODE=claude) or Gemini (default).
 
 Role:
 - Propose contradiction candidates
@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from .openrouter_base import LLMCallResult
 from .gemini_client import GeminiBaseClient
+from .claude_client import ClaudeBaseClient
 from ..llm_client import parse_json_robust
 
 logger = logging.getLogger(__name__)
@@ -99,36 +100,50 @@ class AnalyzerResult:
 
 def _detect_llm_backend() -> str:
     """
-    Detect which Gemini model to use for the analyzer.
-
-    Privacy-first: Only Google Gemini is supported — no third-party proxies.
-    All data goes directly to generativelanguage.googleapis.com.
+    Detect which LLM backend to use for the analyzer.
 
     Priority:
-    1. GEMINI_API_KEY set -> use Gemini
-    2. None -> disabled
+    1. LLM_MODE=claude + ANTHROPIC_API_KEY -> Claude Sonnet
+    2. LLM_MODE=gemini + GEMINI_API_KEY -> Gemini
+    3. ANTHROPIC_API_KEY set -> Claude (auto-detect)
+    4. GEMINI_API_KEY set -> Gemini (auto-detect)
+    5. None -> disabled
     """
+    llm_mode = os.getenv("LLM_MODE", "").lower()
+    if llm_mode == "claude" and os.getenv("ANTHROPIC_API_KEY"):
+        return "claude"
+    if llm_mode == "gemini" and os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    # Auto-detect
+    if os.getenv("ANTHROPIC_API_KEY") and llm_mode == "claude":
+        return "claude"
     if os.getenv("GEMINI_API_KEY"):
         return "gemini"
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "claude"
     return "none"
 
 
 class AnalyzerLLM:
     """
-    Analyzer LLM — Gemini only (privacy-first).
+    Analyzer LLM — Claude Sonnet or Gemini.
 
-    Primary: Gemini 3 Flash Preview (with thinking_level=low for speed)
-    Fallback: Gemini 2.5 Flash (if primary fails)
+    When LLM_MODE=claude:
+    - Primary: Claude Sonnet 4.5 (superior Hebrew legal reasoning)
+    - Fallback: Gemini 2.5 Flash (if Claude unavailable)
 
-    All data goes directly to Google — no third-party proxies.
+    When LLM_MODE=gemini:
+    - Primary: Gemini 3 Flash Preview (with thinking_level=low)
+    - Fallback: Gemini 2.5 Flash
+
     Proposes contradiction candidates with broad detection.
     Optimized for recall — may over-detect, verifier filters.
     """
 
     # Default models
-    PRIMARY_MODEL = "gemini-3-flash-preview"
-    FALLBACK_MODEL = "gemini-2.5-flash"
-    # Thinking level for analysis — low for speed (analyzer prioritizes recall)
+    GEMINI_PRIMARY = "gemini-3-flash-preview"
+    GEMINI_FALLBACK = "gemini-2.5-flash"
+    CLAUDE_PRIMARY = "claude-sonnet-4-5-20250929"
     THINKING_LEVEL = "low"
 
     def __init__(self):
@@ -136,11 +151,41 @@ class AnalyzerLLM:
         self.backend = backend
         self.stats = AnalyzerStats()
 
-        if backend == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY")
+        if backend == "claude":
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            model = os.getenv("CLAUDE_ANALYZER_MODEL", self.CLAUDE_PRIMARY)
+            self.model = model
+            self.enabled = True
+            self.client = ClaudeBaseClient(
+                api_key=api_key,
+                model=model,
+                timeout=90,
+                app_name="JETHRO Analyzer",
+            )
 
-            # Primary: Gemini 3 Flash Preview with thinking
-            model = os.getenv("GEMINI_ANALYZER_MODEL", self.PRIMARY_MODEL)
+            # Fallback: Gemini if available, else None
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key:
+                fallback_model = os.getenv("GEMINI_ANALYZER_FALLBACK", self.GEMINI_FALLBACK)
+                self.fallback_model = fallback_model
+                self.fallback_client = GeminiBaseClient(
+                    api_key=gemini_key,
+                    model=fallback_model,
+                    timeout=60,
+                    app_name="JETHRO Analyzer Fallback",
+                )
+            else:
+                self.fallback_model = "none"
+                self.fallback_client = None
+
+            logger.info(
+                "Analyzer initialized: primary=Claude %s, fallback=%s",
+                model, self.fallback_model,
+            )
+
+        elif backend == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            model = os.getenv("GEMINI_ANALYZER_MODEL", self.GEMINI_PRIMARY)
             thinking = os.getenv("GEMINI_ANALYZER_THINKING", self.THINKING_LEVEL)
             self.model = model
             self.enabled = True
@@ -153,7 +198,7 @@ class AnalyzerLLM:
             )
 
             # Fallback: Gemini 2.5 Flash (no thinking, faster)
-            fallback_model = os.getenv("GEMINI_ANALYZER_FALLBACK", self.FALLBACK_MODEL)
+            fallback_model = os.getenv("GEMINI_ANALYZER_FALLBACK", self.GEMINI_FALLBACK)
             self.fallback_model = fallback_model
             self.fallback_client = GeminiBaseClient(
                 api_key=api_key,
@@ -162,7 +207,7 @@ class AnalyzerLLM:
                 app_name="JETHRO Analyzer Fallback",
             )
             logger.info(
-                "Analyzer initialized: primary=%s (thinking=%s), fallback=%s",
+                "Analyzer initialized: primary=Gemini %s (thinking=%s), fallback=%s",
                 model, thinking, fallback_model,
             )
 
@@ -172,7 +217,7 @@ class AnalyzerLLM:
             self.enabled = False
             self.client = None
             self.fallback_client = None
-            logger.warning("Analyzer disabled: GEMINI_API_KEY not configured")
+            logger.warning("Analyzer disabled: no LLM API key configured")
 
     async def close(self):
         """Close primary and fallback clients"""

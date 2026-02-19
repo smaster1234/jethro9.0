@@ -1,26 +1,30 @@
 """
-LLM Module — Privacy-First (Gemini Only)
-=========================================
+LLM Module — Multi-Backend (Claude / Gemini)
+=============================================
 
-All LLM calls go directly to Google's Gemini API.
-No third-party proxies (OpenRouter, DeepSeek, etc.) are used.
+Supports Claude Sonnet (via Anthropic API) and Gemini (via Google API).
+Set LLM_MODE=claude + ANTHROPIC_API_KEY for Claude-powered analysis.
+Set LLM_MODE=gemini + GEMINI_API_KEY for Gemini-powered analysis.
 
 Architecture:
 - Analyzer: Proposes contradiction candidates, optimized for recall
 - Verifier: Confirms/rejects candidates, optimized for precision
 
-Models:
+Claude Models:
+- Claude Sonnet 4.5 (superior Hebrew legal reasoning)
+
+Gemini Models:
 - Primary: Gemini 3 Flash Preview (with thinking support)
 - Fallback: Gemini 2.5 Flash (when primary fails)
 
 Environment Variables:
-- GEMINI_API_KEY: API key for Google Gemini (required)
-- GEMINI_ANALYZER_MODEL: Analyzer model (default: gemini-3-flash-preview)
-- GEMINI_ANALYZER_FALLBACK: Analyzer fallback (default: gemini-2.5-flash)
-- GEMINI_ANALYZER_THINKING: Thinking level for analyzer (default: low)
-- GEMINI_VERIFIER_MODEL: Verifier model (default: gemini-3-flash-preview)
-- GEMINI_VERIFIER_FALLBACK: Verifier fallback (default: gemini-2.5-flash)
-- GEMINI_VERIFIER_THINKING: Thinking level for verifier (default: medium)
+- LLM_MODE: none|gemini|claude (default: none)
+- ANTHROPIC_API_KEY: API key for Anthropic Claude
+- CLAUDE_ANALYZER_MODEL: Claude analyzer model (default: claude-sonnet-4-5-20250929)
+- CLAUDE_VERIFIER_MODEL: Claude verifier model (default: claude-sonnet-4-5-20250929)
+- GEMINI_API_KEY: API key for Google Gemini
+- GEMINI_ANALYZER_MODEL: Gemini analyzer model (default: gemini-3-flash-preview)
+- GEMINI_VERIFIER_MODEL: Gemini verifier model (default: gemini-3-flash-preview)
 - VERIFIER_ENABLED: Enable verifier (default: true)
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
 
@@ -37,6 +41,7 @@ Usage:
 
 from .openrouter_base import OpenRouterBaseClient, LLMCallResult
 from .gemini_client import GeminiBaseClient
+from .claude_client import ClaudeBaseClient
 from .analyzer import AnalyzerLLM, AnalyzerResult, AnalyzerStats, get_analyzer
 from .verifier import VerifierLLM, VerifierResult, VerifierStats, get_verifier
 
@@ -44,6 +49,7 @@ __all__ = [
     # Base clients
     "OpenRouterBaseClient",
     "GeminiBaseClient",
+    "ClaudeBaseClient",
     "LLMCallResult",
     # Analyzer
     "AnalyzerLLM",

@@ -143,26 +143,85 @@ for canonical, aliases in _LEGAL_ENTITY_ALIASES.items():
 def _normalize_entity(name: str) -> str:
     """Normalize an entity name for fuzzy comparison."""
     name = name.strip()
-    # Remove titles/prefixes
-    name = _TITLE_PATTERNS.sub('', name).strip()
-    # Remove quotes
+    # Remove quotes first (before title stripping, since quotes appear in titles)
     name = name.replace('"', '').replace("'", '').replace('״', '').replace('׳', '')
-    normalized = name.lower()
-    
-    # Check if this is a known alias and return canonical form
+    # Remove common Hebrew suffixes (בע"מ, בע״מ, Ltd, etc.)
+    name = re.sub(r'\s*(?:בעמ|ltd\.?|inc\.?)\s*$', '', name, flags=re.IGNORECASE)
+    normalized = name.lower().strip()
+
+    # Check alias BEFORE stripping titles — the full name may be a known alias
     if normalized in _ALIAS_TO_CANONICAL:
         return _ALIAS_TO_CANONICAL[normalized].lower()
-    
+
+    # Remove titles/prefixes ONLY if doing so leaves content
+    stripped = _TITLE_PATTERNS.sub('', name).strip().lower()
+    if stripped:
+        # Check if the stripped version is an alias
+        if stripped in _ALIAS_TO_CANONICAL:
+            return _ALIAS_TO_CANONICAL[stripped].lower()
+        normalized = stripped
+
+    # Try partial alias lookup: strip single Hebrew prefix letter and re-check
+    for prefix_len in (1, 2):
+        if len(normalized) > prefix_len + 2 and normalized[0] in 'הבלמושכ':
+            partial = normalized[prefix_len:]
+            if partial in _ALIAS_TO_CANONICAL:
+                return _ALIAS_TO_CANONICAL[partial].lower()
+
     return normalized
+
+
+# Hebrew prefix letters that can be stripped for token comparison
+_HEBREW_PREFIXES = set('הבלמושכ')
+
+
+def _tokenize_entity(name: str) -> Set[str]:
+    """
+    Tokenize an entity name for token-based similarity.
+    Strips Hebrew prefix letters and removes very short tokens.
+    """
+    tokens = set()
+    for word in name.split():
+        word = re.sub(r'[^\w]', '', word)
+        if len(word) < 2:
+            continue
+        tokens.add(word)
+        # Also add prefix-stripped versions
+        if len(word) > 3 and word[0] in _HEBREW_PREFIXES:
+            tokens.add(word[1:])
+    return tokens
+
+
+_OPPOSING_PARTY_PAIRS = {
+    frozenset({"התובע", "הנתבע"}),
+    frozenset({"תובע", "נתבע"}),
+    frozenset({"התובעת", "הנתבעת"}),
+    frozenset({"המערער", "המשיב"}),
+    frozenset({"המערערת", "המשיבה"}),
+    frozenset({"המבקש", "המשיב"}),
+    frozenset({"המבקשת", "המשיבה"}),
+    frozenset({"התובעים", "הנתבעים"}),
+    frozenset({"המערערים", "המשיבים"}),
+}
 
 
 def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     """
     Check if two entity names refer to the same entity.
-    Uses normalized exact match first, then fuzzy match.
+
+    Multi-strategy matching (ordered by reliability):
+    1. Opposing party guard (התובע != הנתבע)
+    2. Canonical alias match (dictionary lookup)
+    3. Exact match after normalization
+    4. Containment match ("אלפא" in "חברת אלפא בע״מ")
+    5. Token-based Jaccard similarity (handles word order, prefixes)
+    6. Last-name match with additional token overlap
+    7. Character SequenceMatcher as final fallback
+
     Handles Hebrew name patterns:
     - "יוסי כהן" matches "מר כהן" (last name match)
     - "חברת אלפא בע״מ" matches "אלפא" (contains)
+    - "בנק לאומי" matches "הבנק הלאומי" (alias + prefix stripping)
     """
     na = _normalize_entity(a)
     nb = _normalize_entity(b)
@@ -170,7 +229,11 @@ def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     if not na or not nb:
         return False
 
-    # Exact match after normalization
+    # Guard: opposing legal parties are NEVER the same entity
+    if frozenset({na, nb}) in _OPPOSING_PARTY_PAIRS:
+        return False
+
+    # Exact match after normalization (includes alias resolution)
     if na == nb:
         return True
 
@@ -178,20 +241,28 @@ def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     if na in nb or nb in na:
         return True
 
+    # Token-based Jaccard similarity — handles prefix variations
+    tokens_a = _tokenize_entity(na)
+    tokens_b = _tokenize_entity(nb)
+    if tokens_a and tokens_b:
+        intersection = tokens_a & tokens_b
+        union = tokens_a | tokens_b
+        jaccard = len(intersection) / len(union)
+        if jaccard >= 0.50:
+            return True
+
     # Last-word match: require last name match AND at least one additional
     # matching token (to avoid "יוסי כהן" == "דוד כהן" false positives).
-    # Single last-name-only ("כהן") is not sufficient.
     words_a = na.split()
     words_b = nb.split()
     if words_a and words_b and len(words_a) >= 2 and len(words_b) >= 2:
         if words_a[-1] == words_b[-1] and len(words_a[-1]) > 2:
-            # Check if there is at least one additional common token
             other_a = set(words_a[:-1])
             other_b = set(words_b[:-1])
             if other_a & other_b:
                 return True
 
-    # Fuzzy similarity
+    # Character-level fallback
     ratio = SequenceMatcher(None, na, nb).ratio()
     return ratio >= threshold
 
