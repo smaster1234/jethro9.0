@@ -196,6 +196,7 @@ class LLMMode(str, Enum):
     OPENAI = "openai"       # OpenAI API (GPT-4o)
     GEMINI = "gemini"
     DEEPSEEK = "deepseek"   # DeepSeek API (primary analyzer)
+    CLAUDE = "claude"       # Anthropic Claude (Sonnet 4.5 — superior legal analysis)
 
 
 class SpeakerRole(str, Enum):

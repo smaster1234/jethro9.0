@@ -2,17 +2,22 @@
 Configuration for Contradiction Service
 =======================================
 
-Privacy-first: Only Google Gemini is supported — no third-party proxies.
-All LLM data goes directly to generativelanguage.googleapis.com.
+Multi-LLM support: Gemini (default) or Claude Sonnet (superior legal analysis).
+Set LLM_MODE=claude + ANTHROPIC_API_KEY for Claude-powered analysis.
 
 Environment variables:
-- GEMINI_API_KEY: API key for Google Gemini (required for LLM features)
+- LLM_MODE: none|gemini|claude (default: none)
+- GEMINI_API_KEY: API key for Google Gemini
 - GEMINI_ANALYZER_MODEL: Analyzer model (default: gemini-3-flash-preview)
 - GEMINI_ANALYZER_FALLBACK: Analyzer fallback model (default: gemini-2.5-flash)
 - GEMINI_ANALYZER_THINKING: Thinking level for analyzer (default: low)
 - GEMINI_VERIFIER_MODEL: Verifier model (default: gemini-3-flash-preview)
 - GEMINI_VERIFIER_FALLBACK: Verifier fallback model (default: gemini-2.5-flash)
 - GEMINI_VERIFIER_THINKING: Thinking level for verifier (default: medium)
+- ANTHROPIC_API_KEY: API key for Anthropic Claude
+- CLAUDE_ANALYZER_MODEL: Claude analyzer model (default: claude-sonnet-4-5-20250929)
+- CLAUDE_VERIFIER_MODEL: Claude verifier model (default: claude-sonnet-4-5-20250929)
+- CLAUDE_EXTENDED_THINKING: Enable extended thinking (default: false)
 - VERIFIER_MAX_CALLS: Max verifier calls per analysis (default: 30)
 - RAG_MODE: bm25|hebert|hybrid (default: hybrid)
 - HEBERT_MODEL: HuggingFace model name (default: avichr/Legal-heBERT)
@@ -49,6 +54,13 @@ class Settings(BaseSettings):
     verifier_max_calls: int = 30
     verifier_enabled: bool = True
 
+    # Claude / Anthropic (superior legal analysis)
+    anthropic_api_key: Optional[str] = None
+    claude_analyzer_model: str = "claude-sonnet-4-5-20250929"
+    claude_verifier_model: str = "claude-sonnet-4-5-20250929"
+    claude_extended_thinking: bool = False
+    claude_thinking_budget: int = 4096
+
     # Legacy compat — kept but unused (all traffic routes to Gemini)
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
@@ -83,14 +95,24 @@ class Settings(BaseSettings):
         """Validate LLM configuration, return list of warnings"""
         warnings = []
 
-        if not self.gemini_api_key:
+        if self.llm_mode == LLMMode.GEMINI and not self.gemini_api_key:
             warnings.append(
-                "GEMINI_API_KEY not set — LLM features (analyzer, verifier) will be disabled. "
-                "All LLM traffic routes through Google Gemini for privacy."
+                "LLM_MODE=gemini but GEMINI_API_KEY not set — LLM features will be disabled."
             )
 
-        if self.verifier_enabled and not self.gemini_api_key:
-            warnings.append("VERIFIER_ENABLED=true but GEMINI_API_KEY not set")
+        if self.llm_mode == LLMMode.CLAUDE and not self.anthropic_api_key:
+            warnings.append(
+                "LLM_MODE=claude but ANTHROPIC_API_KEY not set — LLM features will be disabled."
+            )
+
+        if not self.gemini_api_key and not self.anthropic_api_key:
+            warnings.append(
+                "No LLM API key set — analyzer and verifier will be disabled. "
+                "Set GEMINI_API_KEY or ANTHROPIC_API_KEY to enable."
+            )
+
+        if self.verifier_enabled and not self.gemini_api_key and not self.anthropic_api_key:
+            warnings.append("VERIFIER_ENABLED=true but no LLM API key set")
 
         return warnings
 

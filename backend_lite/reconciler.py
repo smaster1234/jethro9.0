@@ -92,16 +92,193 @@ class ReconciliationResult:
 
 
 # ---------------------------------------------------------------------------
+# Legal party role classification — Israeli civil procedure
+# ---------------------------------------------------------------------------
+#
+# In Israeli proceedings, parties have procedural role designations that
+# vary by proceeding type (תביעה, ערעור, בקשה, עתירה, קובלנה, עררים).
+# Witnesses are separate — they may be aligned with a party but are not
+# themselves parties.
+#
+# Role sides:
+#   INITIATOR  — the party who started the proceeding
+#   RESPONDENT — the party responding / defending
+#   THIRD      — צד ג' (third-party notice)
+#   FOURTH     — צד ד' (fourth-party notice)
+#   WITNESS    — עד (not a party; may be aligned with a side)
+#   EXPERT     — עד מומחה / מומחה מטעם ביהמ"ש (neutral or party-aligned)
+#   COURT      — בית המשפט / בית הדין
+#   UNKNOWN    — cannot determine
+# ---------------------------------------------------------------------------
+
+SIDE_INITIATOR = "initiator"
+SIDE_RESPONDENT = "respondent"
+SIDE_THIRD = "third_party"
+SIDE_FOURTH = "fourth_party"
+SIDE_WITNESS = "witness"
+SIDE_EXPERT = "expert"
+SIDE_COURT = "court"
+SIDE_UNKNOWN = "unknown"
+
+# All initiator-side role words (singular, plural, masculine, feminine)
+_INITIATOR_ROLES = {
+    "תובע", "התובע", "תובעת", "התובעת", "תובעים", "התובעים", "תובעות", "התובעות",
+    "מערער", "המערער", "מערערת", "המערערת", "מערערים", "המערערים", "מערערות", "המערערות",
+    "מבקש", "המבקש", "מבקשת", "המבקשת", "מבקשים", "המבקשים", "מבקשות", "המבקשות",
+    "עותר", "העותר", "עותרת", "העותרת", "עותרים", "העותרים", "עותרות", "העותרות",
+    "קובל", "הקובל", "קובלת", "הקובלת", "קובלים", "הקובלים", "קובלות", "הקובלות",
+    "עורר", "העורר", "עוררת", "העוררת", "עוררים", "העוררים", "עוררות", "העוררות",
+}
+
+# All respondent-side role words
+_RESPONDENT_ROLES = {
+    "נתבע", "הנתבע", "נתבעת", "הנתבעת", "נתבעים", "הנתבעים", "נתבעות", "הנתבעות",
+    "משיב", "המשיב", "משיבה", "המשיבה", "משיבים", "המשיבים", "משיבות", "המשיבות",
+    "משיב פורמלי", "המשיב הפורמלי", "משיבה פורמלית", "המשיבה הפורמלית",
+}
+
+# Third / fourth party
+_THIRD_PARTY_ROLES = {
+    "צד ג", "צד שלישי", "צד ג׳", "הצד השלישי", "צד 3",
+    "נתבע צד ג", "צד ג 1", "צד ג 2", "צד ג 3",
+}
+_FOURTH_PARTY_ROLES = {
+    "צד ד", "צד רביעי", "צד ד׳", "הצד הרביעי", "צד 4",
+}
+
+# Witness roles (not parties)
+_WITNESS_ROLES = {
+    "עד", "העד", "עדה", "העדה", "עדים", "העדים",
+    "עד תביעה", "עד הגנה", "עדת תביעה", "עדת הגנה",
+}
+
+# Expert witness roles
+_EXPERT_ROLES = {
+    "מומחה", "המומחה", "מומחית", "המומחית",
+    "עד מומחה", "העד המומחה", "עדת מומחה",
+    "מומחה מטעם בית המשפט", "מומחה מטעם ביהמש",
+    "מומחה רפואי", "מומחה מטעם התובע", "מומחה מטעם הנתבע",
+    "רופא מומחה", "מודד", "שמאי", "רואה חשבון מומחה",
+}
+
+# Court
+_COURT_ROLES = {
+    "בית המשפט", "ביהמש", "בית משפט", "הערכאה",
+    "בית הדין", "ביהד", "בית דין",
+    "שופט", "שופטת", "השופט", "השופטת", "כבוד השופט", "כבוד השופטת",
+    "רשם", "רשמת", "הרשם", "הרשמת",
+}
+
+# Regex to extract party number: "תובע 1", "נתבע 2", "צד ג 3"
+_PARTY_NUMBER_RE = re.compile(r'(\d+)\s*$')
+
+
+def _classify_legal_role(name: str) -> tuple:
+    """
+    Classify an entity name into a legal role side and optional number.
+
+    Returns:
+        (side: str, number: Optional[int], base_role: str)
+
+    Examples:
+        "התובע"      -> (SIDE_INITIATOR, None, "תובע")
+        "נתבע 2"     -> (SIDE_RESPONDENT, 2, "נתבע")
+        "העד כהן"    -> (SIDE_WITNESS, None, "עד")
+        "צד ג 1"     -> (SIDE_THIRD, 1, "צד ג")
+        "יוסי כהן"   -> (SIDE_UNKNOWN, None, "")
+    """
+    cleaned = name.strip().replace('"', '').replace('״', '').replace('׳', '').replace("'", '')
+    lower = cleaned.lower()
+
+    # Extract trailing number
+    num_match = _PARTY_NUMBER_RE.search(lower)
+    number = int(num_match.group(1)) if num_match else None
+    base = _PARTY_NUMBER_RE.sub('', lower).strip() if num_match else lower
+
+    # Check each role set (check multi-word first, then single-word)
+    for role_word in sorted(_EXPERT_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_EXPERT, number, role_word)
+
+    for role_word in sorted(_COURT_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_COURT, number, role_word)
+
+    for role_word in sorted(_FOURTH_PARTY_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_FOURTH, number, role_word)
+
+    for role_word in sorted(_THIRD_PARTY_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_THIRD, number, role_word)
+
+    for role_word in sorted(_WITNESS_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_WITNESS, number, role_word)
+
+    for role_word in sorted(_RESPONDENT_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_RESPONDENT, number, role_word)
+
+    for role_word in sorted(_INITIATOR_ROLES, key=len, reverse=True):
+        if base == role_word or base.startswith(role_word + " "):
+            return (SIDE_INITIATOR, number, role_word)
+
+    return (SIDE_UNKNOWN, number, "")
+
+
+def _roles_are_opposing(side_a: str, side_b: str) -> bool:
+    """
+    Check if two role sides are opposing parties in the proceeding.
+
+    Opposing pairs:
+    - initiator <-> respondent
+    - initiator <-> third_party (in some contexts)
+    - witness is NEVER equal to a party (different entity category)
+
+    Returns True if the two sides CANNOT be the same person.
+    """
+    if side_a == side_b:
+        return False
+
+    opposing = {
+        frozenset({SIDE_INITIATOR, SIDE_RESPONDENT}),
+        frozenset({SIDE_INITIATOR, SIDE_THIRD}),
+        frozenset({SIDE_INITIATOR, SIDE_FOURTH}),
+        frozenset({SIDE_RESPONDENT, SIDE_THIRD}),
+        frozenset({SIDE_RESPONDENT, SIDE_FOURTH}),
+        frozenset({SIDE_THIRD, SIDE_FOURTH}),
+    }
+
+    # Different known party sides → opposing
+    if frozenset({side_a, side_b}) in opposing:
+        return True
+
+    # Witness vs party: different category, not the same entity
+    # (unless the witness IS a party, but that's resolved by name matching)
+    party_sides = {SIDE_INITIATOR, SIDE_RESPONDENT, SIDE_THIRD, SIDE_FOURTH}
+    if (side_a == SIDE_WITNESS and side_b in party_sides) or \
+       (side_b == SIDE_WITNESS and side_a in party_sides):
+        return True
+
+    # Court vs anyone else
+    if side_a == SIDE_COURT or side_b == SIDE_COURT:
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Fuzzy entity matching for Hebrew legal names
 # ---------------------------------------------------------------------------
 
-# Common Hebrew title/prefix patterns to strip for comparison
+# Honorific/title prefixes to strip (NOT party roles — those are classified separately)
 _TITLE_PATTERNS = re.compile(
-    r'^(?:מר|גב|גברת|עו"ד|ד"ר|פרופ|רו"ח|שופט|שופטת|כב|כבוד|הנתבע|התובע|המשיב|המערער|המבקש|המשיבה|התובעת|הנתבעת)\s*',
+    r'^(?:מר|גב|גברת|עו"ד|עוד|ד"ר|דר|פרופ|רו"ח|רוח|כב|כבוד)\s+',
     re.UNICODE,
 )
 
-# Legal entity aliases dictionary - maps common variations to canonical forms
+# Non-party entity aliases — institutions, companies, courts
 _LEGAL_ENTITY_ALIASES = {
     # בנקים
     "בנק לאומי": ["הבנק הלאומי", "לאומי", "בנק לאומי לישראל"],
@@ -110,23 +287,16 @@ _LEGAL_ENTITY_ALIASES = {
     "בנק מזרחי": ["הבנק המזרחי", "מזרחי", "בנק מזרחי טפחות"],
     "בנק ירושלים": ["הבנק הירושלמי", "ירושלים"],
     "בנק אגוד": ["הבנק האגוד", "אגוד"],
-    
+
     # חברות ביטוח
     "הפניקס": ["חברת הפניקס", "פניקס", "הפניקס חברה לביטוח"],
     "הראל": ["חברת הראל", "ראל"],
-    "מגדל אור": ["חברת מגדל אור", "מגדלאור"],
-    
+    "מגדל": ["חברת מגדל", "מגדל ביטוח"],
+
     # מוסדות ממשלתיים
-    "ביטוח לאומי": ["המוסד לביטוח לאומי", "משרד הבינוי"],
-    "משרד המשפטים": ["המשרד למשפטים", "משרד המשפטים"],
-    "רשות המיסים": ["הרשות למיסים", "רמי"],
-    "משטרת המשפטים": ["המשטרה למשפטים", "משטרת המשפטים"],
-    
-    # צדדים משפטיים
-    "התובע": ["תובע", "התובעים", "המערער", "המבקש"],
-    "הנתבע": ["נתבע", "הנתבעים", "המשיב", "המשיבים"],
-    "המדינה": ["מדינת ישראל", "המדינה המשיבה"],
-    
+    "ביטוח לאומי": ["המוסד לביטוח לאומי"],
+    "המדינה": ["מדינת ישראל"],
+
     # מונחים משפטיים
     "בית המשפט": ["ביהמש", "בית משפט", "הערכאה"],
     "בית הדין": ["ביהד", "בית דין"],
@@ -143,26 +313,71 @@ for canonical, aliases in _LEGAL_ENTITY_ALIASES.items():
 def _normalize_entity(name: str) -> str:
     """Normalize an entity name for fuzzy comparison."""
     name = name.strip()
-    # Remove titles/prefixes
-    name = _TITLE_PATTERNS.sub('', name).strip()
-    # Remove quotes
+    # Remove quotes first (before title stripping, since quotes appear in titles)
     name = name.replace('"', '').replace("'", '').replace('״', '').replace('׳', '')
-    normalized = name.lower()
-    
-    # Check if this is a known alias and return canonical form
+    # Remove common Hebrew suffixes (בע"מ, בע״מ, Ltd, etc.)
+    name = re.sub(r'\s*(?:בעמ|ltd\.?|inc\.?)\s*$', '', name, flags=re.IGNORECASE)
+    normalized = name.lower().strip()
+
+    # Check alias BEFORE stripping titles — the full name may be a known alias
     if normalized in _ALIAS_TO_CANONICAL:
         return _ALIAS_TO_CANONICAL[normalized].lower()
-    
+
+    # Remove honorific titles ONLY if doing so leaves content
+    stripped = _TITLE_PATTERNS.sub('', name).strip().lower()
+    if stripped:
+        if stripped in _ALIAS_TO_CANONICAL:
+            return _ALIAS_TO_CANONICAL[stripped].lower()
+        normalized = stripped
+
+    # Try partial alias lookup: strip single Hebrew prefix letter and re-check
+    for prefix_len in (1, 2):
+        if len(normalized) > prefix_len + 2 and normalized[0] in 'הבלמושכ':
+            partial = normalized[prefix_len:]
+            if partial in _ALIAS_TO_CANONICAL:
+                return _ALIAS_TO_CANONICAL[partial].lower()
+
     return normalized
+
+
+# Hebrew prefix letters that can be stripped for token comparison
+_HEBREW_PREFIXES = set('הבלמושכ')
+
+
+def _tokenize_entity(name: str) -> Set[str]:
+    """
+    Tokenize an entity name for token-based similarity.
+    Strips Hebrew prefix letters and removes very short tokens.
+    """
+    tokens = set()
+    for word in name.split():
+        word = re.sub(r'[^\w]', '', word)
+        if len(word) < 2:
+            continue
+        tokens.add(word)
+        # Also add prefix-stripped versions
+        if len(word) > 3 and word[0] in _HEBREW_PREFIXES:
+            tokens.add(word[1:])
+    return tokens
 
 
 def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     """
     Check if two entity names refer to the same entity.
-    Uses normalized exact match first, then fuzzy match.
-    Handles Hebrew name patterns:
-    - "יוסי כהן" matches "מר כהן" (last name match)
-    - "חברת אלפא בע״מ" matches "אלפא" (contains)
+
+    Uses a role-aware approach for Israeli legal proceedings:
+    1. Classify both entities by legal role (initiator/respondent/witness/expert/court)
+    2. If both are known roles on OPPOSING sides → never match
+    3. If both are the same role with DIFFERENT numbers → never match (תובע 1 ≠ תובע 2)
+    4. Otherwise, fall through to name-based matching
+
+    Name-based matching (ordered by reliability):
+    - Canonical alias match (dictionary lookup)
+    - Exact match after normalization
+    - Containment match ("אלפא" in "חברת אלפא בע״מ")
+    - Token-based Jaccard similarity
+    - Last-name match with additional token overlap
+    - Character SequenceMatcher as final fallback
     """
     na = _normalize_entity(a)
     nb = _normalize_entity(b)
@@ -170,7 +385,31 @@ def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     if not na or not nb:
         return False
 
-    # Exact match after normalization
+    # --- Role-aware guard ---
+    role_a = _classify_legal_role(a)  # (side, number, base_role)
+    role_b = _classify_legal_role(b)
+    side_a, num_a, base_a = role_a
+    side_b, num_b, base_b = role_b
+
+    # Both are classified party/witness/court roles
+    if side_a != SIDE_UNKNOWN and side_b != SIDE_UNKNOWN:
+        # Opposing sides → never the same entity
+        if _roles_are_opposing(side_a, side_b):
+            return False
+
+        # Same side, same role category, different number → different entity
+        # (תובע 1 ≠ תובע 2, but תובע = תובע 1 is possible when no number)
+        if side_a == side_b and num_a is not None and num_b is not None and num_a != num_b:
+            return False
+
+        # Same side, same role, same number (or no numbers) → same entity
+        if side_a == side_b and base_a and base_b:
+            if num_a == num_b:
+                return True
+
+    # --- Name-based matching (for non-role entities or UNKNOWN roles) ---
+
+    # Exact match after normalization (includes alias resolution)
     if na == nb:
         return True
 
@@ -178,20 +417,28 @@ def _entities_match(a: str, b: str, threshold: float = 0.75) -> bool:
     if na in nb or nb in na:
         return True
 
+    # Token-based Jaccard similarity — handles prefix variations
+    tokens_a = _tokenize_entity(na)
+    tokens_b = _tokenize_entity(nb)
+    if tokens_a and tokens_b:
+        intersection = tokens_a & tokens_b
+        union = tokens_a | tokens_b
+        jaccard = len(intersection) / len(union)
+        if jaccard >= 0.50:
+            return True
+
     # Last-word match: require last name match AND at least one additional
     # matching token (to avoid "יוסי כהן" == "דוד כהן" false positives).
-    # Single last-name-only ("כהן") is not sufficient.
     words_a = na.split()
     words_b = nb.split()
     if words_a and words_b and len(words_a) >= 2 and len(words_b) >= 2:
         if words_a[-1] == words_b[-1] and len(words_a[-1]) > 2:
-            # Check if there is at least one additional common token
             other_a = set(words_a[:-1])
             other_b = set(words_b[:-1])
             if other_a & other_b:
                 return True
 
-    # Fuzzy similarity
+    # Character-level fallback
     ratio = SequenceMatcher(None, na, nb).ratio()
     return ratio >= threshold
 

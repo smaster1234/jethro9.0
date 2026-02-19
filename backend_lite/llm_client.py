@@ -205,6 +205,10 @@ class LLMClient:
                 return await self._generate_deepseek(
                     prompt, system_prompt, json_mode, max_tokens, temperature
                 )
+            elif mode == LLMMode.CLAUDE:
+                return await self._generate_claude(
+                    prompt, system_prompt, json_mode, max_tokens, temperature
+                )
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             return None
@@ -439,6 +443,80 @@ class LLMClient:
             return None
         except Exception as e:
             logger.error(f"DeepSeek request failed: {e}")
+            return None
+
+    async def _generate_claude(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        json_mode: bool,
+        max_tokens: int,
+        temperature: float
+    ) -> Optional[LLMResponse]:
+        """Generate via Anthropic Claude API"""
+        api_key = self.settings.anthropic_api_key
+        if not api_key:
+            logger.warning("Anthropic API key not set")
+            return None
+
+        client = await self._get_client()
+
+        messages = [{"role": "user", "content": prompt}]
+
+        sys_content = system_prompt or ""
+        if json_mode:
+            sys_content += "\n\nIMPORTANT: Return ONLY valid JSON. No prose outside JSON."
+
+        payload = {
+            "model": self.settings.claude_analyzer_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if sys_content.strip():
+            payload["system"] = sys_content
+
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+        try:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                json=payload,
+                headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            content = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    content = block.get("text", "")
+                    break
+
+            if content is None:
+                content = ""
+
+            usage = data.get("usage", {})
+
+            return LLMResponse(
+                content=content,
+                model=self.settings.claude_analyzer_model,
+                usage={
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0)
+                },
+                raw_response=data
+            )
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Claude API error: {e.response.status_code} - {e.response.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Claude request failed: {e}")
             return None
 
 
