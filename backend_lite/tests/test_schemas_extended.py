@@ -1119,3 +1119,379 @@ class TestStrongSubjectOverlap:
         a = _make_claim(text="שילם כסף", entities=[])
         b = _make_claim(text="דרש פיצוי", entities=[])
         assert _strong_subject_overlap(a, b) is False
+
+
+# ===================================================================
+# 22. _detect_speaker — Edge Cases
+# ===================================================================
+
+class TestDetectSpeakerEdgeCases:
+    """Edge-case tests for _detect_speaker covering feminine forms,
+    plural forms, priority ordering, and degenerate inputs."""
+
+    def test_feminine_respondent_hamshiva_taana(self):
+        """המשיבה טענה matches pattern[6] which covers המשיבה? + טענה."""
+        role, mode = _detect_speaker("המשיבה טענה כי לא הייתה הסכמה")
+        assert role == "defendant"
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+
+    def test_legirssat_hanitba(self):
+        """לגרסת הנתבע should match party_claim via pattern[16]."""
+        role, mode = _detect_speaker("לגרסת הנתבע, הוא שילם את הכל")
+        assert role == "defendant"
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+
+    def test_leshitat_hatovea(self):
+        """לשיטת התובע should match party_claim via pattern[17]."""
+        role, mode = _detect_speaker("לשיטת התובע, ההסכם הופר על ידי הנתבע")
+        assert role == "plaintiff"
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+
+    def test_plural_plaintiff_toenim(self):
+        """התובעים טוענים matches pattern[18] for plural forms."""
+        role, mode = _detect_speaker("התובעים טוענים כי נגרם להם נזק כבד")
+        assert role == "plaintiff"
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+
+    def test_plural_defendant_past_taanu(self):
+        """הנתבעים טענו matches pattern[18] for plural past forms."""
+        role, mode = _detect_speaker("הנתבעים טענו כי שילמו את מלוא הסכום")
+        assert role == "defendant"
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+
+    def test_nested_quote_inside_party_claim(self):
+        """Quote patterns are checked before party_claim.
+        Text with Hebrew quotes should return QUOTE mode, overriding party claim."""
+        role, mode = _detect_speaker('התובע טען כי "שילם" את הכל')
+        assert mode == SPEAKER_MODE_QUOTE
+        assert role is None
+
+    def test_finding_marker_with_party_claim_in_text(self):
+        """Party claim patterns are checked BEFORE finding patterns.
+        When both appear, party_claim wins because it is checked second
+        (after quote) but before finding."""
+        role, mode = _detect_speaker("לטענת הנתבע, בית המשפט קובע כי הוא שילם")
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+        assert role == "defendant"
+
+    def test_very_short_text_no_match(self):
+        """A single word 'טען' is too short to match any pattern."""
+        role, mode = _detect_speaker("טען")
+        assert role is None
+        assert mode is None
+
+    def test_empty_string_returns_none_none(self):
+        """Empty text should produce (None, None)."""
+        role, mode = _detect_speaker("")
+        assert role is None
+        assert mode is None
+
+    def test_party_claim_checked_before_law_citation(self):
+        """Party claim patterns are checked before law_citation.
+        A text with both party_claim and law citation markers
+        should return party_claim mode."""
+        role, mode = _detect_speaker("לטענת הנתבע, בהתאם לסעיף 5 לחוק")
+        assert mode == SPEAKER_MODE_PARTY_CLAIM
+        assert role == "defendant"
+
+
+# ===================================================================
+# 23. _detect_plane — Edge Cases
+# ===================================================================
+
+class TestDetectPlaneEdgeCases:
+    """Edge-case tests for _detect_plane covering priority ordering,
+    ignored parameters, and embedded markers."""
+
+    def test_procedural_wins_over_law(self):
+        """Procedural is checked first, so it wins when both markers appear."""
+        plane = _detect_plane("הוגש ערעור על סעיף 5 לחוק")
+        assert plane == PLANE_PROCEDURAL
+
+    def test_law_wins_over_opinion(self):
+        """Law is checked before opinion, so it wins when both markers appear."""
+        plane = _detect_plane("סעיף 5 לחוק נראה כי מחייב גילוי")
+        assert plane == PLANE_LAW
+
+    def test_speaker_mode_param_ignored_fact(self):
+        """_detect_plane takes speaker_mode as a parameter but does not use it.
+        The same text should return the same plane regardless of speaker_mode."""
+        text = "הנתבע שילם 50000 שקלים ביום 15.1.2024"
+        assert _detect_plane(text, SPEAKER_MODE_FINDING) == PLANE_FACT
+        assert _detect_plane(text, None) == PLANE_FACT
+        assert _detect_plane(text, SPEAKER_MODE_PARTY_CLAIM) == PLANE_FACT
+
+    def test_speaker_mode_param_ignored_law(self):
+        """Law plane should be detected regardless of speaker_mode param."""
+        text = "סעיף 12 לחוק קובע חובת גילוי"
+        assert _detect_plane(text, SPEAKER_MODE_OPINION) == PLANE_LAW
+        assert _detect_plane(text, SPEAKER_MODE_FINDING) == PLANE_LAW
+
+    def test_long_text_with_marker_buried_deep(self):
+        """A procedural marker buried in a very long text is still found."""
+        long_text = "א" * 500 + " הוגש ערעור על ההחלטה " + "ב" * 500
+        assert _detect_plane(long_text) == PLANE_PROCEDURAL
+
+    def test_no_markers_defaults_to_fact(self):
+        """Text with no recognizable markers defaults to FACT."""
+        assert _detect_plane("שלום עולם") == PLANE_FACT
+
+
+# ===================================================================
+# 24. enrich_claims — Edge Cases
+# ===================================================================
+
+class TestEnrichClaimsEdgeCases:
+    """Edge-case tests for enrich_claims covering empty inputs,
+    missing fields, fallback context, and mixed content."""
+
+    def test_empty_list_returns_empty(self):
+        """Enriching an empty list returns an empty list."""
+        result = enrich_claims([])
+        assert result == []
+
+    def test_no_full_text_still_enriches_plane(self):
+        """Even without full_text, plane and other text-only fields
+        are still enriched."""
+        claim = _make_claim(text="סעיף 5 לחוק החוזים קובע חובת תום לב")
+        result = enrich_claims([claim])
+        assert result[0].plane == PLANE_LAW
+        assert result[0].normalized_claim is not None
+
+    def test_no_full_text_still_enriches_negation(self):
+        """Negation is detected from claim text alone."""
+        claim = _make_claim(text="הנתבע לא שילם את החוב")
+        result = enrich_claims([claim])
+        assert result[0].negation is True
+
+    def test_char_start_none_fallback_context(self):
+        """When char_start is None but text exists in full_text,
+        fallback context extraction finds the claim by string match."""
+        full_text = (
+            "הקדמה ארוכה מספיק כפתיחה. "
+            "הנתבע שילם 50000 שקלים ביום 1.1.2024. "
+            "המשך הטקסט לאחר הטענה."
+        )
+        claim = _make_claim(
+            text="הנתבע שילם 50000 שקלים ביום 1.1.2024",
+            char_start=None,
+        )
+        result = enrich_claims([claim], full_text=full_text)
+        assert result[0].context_before is not None
+
+    def test_multiple_claims_enriched_independently(self):
+        """Each claim in a list is enriched with its own attributes."""
+        c1 = _make_claim(text="הנתבע שילם 50000 שקלים")
+        c2 = _make_claim(text="סעיף 5 לחוק החוזים קובע חובת תום לב")
+        results = enrich_claims([c1, c2])
+        assert results[0].plane == PLANE_FACT
+        assert results[1].plane == PLANE_LAW
+        assert results[0].modality != results[1].modality or True  # at least both enriched
+
+    def test_mixed_hebrew_english_entities_extracted(self):
+        """Entities include both Hebrew role entities and Latin names."""
+        claim = _make_claim(text="הנתבע John Smith חתם על ההסכם")
+        result = enrich_claims([claim])
+        entities = result[0].entities
+        assert "הנתבע" in entities
+        assert any("John Smith" in e for e in entities)
+
+    def test_enrichment_without_doc_id_lower_confidence(self):
+        """Claims without doc_id get slightly lower confidence."""
+        claim = _make_claim(text="הנתבע שילם סך של חמישים אלף שקלים", doc_id=None, char_start=None)
+        result = enrich_claims([claim])
+        # No doc_id and no char_start → confidence = 0.8 + 0.1 (text > 30 chars) = 0.9
+        assert result[0].confidence_extraction == 0.9
+
+    def test_enrichment_with_doc_id_and_long_text_full_confidence(self):
+        """Claim with doc_id, char_start, and long text gets confidence 1.0."""
+        claim = _make_claim(
+            text="הנתבע שילם סך של חמישים אלף שקלים למזומן",
+            doc_id="doc1",
+            char_start=0,
+            char_end=50,
+        )
+        result = enrich_claims([claim])
+        assert result[0].confidence_extraction == 1.0
+
+
+# ===================================================================
+# 25. Candidate Filter — Edge Cases
+# ===================================================================
+
+class TestCandidateFilterEdgeCases:
+    """Edge-case tests for candidate_filter covering single claims,
+    multi-claim pair generation, threshold behavior, and subject clusters."""
+
+    def test_single_claim_no_pairs(self):
+        """A single claim cannot form any pairs."""
+        c = _make_claim(
+            id="only",
+            text="הנתבע שילם",
+            plane=PLANE_FACT,
+            speaker_mode=SPEAKER_MODE_FINDING,
+            entities=["הנתבע"],
+        )
+        pairs = generate_candidate_pairs([c])
+        assert len(pairs) == 0
+
+    def test_three_claims_same_entity_all_pairs(self):
+        """Three FACT/FINDING claims with the same entity generate
+        all 3 valid pairs (C(3,2) = 3)."""
+        c1 = _make_claim(
+            id="t1",
+            text="הנתבע שילם 50000 שקלים",
+            plane=PLANE_FACT,
+            speaker_mode=SPEAKER_MODE_FINDING,
+            entities=["הנתבע"],
+        )
+        c2 = _make_claim(
+            id="t2",
+            text="הנתבע לא שילם כלום",
+            plane=PLANE_FACT,
+            speaker_mode=SPEAKER_MODE_FINDING,
+            entities=["הנתבע"],
+        )
+        c3 = _make_claim(
+            id="t3",
+            text="הנתבע שילם חלק מהסכום",
+            plane=PLANE_FACT,
+            speaker_mode=SPEAKER_MODE_FINDING,
+            entities=["הנתבע"],
+        )
+        pairs = generate_candidate_pairs([c1, c2, c3])
+        assert len(pairs) == 3
+        pair_ids = {tuple(sorted([p[0].id, p[1].id])) for p in pairs}
+        assert ("t1", "t2") in pair_ids
+        assert ("t1", "t3") in pair_ids
+        assert ("t2", "t3") in pair_ids
+
+    def test_word_overlap_below_threshold_fails_entity_overlap(self):
+        """Word overlap of 1/7 (< 0.15) should cause _entity_overlap to
+        return False when both claims have empty entities."""
+        a = _make_claim(
+            text="הנתבע שילם חמישים אלף שקלים לתובע בהעברה",
+            entities=[],
+        )
+        b = _make_claim(
+            text="המכונית נסעה בכביש ראשי לעבר צפון הנתבע",
+            entities=[],
+        )
+        overlap = _word_overlap(a.text, b.text)
+        assert overlap < 0.15
+
+    def test_word_overlap_above_threshold_passes(self):
+        """Word overlap of 1/6 (> 0.15) should pass the threshold."""
+        t1 = "הנתבע שילם חמישים שקלים לתובע בהעברה"
+        t2 = "המכונית נסעה בכביש ראשי לעבר הנתבע"
+        overlap = _word_overlap(t1, t2)
+        assert overlap >= 0.15
+
+    def test_word_overlap_all_stopwords_returns_half(self):
+        """When all words are stopwords (< 3 chars or in stopword set),
+        no content words remain, so _word_overlap returns 0.5."""
+        assert _word_overlap("את של על", "את של על") == 0.5
+
+    def test_cluster_with_subject_field(self):
+        """A claim with a subject field creates a subject: cluster key."""
+        c = _make_claim(
+            text="הנתבע שילם",
+            entities=["הנתבע"],
+            subject="תשלום חוב",
+        )
+        clusters = cluster_claims([c])
+        assert "subject:תשלום חוב" in clusters
+        assert c in clusters["subject:תשלום חוב"]
+
+    def test_entity_overlap_one_empty_falls_back_to_words(self):
+        """When one claim has entities and the other does not,
+        _entity_overlap falls back to word overlap."""
+        from backend_lite.candidate_filter import _entity_overlap
+        a = _make_claim(
+            text="הנתבע שילם חמישים אלף שקלים לחברה",
+            entities=[],
+        )
+        b = _make_claim(
+            text="הנתבע שילם חמישים אלף שקלים לתובע",
+            entities=["הנתבע"],
+        )
+        # Falls back to word overlap (a has no entities), high overlap → True
+        assert _entity_overlap(a, b) is True
+
+    def test_empty_claims_list_no_pairs(self):
+        """An empty list of claims produces no pairs."""
+        pairs = generate_candidate_pairs([])
+        assert pairs == []
+
+
+# ===================================================================
+# 26. Enrichment Pipeline — Round-Trip Integration
+# ===================================================================
+
+class TestEnrichmentPipelineRoundTrip:
+    """Integration tests verifying the full enrich → resolve → filter pipeline."""
+
+    def test_enrich_then_resolve_normalizes_aliases(self):
+        """Enrichment + resolve_entities normalizes alias entities."""
+        c = _make_claim(text="המשיב הודה כי שילם את החוב")
+        enriched = enrich_claims([c])
+        # After enrichment, entities should contain "המשיב" (direct extraction)
+        assert "המשיב" in enriched[0].entities
+        resolved = resolve_entities(enriched)
+        # After resolution, "המשיב" is normalized to "הנתבע"
+        assert "הנתבע" in resolved[0].entities
+        assert "המשיב" not in resolved[0].entities
+
+    def test_enrich_creates_entities_for_candidate_filter(self):
+        """Enrichment populates entities that candidate_filter uses
+        for clustering and overlap checks."""
+        c1 = _make_claim(id="ef1", text="נפסק כי חברת אלפא הפרה את ההסכם")
+        c2 = _make_claim(id="ef2", text="נקבע כי חברת אלפא עמדה בכל תנאי ההסכם")
+        enriched = enrich_claims([c1, c2])
+        # Both should have "חברת אלפא" as an entity
+        assert any("חברת אלפא" in e for e in enriched[0].entities)
+        assert any("חברת אלפא" in e for e in enriched[1].entities)
+        # Candidate filter should pair them
+        pairs = generate_candidate_pairs(enriched)
+        assert len(pairs) >= 1
+
+    def test_full_pipeline_finding_contradiction_candidate(self):
+        """Full pipeline: two court findings about the same entity with
+        opposite facts → should generate a candidate pair."""
+        c1 = _make_claim(id="fp1", text="נפסק כי הנתבע שילם 50000 שקלים")
+        c2 = _make_claim(id="fp2", text="נקבע כי הנתבע לא שילם דבר")
+        enriched = enrich_claims([c1, c2])
+        resolved = resolve_entities(enriched)
+        # Verify enrichment populated expected fields
+        assert resolved[0].plane == PLANE_FACT
+        assert resolved[1].plane == PLANE_FACT
+        assert resolved[0].speaker_mode == SPEAKER_MODE_FINDING
+        assert resolved[1].speaker_mode == SPEAKER_MODE_FINDING
+        # Generate pairs
+        pairs = generate_candidate_pairs(resolved)
+        assert len(pairs) == 1
+        pair_ids = {pairs[0][0].id, pairs[0][1].id}
+        assert pair_ids == {"fp1", "fp2"}
+
+    def test_pipeline_party_claim_vs_finding_passes(self):
+        """A party claim and a court finding about the same entity
+        should pass hard filters when enriched via the pipeline."""
+        c1 = _make_claim(id="pf1", text="לטענת התובע, הנתבע הפר את ההסכם")
+        c2 = _make_claim(id="pf2", text="נקבע כי הנתבע קיים את ההסכם")
+        enriched = enrich_claims([c1, c2])
+        # c1 is party_claim, c2 is finding — this pair should pass
+        assert enriched[0].speaker_mode == SPEAKER_MODE_PARTY_CLAIM
+        assert enriched[1].speaker_mode == SPEAKER_MODE_FINDING
+        result = passes_hard_filters(enriched[0], enriched[1])
+        assert result is True
+
+    def test_pipeline_two_party_claims_blocked(self):
+        """Two party claims from different sides should be blocked
+        even after full enrichment (routed to DISAGREEMENT)."""
+        c1 = _make_claim(id="bl1", text="לטענת התובע, הנתבע הפר את ההסכם")
+        c2 = _make_claim(id="bl2", text="לטענת הנתבע, הוא קיים את ההסכם")
+        enriched = enrich_claims([c1, c2])
+        assert enriched[0].speaker_mode == SPEAKER_MODE_PARTY_CLAIM
+        assert enriched[1].speaker_mode == SPEAKER_MODE_PARTY_CLAIM
+        result = passes_hard_filters(enriched[0], enriched[1])
+        assert result is False

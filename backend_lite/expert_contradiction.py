@@ -516,13 +516,14 @@ def _duplicate_restatement(a: ExpertClaim, b: ExpertClaim) -> bool:
 
 
 def _stage_shift(a: ExpertClaim, b: ExpertClaim) -> bool:
-    markers = {
-        "\u05dc\u05e4\u05e0\u05d9",  # לפני
-        "\u05dc\u05d0\u05d7\u05e8",  # לאחר
-    }
-    a_has = any(m in a.text_span for m in markers)
-    b_has = any(m in b.text_span for m in markers)
-    return a_has and b_has and a_has != b_has
+    before_marker = "\u05dc\u05e4\u05e0\u05d9"  # לפני
+    after_marker = "\u05dc\u05d0\u05d7\u05e8"    # לאחר
+    a_before = before_marker in a.text_span
+    a_after = after_marker in a.text_span
+    b_before = before_marker in b.text_span
+    b_after = after_marker in b.text_span
+    # One claim says "before" and the other says "after" (or vice versa)
+    return (a_before and b_after) or (a_after and b_before)
 
 
 def _extract_time_values(detector: RuleBasedDetector, claim: ExpertClaim) -> List[Tuple[int, int, int]]:

@@ -5,7 +5,7 @@ Covers ~100 tests across all helper functions, dataclass construction,
 pair evaluation, and the public API (build_expert_claims, analyze_expert_pairs).
 
 Uses real Hebrew text and exercises edge cases, boundary conditions, and
-known behavioural quirks (e.g. the _stage_shift always-False bug).
+all outcome paths including the fixed _stage_shift detection.
 """
 
 from __future__ import annotations
@@ -662,19 +662,20 @@ class TestDuplicateRestatement:
 
 
 # ===================================================================
-# _stage_shift — has a known bug: always returns False
+# _stage_shift — fixed: detects before/after marker difference
 # ===================================================================
 class TestStageShift:
-    def test_both_markers_different_always_false(self):
-        """
-        Bug: the code checks `a_has and b_has and a_has != b_has`.
-        Since both a_has and b_has are booleans and both True,
-        a_has != b_has is False, so result is always False.
-        """
+    def test_before_vs_after_detected(self):
+        """One claim says 'לפני' and the other says 'לאחר' → True."""
         a = _expert_claim("לפני החתימה")
         b = _expert_claim("לאחר החתימה")
-        # Due to bug, this is always False
-        assert _stage_shift(a, b) is False
+        assert _stage_shift(a, b) is True
+
+    def test_after_vs_before_detected(self):
+        """Reversed order: 'לאחר' first, 'לפני' second → True."""
+        a = _expert_claim("לאחר הדיון")
+        b = _expert_claim("לפני הדיון")
+        assert _stage_shift(a, b) is True
 
     def test_only_one_has_marker(self):
         a = _expert_claim("לפני החתימה")
@@ -686,10 +687,16 @@ class TestStageShift:
         b = _expert_claim("התשלום התקבל")
         assert _stage_shift(a, b) is False
 
-    def test_same_marker_both(self):
+    def test_same_marker_both_before(self):
+        """Both say 'לפני' — same stage, no shift."""
         a = _expert_claim("לפני הדיון הראשון")
         b = _expert_claim("לפני הדיון השני")
-        # Both have markers, both True, a_has != b_has is False
+        assert _stage_shift(a, b) is False
+
+    def test_same_marker_both_after(self):
+        """Both say 'לאחר' — same stage, no shift."""
+        a = _expert_claim("לאחר הדיון הראשון")
+        b = _expert_claim("לאחר ההחלטה")
         assert _stage_shift(a, b) is False
 
 
@@ -697,15 +704,13 @@ class TestStageShift:
 # _can_be_reconciled
 # ===================================================================
 class TestCanBeReconciled:
-    def test_stage_shift_never_triggers(self):
-        """Stage shift never triggers due to bug, so reconciliation falls through."""
+    def test_stage_shift_triggers_reconciliation(self):
+        """Stage shift detected → reconcilable with reason 'stage_shift'."""
         a = _expert_claim("לפני החתימה", scope_conditions="unconditional", modality="must")
         b = _expert_claim("לאחר החתימה", scope_conditions="unconditional", modality="must")
         reconciled, reason = _can_be_reconciled(a, b)
-        # stage_shift always False → falls through to scope/modality
-        # same scope, same modality → irreconcilable
-        assert reconciled is False
-        assert reason == "irreconcilable"
+        assert reconciled is True
+        assert reason == "stage_shift"
 
     def test_different_scope_conditions(self):
         a = _expert_claim("טקסט", scope_conditions="conditional")
