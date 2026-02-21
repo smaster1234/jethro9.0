@@ -4,7 +4,6 @@
 
 [build]
 builder = "dockerfile"
-dockerfilePath = "Dockerfile"
 
 [deploy]
 # Both Web and Worker use start.sh
