@@ -692,8 +692,11 @@ async def task_analyze_case(
     from ..entity_graph import EntityGraph, reset_entity_graph
     from ..temporal_graph import TemporalGraph, reset_temporal_graph
     from ..ensemble import EnsembleScorer, ContradictionSignals, get_ensemble_scorer
+    from ..progress import ProgressTracker
 
     start_time = datetime.utcnow()
+    tracker = ProgressTracker(job_id=case_id)
+    tracker.start_stage("load_docs")
     update_job_progress(10, "Loading documents")
 
     try:
@@ -734,6 +737,8 @@ async def task_analyze_case(
                     "documents": docs_debug[:20],
                 }
 
+            tracker.finish_stage("load_docs", counts={"documents": len(documents)})
+            tracker.set_preview(documents_total=len(documents))
             update_job_progress(20, f"Analyzing {len(documents)} documents")
 
             # Create analysis run
@@ -771,9 +776,17 @@ async def task_analyze_case(
             # Extract claims from each document (prefer block-level for anchors)
             all_claims = []
             claim_pairs = []
+            tracker.start_stage("extract_claims", detail=f"0/{len(documents)} מסמכים")
             for idx, doc in enumerate(documents):
                 progress = 20 + int((idx / len(documents)) * 30)
                 update_job_progress(progress, f"Extracting claims from {doc.doc_name}")
+                tracker.update_stage(
+                    "extract_claims",
+                    progress_pct=int((idx / len(documents)) * 100),
+                    detail=f"{idx}/{len(documents)} מסמכים — {doc.doc_name}",
+                    counts={"claims": len(all_claims), "documents_done": idx},
+                )
+                tracker.set_preview(documents_processed=idx, claims_extracted=len(all_claims))
 
                 if not doc.full_text:
                     continue
@@ -850,9 +863,19 @@ async def task_analyze_case(
                 except Exception as e:
                     logger.warning("Could not attach DB ID to claim: %s", e)
 
+            tracker.finish_stage(
+                "extract_claims",
+                counts={"claims": len(all_claims), "documents_done": len(documents)},
+                detail=f"{len(documents)}/{len(documents)} מסמכים — {len(all_claims)} טענות",
+            )
+            tracker.set_preview(
+                documents_processed=len(documents),
+                claims_extracted=len(all_claims),
+            )
             update_job_progress(50, "Building analysis graphs")
 
             # ── Pre-detection: Build semantic, entity, and temporal graphs ──
+            tracker.start_stage("build_graphs")
             semantic_engine = SemanticEngine()
             entity_graph = EntityGraph()
             temporal_graph = TemporalGraph()
@@ -879,8 +902,10 @@ async def task_analyze_case(
                 except Exception as e:
                     logger.warning("Temporal graph failed (non-fatal): %s", e)
 
+            tracker.finish_stage("build_graphs")
             update_job_progress(55, "Loading learning context")
 
+            tracker.start_stage("learn_context")
             # Load learning context from past feedback
             learning_ctx = None
             few_shot_section = ""
@@ -891,8 +916,10 @@ async def task_analyze_case(
             except Exception as e:
                 logger.warning("Failed to load learning context: %s", e)
 
+            tracker.finish_stage("learn_context")
             update_job_progress(60, "Detecting contradiction candidates")
 
+            tracker.start_stage("detect_rules")
             # ── Step 1: Rule-based detection ──
             saved_count = 0
             if all_claims:
@@ -902,9 +929,26 @@ async def task_analyze_case(
                     "Rule-based detection: %d candidates from %d claims",
                     len(rule_candidates), len(all_claims),
                 )
+                tracker.finish_stage(
+                    "detect_rules",
+                    counts={"candidates": len(rule_candidates)},
+                    detail=f"{len(rule_candidates)} סתירות מועמדות",
+                )
+                tracker.set_preview(contradictions_found=len(rule_candidates))
+
+                # Add first contradictions to preview
+                for rc in rule_candidates[:5]:
+                    tracker.add_preview_contradiction(
+                        claim_a=rc.claim1.text,
+                        claim_b=rc.claim2.text,
+                        contradiction_type=rc.type.value if hasattr(rc.type, 'value') else str(rc.type),
+                        severity=rc.severity.value if hasattr(rc.severity, 'value') else str(rc.severity),
+                        confidence=rc.confidence,
+                    )
 
                 # ── Step 1b: LLM Analyzer (parallel detection path) ──
                 llm_candidates = []
+                tracker.start_stage("detect_llm")
                 try:
                     from ..llm.analyzer import get_analyzer
                     analyzer = get_analyzer()
@@ -936,6 +980,12 @@ async def task_analyze_case(
                     logger.info("LLM analyzer not available, using rule-based only")
                 except Exception as e:
                     logger.warning("LLM analyzer failed (non-fatal): %s", e)
+
+                tracker.finish_stage(
+                    "detect_llm",
+                    counts={"llm_candidates": len(llm_candidates)},
+                    detail=f"{len(llm_candidates)} מועמדים מ-AI" if llm_candidates else "לא זמין",
+                )
 
                 # ── Step 1c: Merge & deduplicate candidates from both engines ──
                 rule_pairs = set()
@@ -996,6 +1046,7 @@ async def task_analyze_case(
                 except Exception as e:
                     logger.warning("Triplet extraction for verification failed (non-fatal): %s", e)
 
+                tracker.start_stage("verify", detail=f"{len(raw_candidates)} מועמדים לאימות")
                 if verifier.enabled and raw_candidates:
                     update_job_progress(65, "Verifying with LLM")
                     verifier.reset_stats()
@@ -1101,9 +1152,22 @@ async def task_analyze_case(
                         len(raw_candidates),
                     )
 
+                tracker.finish_stage(
+                    "verify",
+                    counts={
+                        "verified": len(verified_ids),
+                        "rejected": len(rejected_ids),
+                    },
+                    detail=f"{len(verified_ids)} אומתו, {len(rejected_ids)} נדחו",
+                )
+                tracker.set_preview(
+                    contradictions_verified=len(verified_ids),
+                    contradictions_rejected=len(rejected_ids),
+                )
                 update_job_progress(80, "Scoring and saving contradictions")
 
                 # ── Step 3: Ensemble scoring + save to DB ──
+                tracker.start_stage("score_save", detail=f"מדרג {len(raw_candidates)} מועמדים")
                 ensemble_scorer = get_ensemble_scorer()
 
                 for contr in raw_candidates:
@@ -1214,11 +1278,20 @@ async def task_analyze_case(
                     db.add(db_contr)
                     saved_count += 1
 
+                tracker.finish_stage(
+                    "score_save",
+                    counts={"saved": saved_count},
+                    detail=f"{saved_count} סתירות נשמרו",
+                )
+                tracker.set_preview(contradictions_found=saved_count)
+
+            tracker.start_stage("insights")
             update_job_progress(85, "Generating insights")
 
             # Generate contradiction insights
             compute_insights_for_run(db, run.id)
 
+            tracker.finish_stage("insights")
             update_job_progress(90, "Saving results")
 
             # Update run status
@@ -1243,6 +1316,17 @@ async def task_analyze_case(
 
             db.commit()
 
+            tracker.start_stage("complete")
+            tracker.finish_stage(
+                "complete",
+                counts={
+                    "documents": len(documents),
+                    "claims": len(all_claims),
+                    "contradictions": saved_count,
+                    "verified": len(verified_ids),
+                    "rejected": len(rejected_ids),
+                },
+            )
             update_job_progress(100, "Complete")
 
             elapsed_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -1261,6 +1345,7 @@ async def task_analyze_case(
     except Exception as e:
         logger.exception("Analysis failed")
         safe_error = _sanitize_error_message(e, fallback="שגיאה בניתוח התיק")
+        tracker.set_error(safe_error)
         _set_job_error_message(safe_error)
 
         # Update run status

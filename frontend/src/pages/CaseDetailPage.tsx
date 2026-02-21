@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -74,6 +74,8 @@ import type {
   FeedbackAggregate,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
+import { AnalysisProgressPanel, useJobProgressPolling } from '../components/AnalysisProgressPanel';
+import type { StructuredProgress } from '../types';
 
 // Helper to flatten cross-exam questions from nested structure
 const flattenCrossExamQuestions = (
@@ -220,7 +222,9 @@ export const CaseDetailPage: React.FC = () => {
   // Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [structuredProgress, setStructuredProgress] = useState<StructuredProgress | null>(null);
   const [_currentRun, setCurrentRun] = useState<AnalysisRun | null>(null);
+  const analysisPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Analysis results view state
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null);
@@ -1168,29 +1172,36 @@ export const CaseDetailPage: React.FC = () => {
         return;
       }
 
-      // For non-cached results, poll for job completion
-      // Start with optimistic progress
-      let progress = 10;
-      const progressInterval = setInterval(() => {
-        progress = Math.min(progress + 5, 85);
-        setAnalysisProgress(progress);
-      }, 1000);
+      // For non-cached results, poll for structured progress
+      setStructuredProgress(null);
 
-      // Poll jobs to check status
       const pollInterval = setInterval(async () => {
         try {
           const jobs = await documentsApi.listCaseJobs(caseId);
           const activeJob = jobs.find(j => j.status === 'started' || j.status === 'queued');
 
-          if (activeJob?.progress) {
-            setAnalysisProgress(Math.max(progress, activeJob.progress));
+          // Try to get structured progress from the active job
+          if (activeJob?.id) {
+            try {
+              const jobStatus = await documentsApi.getJobStatus(activeJob.id);
+              if (jobStatus.structured_progress) {
+                setStructuredProgress(jobStatus.structured_progress);
+                setAnalysisProgress(jobStatus.structured_progress.overall_pct);
+              } else if (jobStatus.progress) {
+                setAnalysisProgress(jobStatus.progress);
+              }
+            } catch {
+              // Fallback: use job progress from list
+              if (activeJob?.progress) {
+                setAnalysisProgress(activeJob.progress);
+              }
+            }
           }
 
           // Check if all jobs are done
           const pendingJobs = jobs.filter(j => j.status === 'queued' || j.status === 'started');
           if (pendingJobs.length === 0) {
             clearInterval(pollInterval);
-            clearInterval(progressInterval);
             setAnalysisProgress(100);
 
             // Refresh runs and show results
@@ -1208,18 +1219,21 @@ export const CaseDetailPage: React.FC = () => {
             }
 
             setIsAnalyzing(false);
+            setStructuredProgress(null);
           }
         } catch (err) {
           console.error('Poll error:', err);
         }
-      }, 2000);
+      }, 1500);
+
+      analysisPollingRef.current = pollInterval;
 
       // Timeout after 5 minutes
       setTimeout(() => {
         clearInterval(pollInterval);
-        clearInterval(progressInterval);
         setAnalysisProgress(100);
         setIsAnalyzing(false);
+        setStructuredProgress(null);
       }, 300000);
 
     } catch (error) {
@@ -1362,18 +1376,11 @@ export const CaseDetailPage: React.FC = () => {
 
       {/* Analysis Progress */}
       {isAnalyzing && (
-        <Card>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-slate-900">מנתח מסמכים...</span>
-              <span className="text-sm text-slate-500">{analysisProgress}%</span>
-            </div>
-            <Progress value={analysisProgress} animated />
-            <p className="text-sm text-slate-500">
-              מזהה סתירות ומחלץ טענות מ-{documents.length} מסמכים
-            </p>
-          </div>
-        </Card>
+        <AnalysisProgressPanel
+          progress={structuredProgress}
+          isAnalyzing={isAnalyzing}
+          legacyProgress={analysisProgress}
+        />
       )}
 
       {/* Tabs */}
