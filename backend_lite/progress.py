@@ -190,6 +190,11 @@ class ProgressTracker:
 
     def _recalc_overall(self) -> None:
         """Calculate overall progress % from stages."""
+        # If "complete" stage is finished, force 100%
+        if "complete" in self.stages and self.stages["complete"].finished_at > 0:
+            self.overall_pct = 100
+            return
+
         total_stages = len(self.stage_order)
         if total_stages == 0:
             return

@@ -74,7 +74,7 @@ import type {
   FeedbackAggregate,
 } from '../types';
 import EvidenceViewerModal from '../components/EvidenceViewerModal';
-import { AnalysisProgressPanel, useJobProgressPolling } from '../components/AnalysisProgressPanel';
+import { AnalysisProgressPanel } from '../components/AnalysisProgressPanel';
 import type { StructuredProgress } from '../types';
 
 // Helper to flatten cross-exam questions from nested structure
