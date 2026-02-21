@@ -346,10 +346,53 @@ export interface Job {
   job_id: string;
   status: 'queued' | 'started' | 'finished' | 'failed';
   progress?: number;
+  message?: string;
   result?: unknown;
   error?: string;
   started_at?: string;
   ended_at?: string;
+  structured_progress?: StructuredProgress;
+}
+
+export interface StructuredProgress {
+  overall_pct: number;
+  current_stage: string | null;
+  current_stage_label: string;
+  elapsed_sec: number;
+  stages: ProgressStage[];
+  preview: ProgressPreview;
+  error: string | null;
+  job_status?: string;
+  final?: boolean;
+}
+
+export interface ProgressStage {
+  key: string;
+  label_he: string;
+  started_at: number;
+  finished_at: number;
+  progress_pct: number;
+  detail: string;
+  counts: Record<string, number>;
+  elapsed_sec?: number;
+}
+
+export interface ProgressPreview {
+  documents_total: number;
+  documents_processed: number;
+  claims_extracted: number;
+  contradictions_found: number;
+  contradictions_verified: number;
+  contradictions_rejected: number;
+  first_contradictions: PreviewContradiction[];
+}
+
+export interface PreviewContradiction {
+  claim_a: string;
+  claim_b: string;
+  type: string;
+  severity: string;
+  confidence: number;
 }
 
 // Analysis Types

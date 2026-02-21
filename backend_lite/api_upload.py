@@ -13,8 +13,8 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, Header, Response, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .schemas import (
@@ -128,10 +128,12 @@ class JobStatusResponse(BaseModel):
     job_id: str
     status: str
     progress: int = 0
+    message: Optional[str] = None
     result: Optional[dict] = None
     error: Optional[str] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    structured_progress: Optional[dict] = None
 
 
 class DocumentResponse(BaseModel):
@@ -2156,19 +2158,110 @@ async def get_job_status(
 
         status = _get_job_status(job_id)
 
+        # Extract structured progress from meta if available
+        meta = status.get('meta', {})
+        structured = meta.get('structured_progress') if isinstance(meta, dict) else None
+
         return JobStatusResponse(
             job_id=job_id,
             status=status.get('status', 'unknown'),
             progress=status.get('progress', 0),
+            message=meta.get('message') if isinstance(meta, dict) else None,
             result=status.get('result'),
             error=status.get('error'),
             started_at=status.get('started_at'),
-            ended_at=status.get('ended_at')
+            ended_at=status.get('ended_at'),
+            structured_progress=structured,
         )
 
     except Exception as e:
         logger.exception("Failed to get job status")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job_progress(
+    job_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """
+    SSE endpoint for real-time job progress streaming.
+
+    Sends structured progress updates as Server-Sent Events until the job
+    completes, fails, or the client disconnects.
+
+    Event format:
+        data: {"overall_pct": 45, "current_stage": "extract_claims", ...}
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    async def _event_generator():
+        last_pct = -1
+        last_stage = ""
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    from .jobs.queue import get_job_status as _get_status
+                    status = _get_status(job_id)
+                except Exception:
+                    yield f"data: {_json.dumps({'error': 'Job not found'})}\n\n"
+                    break
+
+                job_status = status.get("status", "unknown")
+                meta = status.get("meta", {}) or {}
+                structured = meta.get("structured_progress")
+                progress = status.get("progress", 0)
+                message = meta.get("message", "")
+
+                # Build event payload
+                if structured:
+                    payload = structured
+                else:
+                    payload = {
+                        "overall_pct": progress,
+                        "current_stage": None,
+                        "current_stage_label": message,
+                        "stages": [],
+                        "preview": {},
+                    }
+
+                payload["job_status"] = job_status
+
+                # Only send if something changed
+                current_pct = payload.get("overall_pct", 0)
+                current_stage = payload.get("current_stage", "")
+                if current_pct != last_pct or current_stage != last_stage:
+                    yield f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+                    last_pct = current_pct
+                    last_stage = current_stage
+
+                # Stop if job is done
+                if job_status in ("finished", "failed", "canceled", "stopped"):
+                    # Send final event
+                    payload["final"] = True
+                    yield f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+                    break
+
+                await _asyncio.sleep(1)
+
+        except _asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # =============================================================================

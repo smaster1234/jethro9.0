@@ -51,6 +51,8 @@ export const AnalyzePage: React.FC = () => {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<'claims' | 'contradictions' | 'questions'>('contradictions');
 
+  const [analysisStage, setAnalysisStage] = useState('');
+
   const handleAnalyze = async () => {
     if (!text.trim()) {
       setError('יש להזין טקסט לניתוח');
@@ -61,11 +63,24 @@ export const AnalyzePage: React.FC = () => {
     setError('');
     setProgress(0);
     setResult(null);
+    setAnalysisStage('מחלץ טענות מהטקסט...');
 
-    // Simulate progress
+    // Stage-based progress with realistic timing
+    const stages = [
+      { pct: 15, label: 'מחלץ טענות מהטקסט...' },
+      { pct: 35, label: 'מנתח קשרים בין טענות...' },
+      { pct: 55, label: 'מזהה סתירות...' },
+      { pct: 75, label: 'מייצר שאלות חקירה...' },
+      { pct: 90, label: 'מסכם תוצאות...' },
+    ];
+    let stageIdx = 0;
     const progressInterval = setInterval(() => {
-      setProgress((prev) => Math.min(prev + 5, 90));
-    }, 200);
+      if (stageIdx < stages.length) {
+        setProgress(stages[stageIdx].pct);
+        setAnalysisStage(stages[stageIdx].label);
+        stageIdx++;
+      }
+    }, 800);
 
     try {
       const response = await analysisApi.analyzeText({
@@ -75,6 +90,7 @@ export const AnalyzePage: React.FC = () => {
 
       clearInterval(progressInterval);
       setProgress(100);
+      setAnalysisStage('הושלם!');
       setResult(response);
     } catch (err) {
       clearInterval(progressInterval);
@@ -163,10 +179,10 @@ export const AnalyzePage: React.FC = () => {
 
               {isAnalyzing && (
                 <div className="space-y-3">
-                  <Progress value={progress} showLabel label="מנתח טקסט..." />
+                  <Progress value={progress} showLabel label={analysisStage || 'מנתח טקסט...'} />
                   <div className="flex items-center gap-2 text-sm text-slate-500">
                     <Sparkles className="w-4 h-4 animate-pulse text-primary-500" />
-                    <span>מחלץ טענות ומזהה סתירות...</span>
+                    <span>{analysisStage || 'מחלץ טענות ומזהה סתירות...'}</span>
                   </div>
                 </div>
               )}
@@ -214,10 +230,11 @@ export const AnalyzePage: React.FC = () => {
 
           {isAnalyzing && (
             <Card className="h-full flex items-center justify-center min-h-[400px]">
-              <div className="text-center">
-                <Spinner size="lg" className="mx-auto mb-4" />
-                <p className="text-lg font-medium text-slate-700">מנתח את הטקסט...</p>
-                <p className="text-sm text-slate-500 mt-2">זה עשוי לקחת מספר שניות</p>
+              <div className="text-center space-y-4">
+                <Spinner size="lg" className="mx-auto" />
+                <p className="text-lg font-medium text-slate-700">{analysisStage || 'מנתח את הטקסט...'}</p>
+                <Progress value={progress} animated variant="primary" size="lg" className="max-w-xs mx-auto" />
+                <p className="text-sm text-slate-500">{progress}%</p>
               </div>
             </Card>
           )}
